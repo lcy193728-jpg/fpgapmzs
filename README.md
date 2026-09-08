@@ -19,6 +19,7 @@
 - TF 卡 SPI 读取 640×480 / 24bit 非压缩 BMP，解析文件头后写入 SDRAM 帧缓存
 - HDMI 实时输出 VGA 分辨率画面
 - **上电自动轮播**：无需按键触发，自动扫描并循环显示多张图片
+- **按键手动切图**：按 `key1`（引脚 B2）立即切到下一张，与自动轮播计时共存
 - 数码管显示读图状态码（0=初始化 / 2=找图 / 4=读图 / 5=保持）
 - 修正 BMP 自底向上存储导致的画面上下颠倒
 - 严格 BMP 头校验 + 图片计数回卷，避免把卡内残留/已删除数据误判成图片（防花屏）
@@ -26,24 +27,27 @@
 ## 目录结构
 
 ```
-slideshow_phase1/
+fpgapmzs/
 ├── pic_sdram.al          # TD 工程文件（入口）
 ├── top.adc               # 引脚约束
 ├── top.sdc               # 时序约束
-├── A.cwc                 # 编译工作区
 ├── al_ip/                # TD IP 核（sys_pll / video_pll / afifo）
 ├── src/                  # RTL 源码
 │   ├── top.v             # 顶层
-│   ├── bmp_read_auto.v   # ★自研：自动轮播状态机（找图/读图/循环/防花屏）
+│   ├── bmp_read_auto.v   # ★自研：自动轮播 + 按键切图状态机
+│   ├── sd_card_bmp.v     # SD 卡 BMP 读取封装（含内联按键消抖）
 │   ├── frame_fifo_write.v# ★自研：写地址行序翻转（修正上下颠倒）
 │   ├── frame_fifo_read.v / frame_read_write.v  # 帧缓存读写控制
-│   ├── sd_card_bmp.v     # SD 卡 BMP 读取封装
 │   ├── sd_card/          # SD 卡 SPI 驱动（cmd / 扇区读写 / top / spi_master）
 │   ├── sdram/            # SDRAM 控制器（含加密网表 enc_file）
 │   ├── sdram_r/sdram_para.v  # SDRAM 参数定义
 │   ├── hdmi/             # HDMI 发送器（hdmi_tx + 加密网表 enc_file）
 │   ├── video_timing_data.v / video_delay.v / video_define.v  # VGA 时序
 │   └── seg_decoder.v / seg_scan.v / color_bar.v   # 数码管 / 彩条
+├── tb/                   # ModelSim 仿真测试平台
+│   └── tb_bmp_read_auto.v
+├── tools/                # 工具脚本
+│   └── find_bmp.py       # 读取 TF 卡扇区，定位图片实际位置
 └── 图片/                 # 示例测试图（640×480 24bit BMP）
 ```
 
@@ -76,8 +80,10 @@ slideshow_phase1/
 
 | 模块 | 改动内容 |
 | ---- | ---- |
-| `src/bmp_read_auto.v` | 在官方 `bmp_read.v` 基础上改造为**上电自动轮播**，去掉按键触发；新增保持显示状态 `S_HOLD`；严格校验文件头（BM + 宽640 + 高480 + 24bit + 长度921654）；新增 `MAX_IMAGES` 计数回卷，播满一圈回卷到扫描起点，防止扫入残留数据区 |
+| `src/bmp_read_auto.v` | 在官方 `bmp_read.v` 基础上改造为**上电自动轮播**，去掉按键触发；新增保持显示状态 `S_HOLD`；新增 `key_trigger` 端口实现**按键手动切图**（S_HOLD 状态按键立即切下一张，与自动计时共存）；严格校验文件头（BM + 宽640 + 高480 + 24bit + 长度921654）；新增 `MAX_IMAGES` 计数回卷，播满一圈回卷到扫描起点 |
+| `src/sd_card_bmp.v` | 新增 `key` 输入端口，内部**内联两级同步 + 20ms 计数器消抖**（替代独立 `ax_debounce` 模块，避免 TD GUI 源文件列表丢失导致 black box），输出下降沿脉冲接 `key_trigger` |
 | `src/frame_fifo_write.v` | 新增写地址**行序翻转**：从最后一行开始写，行内按列递增，行尾回跳到上一行起始地址，修正 BMP 自底向上存储导致的画面上下颠倒（`IMG_WIDTH=640` / `IMG_HEIGHT=480`） |
+| `src/top.v` | 新增 `key1` 输入端口（引脚 B2），直接接入 `sd_card_bmp` 的 `key` |
 
 ## 关键参数
 
@@ -86,8 +92,9 @@ slideshow_phase1/
 | 参数 | 默认值 | 含义 |
 | ---- | ------ | ---- |
 | `SLIDE_INTERVAL` | `300_000_000` | 每张图停留时钟周期数（100MHz 下约 3 秒） |
-| `START_SECTOR` | `16000` | 扫描起始扇区（8MB 处） |
+| `START_SECTOR` | `126000` | 扫描起始扇区（图片实际在 126656 之后，用 `tools/find_bmp.py` 实测） |
 | `WRAP_SECTOR` | `400000` | 扫描上限扇区，超过回卷（约 200MB） |
 | `MAX_IMAGES` | `5` | 卡内图片总数（轮播一圈张数），改图片数量需同步修改 |
+| `BMP_FILE_LEN` | `921654` | 期望 BMP 文件长度（54 + 640×480×3），仿真可覆盖为小值加速 |
 
-> 若更换存储卡后图片位置变化导致找不到图，需要调整 `START_SECTOR`；若图片数量变化，需要同步修改 `MAX_IMAGES`。
+> ⚠️ **换卡后务必重测图片位置**：不同容量/文件系统的 TF 卡，FAT 表大小不同，图片实际扇区位置会变。用 `tools/find_bmp.py` 读取卡扇区定位图片，再改 `START_SECTOR`（需小于第一张图所在扇区）。

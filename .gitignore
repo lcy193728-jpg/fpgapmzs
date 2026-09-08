@@ -1,0 +1,32 @@
+# ===== TD EDA 编译/运行产物 =====
+log/
+pic_sdram_Runs/
+*.bit
+*.db
+*.rpt
+*.timing
+*.qor
+*.ts
+*.area
+*.log
+*.logw
+*.qws
+*.qdf
+.lock.f
+*.cwc
+nativelink*
+
+# ===== ModelSim 仿真产物 =====
+sim/work/
+sim/modelsim.ini
+sim/transcript
+*.wlf
+
+# ===== 临时/备份文件 =====
+download.tcl
+*.bak
+*~
+
+# ===== 系统文件 =====
+Thumbs.db
+.DS_Store

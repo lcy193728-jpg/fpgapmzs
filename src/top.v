@@ -1,7 +1,7 @@
 module top(
 	input                       clk,
 	input                       rst_n,
-    
+	input                       key1,       //按键1：手动切图(上拉，按下拉低)
 	output [5:0]                seg_sel,
 	output [7:0]                seg_data,	
     
@@ -105,12 +105,13 @@ video_pll video_pll_m0(
     .reset						(1'b0)
 	);
 	
-//SD card BMP file read
+//SD card BMP file read(按键消抖在 sd_card_bmp 内部完成)
 sd_card_bmp  sd_card_bmp_m0(
 	.clk                        (sd_card_clk              ),
 	.rst                        (~rst_n ),
 	.state_code                 (state_code               ),
 	.bmp_width                  (16'd640                 	),  //image width
+	.key                        (key1                     ),
 	.write_req                  (sd_card_write_req        ),
 	.write_req_ack              (sd_card_write_req_ack    ),
 	.write_en                   (sd_card_write_en         ),

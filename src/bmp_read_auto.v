@@ -9,6 +9,7 @@
 //   3. 扫描地址超过 WRAP_SECTOR 时回卷到 START_SECTOR，实现循环轮播
 //   4. 严格校验 BMP 头(宽640/高480/24bit/文件长921654)，过滤裸扫到的假"BM"干扰字节
 //   5. 新增 MAX_IMAGES 计数：播满一圈后直接回卷 START_SECTOR，防止扫进卡内残留/已删除数据
+//   6. 新增 key_trigger 手动切图：在 S_HOLD 状态按下按键立即提前切下一张，与自动轮播计时共存
 // 底层原理(与官方一致)：
 //   不解析 FAT 文件系统，从 START_SECTOR 开始每 8 扇区(4KB 簇)跳读一个扇区，
 //   检查前 54 字节是否为 "BM"(0x42 0x4D) 且 宽度==bmp_width(640)，命中即整张读入 SDRAM
@@ -18,14 +19,16 @@
 
 module bmp_read_auto #(
     parameter [31:0] SLIDE_INTERVAL = 32'd300_000_000, // 轮播间隔(时钟周期)，100MHz 下 = 3 秒
-    parameter [31:0] START_SECTOR   = 32'd16000,       // 扫描起始扇区
+    parameter [31:0] START_SECTOR   = 32'd126000,      // 扫描起始扇区(实测图片在126656之后，见 tools/find_bmp.py)
     parameter [31:0] WRAP_SECTOR    = 32'd400000,      // 扫描上限扇区，超过则回卷(约 200MB)
-    parameter [31:0] MAX_IMAGES     = 32'd5            // 卡内图片总数(轮播一圈的张数)，改图数量需同步修改此值
+    parameter [31:0] MAX_IMAGES     = 32'd5,           // 卡内图片总数(轮播一圈的张数)，改图数量需同步修改此值
+    parameter [31:0] BMP_FILE_LEN   = 32'd921654       // 期望的 BMP 文件长度 = 54 + 640*480*3；仿真可覆盖为小值加速
 )(
     input               clk,                       // SD 卡时钟(100MHz)
     input               rst,                       // 高电平有效复位
     output              ready,                     // 空闲标志(仅调试用)
     input               sd_init_done,              // SD 卡初始化完成标志(由 sd_card_top 给出)
+    input               key_trigger,               // 按键手动切图触发(下降沿脉冲，高有效单周期，与 clk 同步)
     output reg  [3:0]   state_code,                // 状态码(数码管显示)
     input      [15:0]   bmp_width,                 // BMP 图像宽度(固定 640)
     output reg          write_req,                 // 写帧请求(启动写 SDRAM)
@@ -132,7 +135,7 @@ module bmp_read_auto #(
                 && width[15:0] == bmp_width    // 宽 640
                 && height        == 32'd480    // 高 480
                 && bit_cnt       == 16'd24     // 24bit 真彩色
-                && file_len      == 32'd921654)// 54 + 640*480*3
+                && file_len      == BMP_FILE_LEN)// 54 + 640*480*3
                 found <= 1'b1;
         end
         else if (state != S_FIND) begin
@@ -311,7 +314,8 @@ module bmp_read_auto #(
                 //------------------------------------------------
                 S_HOLD: begin
                     state_code <= 4'd5;
-                    if (hold_cnt >= SLIDE_INTERVAL) begin
+                    // 自动轮播计时到，或按键手动切图，都触发切换到下一张
+                    if (hold_cnt >= SLIDE_INTERVAL || key_trigger) begin
                         if (img_cnt >= MAX_IMAGES) begin
                             // 已播完一圈：直接回卷到扫描起点，避免继续往前扫进残留/已删除数据区
                             sd_sec_read_addr <= START_SECTOR[31:0];

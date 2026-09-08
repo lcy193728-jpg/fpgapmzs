@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Project Version="3" Minor="2" Path="E:/FPGA/ALST/slideshow_phase1">
+<Project Version="3" Minor="2" Path="E:/FPGA/ALST/fpgapmzs">
     <Project_Created_Time></Project_Created_Time>
     <TD_Version>6.2.168116</TD_Version>
     <Name>pic_sdram</Name>
@@ -187,7 +187,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="31"/>
+                    <Attr Name="CompileOrder" Val="30"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/video_tpg_1080p.enc.v">
@@ -196,7 +196,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="32"/>
+                    <Attr Name="CompileOrder" Val="31"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/video_tpg_12801024p.enc.v">
@@ -205,7 +205,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="33"/>
+                    <Attr Name="CompileOrder" Val="32"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/video_tpg_1280800.enc.v">
@@ -214,7 +214,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="34"/>
+                    <Attr Name="CompileOrder" Val="33"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/video_tpg_16801050p.enc.v">
@@ -223,7 +223,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="35"/>
+                    <Attr Name="CompileOrder" Val="34"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/video_tpg_800600.enc.v">
@@ -232,7 +232,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="36"/>
+                    <Attr Name="CompileOrder" Val="35"/>
                 </FileInfo>
             </File>
             <File Path="src/sdram/enc_file/sdr_init_ref.enc.v">
@@ -240,7 +240,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="38"/>
+                    <Attr Name="CompileOrder" Val="37"/>
                 </FileInfo>
             </File>
         </Verilog>
@@ -250,7 +250,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="27"/>
+                    <Attr Name="CompileOrder" Val="26"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/SerializerN_1_lvds.enc.vhd">
@@ -258,7 +258,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="28"/>
+                    <Attr Name="CompileOrder" Val="27"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/SerializerN_1_lvds_dat.enc.vhd">
@@ -266,7 +266,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="29"/>
+                    <Attr Name="CompileOrder" Val="28"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/enc_file/TMDSEncoder.enc.vhd">
@@ -274,7 +274,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="30"/>
+                    <Attr Name="CompileOrder" Val="29"/>
                 </FileInfo>
             </File>
             <File Path="src/hdmi/hdmi_tx.vhd">
@@ -282,7 +282,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="37"/>
+                    <Attr Name="CompileOrder" Val="36"/>
                 </FileInfo>
             </File>
         </VHDL>
@@ -328,7 +328,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="25"/>
+                    <Attr Name="CompileOrder" Val="24"/>
                 </FileInfo>
             </File>
             <File Path="al_ip/afifo_32_16_256.ipc">
@@ -336,7 +336,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="26"/>
+                    <Attr Name="CompileOrder" Val="25"/>
                 </FileInfo>
             </File>
         </IP_FILE>
