@@ -91,6 +91,10 @@ initial begin
 
     quiz_active = 1'b1;
     repeat (2) @(negedge clk);
+    check_result(1'b0, 2'd1, 1'b0, 1'b0);
+
+    scene_normal = 2'd2;
+    repeat (2) @(negedge clk);
     check_result(1'b0, 2'd2, 1'b1, 1'b0);
 
     send_emergency();
@@ -107,6 +111,7 @@ initial begin
     check_result(1'b0, 2'd0, 1'b0, 1'b0);
 
     quiz_active = 1'b1;
+    scene_normal = 2'd1;
     repeat (2) @(negedge clk);
     send_emergency();
     alarm_clear_pulse = 1'b1;
@@ -114,7 +119,7 @@ initial begin
     alarm_clear_pulse = 1'b0;
     emergency_pulse = 1'b0;
     @(posedge clk);
-    check_result(1'b0, 2'd2, 1'b1, 1'b0);
+    check_result(1'b0, 2'd1, 1'b0, 1'b0);
 
     $display("PASS: tb_emergency_priority completed.");
     $stop;

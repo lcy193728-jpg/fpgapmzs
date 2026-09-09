@@ -17,13 +17,9 @@ always @(*) begin
         scene_current     = SCENE_EMERGENCY;
         quiz_visible      = 1'b0;
         emergency_visible = 1'b1;
-    end else if (quiz_active) begin
-        scene_current     = SCENE_QUIZ;
-        quiz_visible      = 1'b1;
-        emergency_visible = 1'b0;
     end else begin
         scene_current     = scene_normal;
-        quiz_visible      = 1'b0;
+        quiz_visible      = (scene_normal == SCENE_QUIZ) && quiz_active;
         emergency_visible = 1'b0;
     end
 end
