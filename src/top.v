@@ -1,8 +1,36 @@
+//====================================================================
+// 重要: 阶段2b 三个新模块以 `include 直接并入本文件(与 top.v 同目录,
+//   同 color_bar.v 包含 video_define.v 的既有用法)。原因: 工程文件
+//   pic_sdram.al 在 TD 打开/关闭过程中会回写覆盖外部手工登记的源码条目,
+//   曾两度把 osd_welcome/display_adjust/bri_key_ctrl 从综合列表删除,
+//   导致 HDL-8007 black box。改用 include 后模块定义跟随 top.v 必然
+//   参与综合, 不再依赖 .al 维护。※ 请勿再通过 GUI "Add to Project"
+//   重复添加这些 .v(会造成模块重复定义); 若工程树中已存在请移除。
+//   (osd_scene/quiz_ctrl 为阶段2d 新增的会议/抢答/应急场景层, 同法并入)
+//   (bmp_scale 为双线性插值缩放引擎, 串在 sd_card_bmp→frame_read_write 写通路)
+//====================================================================
+`include "osd_welcome.v"
+`include "display_adjust.v"
+`include "ui_key_ctrl.v"
+`include "osd_scene.v"
+`include "quiz_ctrl.v"
+`include "bmp_scale.v"
+
 module top(
 	input                       clk,
-	input                       rst_n,
-	input                       key1,       //按键1：手动切图(上拉，按下拉低)
-	output [5:0]                seg_sel,
+	input                       key1,       //KEY1(A2)：场景内功能模式循环 0图片/切图→1亮度→2分辨率
+	input                       key2,       //KEY2(B2)：当前模式参数 减
+	input                       key3,       //KEY3(B1)：当前模式参数 加
+	input                       key4,       //KEY4(C1)：预留(已释放——原"自动/手动切换"并入模式0)
+	input [3:0]                 sw,         //板载拨码直接选场景: sw[0]=SW1场景0迎新
+                                            //  sw[1]=SW2场景1会议 sw[2]=SW3场景2抢答
+                                            //  sw[3]=SW4场景3应急(应急最高 + 无应急时先触发先锁定)
+                                            //  (引脚/极性见 top.adc; 四个全关=首页菜单态)
+	// ---- 抢答台(2×40Pin 外扩口, 上拉/按下低; 引脚见 top.adc) ----
+	input [3:0]                 quiz_btn,   //4 路选手抢答键(屏显 1~4 号)
+	input                       quiz_start, //开始/下一轮(抢答中再按=重开本轮计时)
+	input                       quiz_reset, //复位/清除(回到"等待开始")
+	output [7:0]                seg_sel,    //8 位数码管位选
 	output [7:0]                seg_data,	
     
     output			vga_out_hs,
@@ -21,9 +49,54 @@ module top(
 	input                       sd_miso           //SD card controller data input
 );
 
+//============================================================
+// 上电自动复位(POR): 取消物理复位引脚(rst_n), 配置完成后由计数器产生
+//   约 10ms 低电平复位, 保证 PLL/SDRAM/HDMI 上电稳定后再放行。
+//   EG4 触发器上电由 GSR 清零 → por_cnt 从 0 起计, MSB 置 1 前保持复位。
+//============================================================
+reg  [19:0] por_cnt;
+always @(posedge clk) begin
+    if (!por_cnt[19])
+        por_cnt <= por_cnt + 20'd1;   // 计满即停(524288 拍 ≈ 10.5ms@50MHz)
+end
+wire rst_n = por_cnt[19];
+
 parameter MEM_DATA_BITS         = 32  ;            //external memory user interface data width
 parameter ADDR_BITS             = 21  ;            //external memory user interface address width
 parameter BUSRT_BITS            = 10  ;            //external memory user interface burst width
+
+//--------------------------------------------------------------
+// 场景素材分区表(卡内扇区区间): 四个场景 = 四个互不相同的独立分区,
+// 拨码切场景时按此表查得分区 → zone_load 重载 bmp 扫描, 各播各自区域的图.
+// 数据来源: tools/find_bmp.py --drive F --sizes 2,2,1,1 --names WEL,MEET,QUIZ,ALARM
+//   卡上 6 张 640×480/24bit BMP 全部 8 扇区对齐且紧邻(间隔 1808 扇区),
+//   经 tools/find_bmp.py 与首扇区 MD5 逐张比对, 实际文件顺序为:
+//     第1张 126656 = 5.bmp | 第2张 128464 = 6.bmp | 第3张 130272 = 7.bmp
+//     第4张 132080 = 1.bmp | 第5张 133888 = 2.bmp | 第6张 135696 = 3.bmp
+//   即卡内物理顺序为 5,6,7,1,2,3(按拷贝先后分配, 与文件名无关)。
+//   按 2/2/1/1 均分成四个场景区:
+//     迎新区 = 5.bmp,6.bmp | 会议区 = 7.bmp,1.bmp
+//     抢答区 = 2.bmp       | 应急区 = 3.bmp
+//   ⚠ 换卡/重排素材后必须重跑该工具并同步本表(扇区值会变), 否则扫不到图.
+//     想让每个场景都放 2~3 张: 重新拷 8~12 张到卡后跑
+//     python tools/find_bmp.py --drive F --sizes 2,2,2,2 --names WEL,MEET,QUIZ,ALARM
+//     再把输出的 START/WRAP/IMGS 覆盖下面的 Z_* 即可(逻辑不用动).
+//--------------------------------------------------------------
+localparam [31:0] Z_MENU_START  = 32'd126656;   // 菜单区(=迎新区; 菜单全屏 OSD 自绘, 底层仅预载一张)
+localparam [31:0] Z_MENU_WRAP   = 32'd130272;   // 菜单区扫描上限(=下一区起点)
+localparam [31:0] Z_MENU_IMGS   = 32'd2;        // 菜单区张数
+localparam [31:0] Z_WEL_START   = 32'd126656;   // 迎新区起点(卡上第 1 张)
+localparam [31:0] Z_WEL_WRAP    = 32'd130272;   // 迎新区扫描上限(=下一区起点)
+localparam [31:0] Z_WEL_IMGS    = 32'd2;        // 迎新区张数(5.bmp,6.bmp)
+localparam [31:0] Z_MEET_START  = 32'd130272;   // 会议区起点(卡上第 3 张)
+localparam [31:0] Z_MEET_WRAP   = 32'd133888;   // 会议区扫描上限(=下一区起点)
+localparam [31:0] Z_MEET_IMGS   = 32'd2;        // 会议区张数(7.bmp,1.bmp)
+localparam [31:0] Z_QUIZ_START  = 32'd133888;   // 抢答区起点(卡上第 5 张)
+localparam [31:0] Z_QUIZ_WRAP   = 32'd135696;   // 抢答区扫描上限(=下一区起点)
+localparam [31:0] Z_QUIZ_IMGS   = 32'd1;        // 抢答区张数(2.bmp)
+localparam [31:0] Z_ALARM_START = 32'd135696;   // 应急区起点(卡上第 6 张, 独立第 4 分区)
+localparam [31:0] Z_ALARM_WRAP  = 32'd135704;   // 应急区扫描上限(=末张 135696 + 8 扇区)
+localparam [31:0] Z_ALARM_IMGS  = 32'd1;        // 应急区张数(3.bmp)
 
     wire			vga_out_de;
 
@@ -49,7 +122,117 @@ wire                            vs;
 wire 							de;
 wire[23:0]                      vout_data;
 wire[3:0]                       state_code;
-wire[6:0]                       seg_data_0;
+
+wire                            slideshow_en;  // 底层轮播使能(应急=0冻结画面)，scene_control→bmp_read_auto
+wire                            emergency;     // 应急锁存标志(1=应急中，驱动 osd_menu 顶部红条)
+wire [1:0]                      scene_id;      // 生效场景码(0迎新 1会议 2抢答 3应急)，供后续功能层/OSD
+wire                            menu_active;   // 菜单态标志(1=SW1..3 无锁且非应急 → 显示四场景 OSD 菜单)
+wire [2:0]                      latch_sw;      // 内容源/素材分区号(0菜单 1迎新 2会议 3抢答 4应急)
+wire                            scene_change_pulse; // 菜单↔场景/场景间切换事件 → 触发 bmp 分区重载
+
+//场景分区重载: scene_control 查表输出目标分区, zone_load 脉冲随切换事件给出
+//(四场景 = 四个独立分区; 应急=独立第 4 分区, 与其它场景同等重载)
+reg  [31:0]                     zone_start_l;   // 目标分区起点扇区
+reg  [31:0]                     zone_wrap_l;    // 目标分区扫描上限
+reg  [31:0]                     zone_max_l;     // 目标分区图片张数
+wire                            zone_load_l;    // 分区重载请求(=scene_change_pulse)
+
+always @(*) begin
+    case (latch_sw)
+        3'd0: begin // 菜单(全屏 OSD 自绘, 底层预载迎新区一张)
+            zone_start_l = Z_MENU_START;
+            zone_wrap_l  = Z_MENU_WRAP;
+            zone_max_l   = Z_MENU_IMGS;
+        end
+        3'd1: begin // 迎新
+            zone_start_l = Z_WEL_START;
+            zone_wrap_l  = Z_WEL_WRAP;
+            zone_max_l   = Z_WEL_IMGS;
+        end
+        3'd2: begin // 会议
+            zone_start_l = Z_MEET_START;
+            zone_wrap_l  = Z_MEET_WRAP;
+            zone_max_l   = Z_MEET_IMGS;
+        end
+        3'd3: begin // 抢答
+            zone_start_l = Z_QUIZ_START;
+            zone_wrap_l  = Z_QUIZ_WRAP;
+            zone_max_l   = Z_QUIZ_IMGS;
+        end
+        default: begin // 应急(第 4 分区)
+            zone_start_l = Z_ALARM_START;
+            zone_wrap_l  = Z_ALARM_WRAP;
+            zone_max_l   = Z_ALARM_IMGS;
+        end
+    endcase
+end
+assign zone_load_l = scene_change_pulse;
+
+//OSD 叠加底座(插入 video_delay → hdmi_tx 之间)相关信号
+wire                            osd_hs;        // osd_engine 输出同步
+wire                            osd_vs;
+wire                            osd_de;
+wire [23:0]                     osd_data;      // OSD 仲裁后的像素
+wire [11:0]                     px_x;          // 与 osd_data 对齐的像素坐标
+wire [11:0]                     px_y;
+
+//osd_menu 文字叠加引擎相关信号(输出送 osd_welcome → display_adjust → hdmi_tx)
+wire                            menu_hs;       // osd_menu 输出同步/数据/坐标
+wire                            menu_vs;
+wire                            menu_de;
+wire [23:0]                     menu_data;
+wire [11:0]                     menu_px_x;
+wire [11:0]                     menu_px_y;
+
+//迎新场景 OSD(信息叠加)相关信号(输出送 display_adjust)
+wire                            wl_hs;
+wire                            wl_vs;
+wire                            wl_de;
+wire [23:0]                     wl_data;
+wire [11:0]                     wl_px_x;
+wire [11:0]                     wl_px_y;
+
+//会议/抢答/应急 场景 OSD(osd_scene)相关信号(输出送 display_adjust)
+wire                            sc_hs;
+wire                            sc_vs;
+wire                            sc_de;
+wire [23:0]                     sc_data;
+wire [11:0]                     sc_px_x;
+wire [11:0]                     sc_px_y;
+
+//场景层使能与抢答状态
+wire                            meeting_en;    // 1=会议场景(latch=2 且非应急)
+wire                            quiz_en;       // 1=抢答场景(latch=3 且非应急)
+wire                            alarm_en;      // 1=应急(最高优先级)
+wire [1:0]                      q_state;       // 抢答状态 0等待 1抢答中 2锁定 3超时
+wire [1:0]                      q_winner;      // 胜者 0..3(屏显 +1)
+wire [3:0]                      q_t_tens;      // 倒计时 BCD 十位
+wire [3:0]                      q_t_ones;      // 倒计时 BCD 个位
+wire [7:0]                      run_hh;        // 系统运行时长 BCD 时
+wire [7:0]                      run_mm;        // 分
+wire [7:0]                      run_ss;        // 秒
+
+//显示末级调节(亮度/淡入淡出/亮度条)相关信号(送 hdmi_tx)
+wire                            fin_hs;
+wire                            fin_vs;
+wire                            fin_de;
+wire [23:0]                     fin_data;
+
+//迎新场景 OSD 使能: SW1 锁定且非应急(菜单态 latch=0, 其余场景/应急不叠)
+wire                            welcome_en;
+wire [3:0]                      bri_level;     // 亮度档 0..15(ui_key_ctrl 模式1可调)
+wire                            img_busy;      // 底层 BMP 加载忙(sd_card_bmp 导出)
+wire [7:0]                      img_no;        // 当前图序号(sd_card_bmp 导出, ui_key_ctrl 用)
+
+//人机交互(ui_key_ctrl)输出
+wire [1:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率
+wire [3:0]  res_level;      // 分辨率档 0..7
+wire [7:0]  pic_param;      // 图片参数(0=轮播 / N=手动第N张)
+wire        pic_manual;     // 1=手动单张(冻结自动轮播)
+wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
+wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
+wire        res_chg_pl;     // 缩放档变化脉冲(1拍) → bmp 缩放引擎重载当前图
+wire        bmp_slide_en;   // bmp 轮播使能 = 场景轮播使能 且 非手动单张
 
 
 wire									  write_clk;
@@ -59,10 +242,12 @@ wire                            video_read_req;
 wire                            video_read_req_ack;
 wire                            video_read_en;
 wire[31:0]                      video_read_data;
-wire                            sd_card_write_en;
-wire[31:0]                      sd_card_write_data;
+wire                            sd_card_write_en;      // sd_card_bmp 源像素写使能(接缩放引擎输入)
+wire[31:0]                      sd_card_write_data;    // sd_card_bmp 源像素 {R,G,B,8'b0}
 wire                            sd_card_write_req;
 wire                            sd_card_write_req_ack;
+wire                            bmp_scale_wr_en;       // 缩放引擎输出写使能 → frame_read_write.write_en
+wire[31:0]                      bmp_scale_wr_data;     // 缩放引擎输出像素 → frame_read_write.write_data
 
 wire App_rd_en;
 wire [ADDR_BITS-1:0] App_rd_addr;
@@ -105,45 +290,208 @@ video_pll video_pll_m0(
     .reset						(1'b0)
 	);
 	
-//SD card BMP file read(按键消抖在 sd_card_bmp 内部完成)
+//============================================================
+// 蓝桥风格人机交互控制器(ui_key_ctrl, sd_card_clk 控制域):
+//   KEY1(A2)=功能模式循环 0图片/切图→1亮度→2缩放→0
+//   KEY2(B2)=当前模式参数 减   KEY3(B1)=当前模式参数 加
+//   KEY4(C1)=**已释放**(顶层保留引脚, 不接逻辑, 留作后续扩展)
+//   模式0(图片/切图): 默认自动轮播; KEY3=下一张 / KEY2=上一张(第1张时按
+//                     KEY2 = 回自动轮播); 按 KEY3 即自动转入手动单张;
+//                     离开模式0(去亮度/缩放)自动回自动轮播
+//   模式1(亮度): KEY3 + / KEY2 -(0..15)  → display_adjust.bri_level
+//   模式2(缩放): KEY3 + / KEY2 -(0..7)   → bmp_scale 双线性缩放
+//                (档位变化输出 res_chg_pl → 重载当前图, 效果立即可见)
+//   ※ 按键只调参数, 与场景切换无关(场景由拨码决定, 见 scene_control)
+//   ※ 所有场景共用同一套按键语义(全局统一样式)
+//============================================================
+ui_key_ctrl #(
+    .BRI_INIT            (4'd8)
+) ui_key_ctrl_m0(
+    .clk                 (sd_card_clk          ),
+    .rst                 (~rst_n               ),
+    .key1                (key1                 ),
+    .key2                (key2                 ),
+    .key3                (key3                 ),
+    .img_no              (img_no               ),
+    .scene_chg           (scene_change_pulse   ),
+    .mode                (ui_mode              ),
+    .bri_level           (bri_level            ),
+    .res_level           (res_level            ),
+    .pic_manual          (pic_manual           ),
+    .pic_param           (pic_param            ),
+    .key_next_pl         (key_next_pl          ),
+    .key_prev_pl         (key_prev_pl          ),
+    .res_chg_pl          (res_chg_pl           )
+);
+
+//============================================================
+// 场景选择/应急仲裁(sd_card_clk 控制域, 输入=板载拨码 sw):
+//   SW1~SW4 直接选场景 0~3(多开时 SW4>SW3>SW2>SW1 优先, 应急最高);
+//   场景号=3(应急) → emergency=1 最高优先级(内容源冻结不重载素材);
+//   四个 SW 全关 => menu_active=1(上电默认菜单, 拨上任一 SW 即退出)
+//   scene_change_pulse(内容源切换) → 顶层查表后 zone_load 重载 bmp 分区
+//============================================================
+scene_control scene_control_m0(
+    .clk                 (sd_card_clk          ),
+    .rst                 (~rst_n               ),
+    .sw_raw              (sw                   ),
+    .menu_active         (menu_active          ),
+    .latch_sw            (latch_sw             ),
+    .emergency           (emergency            ),
+    .scene_id            (scene_id             ),
+    .slideshow_en        (slideshow_en         ),
+    .scene_change_pulse  (scene_change_pulse   ),
+    .emergency_pulse     (                     ),
+    .alarm_clr_pulse     (                     ),
+    .sec_tick            (                     ),
+    .run_hh              (run_hh               ),
+    .run_mm              (run_mm               ),
+    .run_ss              (run_ss               )
+);
+
+//============================================================
+// 场景层使能(会议/抢答/应急):
+//   会议 = 内容源 latch=2 且非应急; 抢答 = latch=3 且非应急;
+//   应急 = emergency(最高优先级, 覆盖前两者)。
+//   (latch_sw/menu_active/emergency 均已在 scene_control 内 sd 域寄存;
+//    下游 osd_scene 内部两级同步, 无亚稳态风险)
+//============================================================
+assign meeting_en = (latch_sw == 3'd2) & ~emergency;
+assign quiz_en    = (latch_sw == 3'd3) & ~emergency;
+assign alarm_en   = emergency;
+
+//============================================================
+// 抢答台控制(quiz_ctrl, sd_card_clk 域):
+//   4 路选手键 → 同步+20ms 消抖 → 片内并行仲裁(同拍多路按 1>2>3>4
+//   优先, 锁存后忽略后续) → 锁存胜者; 10s BCD 倒计时; 归零判超时。
+//   仅在抢答场景(quiz_en)生效, 离开场景自动回"等待开始"。
+//   外扩引脚见 top.adc(quiz_btn[3:0]/quiz_start/quiz_reset)。
+//============================================================
+quiz_ctrl #(
+    .TIME_SEC            (8'd10              )
+) quiz_ctrl_m0(
+    .clk                 (sd_card_clk       ),
+    .rst                 (~rst_n            ),
+    .en                  (quiz_en           ),
+    .player_raw          (quiz_btn          ),
+    .start_raw           (quiz_start        ),
+    .clear_raw           (quiz_reset        ),
+    .qstate              (q_state           ),
+    .winner              (q_winner          ),
+    .t_tens              (q_t_tens          ),
+    .t_ones              (q_t_ones          )
+);
+
+// 底层轮播使能: 应急冻结 或 手动单张(pic_manual)时停自动计时
+assign bmp_slide_en = slideshow_en & ~pic_manual;
+
+//SD card BMP file read(按键消抖已由 ui_key_ctrl 完成, 此处只收脉冲;
+//                     zone_load=场景切换 → 分区重载)
 sd_card_bmp  sd_card_bmp_m0(
 	.clk                        (sd_card_clk              ),
 	.rst                        (~rst_n ),
 	.state_code                 (state_code               ),
 	.bmp_width                  (16'd640                 	),  //image width
-	.key                        (key1                     ),
+	.key_next                   (key_next_pl              ),
+	.key_prev                   (key_prev_pl              ),
+	.slide_en                   (bmp_slide_en             ),
+	.zone_start                 (zone_start_l             ),
+	.zone_wrap                  (zone_wrap_l              ),
+	.zone_max_img               (zone_max_l               ),
+	.zone_load                  (zone_load_l              ),
+	.reload_req                 (res_chg_pl               ),
 	.write_req                  (sd_card_write_req        ),
 	.write_req_ack              (sd_card_write_req_ack    ),
 	.write_en                   (sd_card_write_en         ),
 	.write_data                 (sd_card_write_data       ),
+	.img_no                     (img_no                   ),
+	.img_busy                   (img_busy                 ),
 	.SD_nCS                     (sd_ncs                   ),
 	.SD_DCLK                    (sd_dclk                  ),
 	.SD_MOSI                    (sd_mosi                  ),
 	.SD_MISO                    (sd_miso                  )
 );
 
-//with a digital display of state_code
-// 0:SD card is initializing
-// 1:wait for the button to press
-// 2:looking for the BMP file
-// 3:wait for the fifo
-// 4:reading
-seg_decoder seg_decoder_m0(
-	.bin_data                   (state_code               ),
-	.seg_data                   (seg_data_0               )
+//============================================================
+// 双线性插值缩放引擎(bmp_scale, sd_card_clk 写通路):
+//   位置: sd_card_bmp(源像素 640×480) → bmp_scale → frame_read_write(写 FIFO)
+//   为何放在写通路: 显示侧 frame_fifo_read 是整帧突发读、SDRAM 地址由硬件
+//     顺序推进，无法逐像素改地址；写侧逐像素可控，故在这里做坐标映射。
+//   输出画布固定 640×480(= SDRAM 帧尺寸) → write_len/write_addr/行序翻转
+//     逻辑全部无需改动；缩放图居中，区外填黑；>100% 档按中心裁剪。
+//   分两级可分离插值: 先水平(A/B 两行各自 x 方向), 再垂直(y 方向)。
+//   档位 scale_sel = res_level(ui_key_ctrl 模式2 用 KEY2/KEY3 调, 0..7):
+//     0=25% 1=33% 2=50% 3=67% 4=100%(默认) 5=150% 6=200% 7=300%
+//   档位变化时 ui_key_ctrl 给 res_chg_pl → sd_card_bmp 原地重读当前图,
+//     新档位立即生效(见 bmp_read_auto 的 reload_req)。
+//   frame_start 取 write_req_ack(帧起点), 与 frame_fifo_write 清写 FIFO 同拍,
+//     保证本模块首个输出像素不会被 FIFO 清零动作丢掉。
+//============================================================
+bmp_scale bmp_scale_m0(
+	.clk                        (sd_card_clk              ),
+	.rst                        (~rst_n                   ),
+	.scale_sel                  (res_level                ),
+	.frame_start                (sd_card_write_req_ack    ),
+	.in_en                      (sd_card_write_en         ),
+	.in_data                    (sd_card_write_data       ),
+	.out_en                     (bmp_scale_wr_en          ),
+	.out_data                   (bmp_scale_wr_data        )
 );
+
+//============================================================
+// 数码管显示(8 位, 用户规格布局):
+//   第1位 = 场景号(0..3)                → seg_data_0
+//   第2~4位 = 当前模式参数(3位十进制, 前导零熄灭)
+//             模式0: 0=轮播 / N=手动第N张; 模式1: 亮度 0..15; 模式2: 档位 0..7
+//   第5位 = 功能模式号(0图片/1亮度/2分辨率) → seg_data_4
+//   第6、7位 = 固定横线 "-" 分隔符      → seg_data_5/6
+//   第8位 = A=自动轮播 / H=手动单张      → seg_data_7
+//============================================================
+// 当前模式对应的参数值(0..255)
+reg [7:0] param_val;
+always @(*) begin
+    case (ui_mode)
+        2'd1:    param_val = {4'd0, bri_level};   // 亮度档 0..15
+        2'd2:    param_val = {4'd0, res_level};   // 分辨率档 0..7
+        default: param_val = pic_param;           // 0=轮播 / N=手动第N张
+    endcase
+end
+// 十进制百/十/个位
+reg [3:0] p_h, p_t, p_o;
+always @(*) begin
+    p_h = param_val / 8'd100;
+    p_t = (param_val % 8'd100) / 8'd10;
+    p_o = param_val % 8'd10;
+end
+// 前导零熄灭: 百位(值<100)/十位(值<10)熄灭
+wire blank_h = (param_val < 8'd100);
+wire blank_t = (param_val < 8'd10);
+
+wire [6:0] dec_scene, dec_h, dec_t, dec_o, dec_mode;
+seg_decoder u_dec_scene (.bin_data({2'b0, scene_id}), .seg_data(dec_scene));
+seg_decoder u_dec_h     (.bin_data(p_h              ), .seg_data(dec_h    ));
+seg_decoder u_dec_t     (.bin_data(p_t              ), .seg_data(dec_t    ));
+seg_decoder u_dec_o     (.bin_data(p_o              ), .seg_data(dec_o    ));
+seg_decoder u_dec_mode  (.bin_data({2'b0, ui_mode }), .seg_data(dec_mode ));
+
+localparam [7:0] SEG_BLANK = 8'hFF;   // 全灭(含小数点)
+localparam [7:0] SEG_DASH  = 8'hBF;   // 仅 g 段亮 = "-"
+localparam [7:0] SEG_CH_A  = 8'h88;   // 字母 "A" = 自动轮播
+localparam [7:0] SEG_CH_H  = 8'h89;   // 字母 "H" = 手动单张
 
 seg_scan seg_scan_m0(
 	.clk                        (clk                      ),
 	.rst_n                      (rst_n                    ),
 	.seg_sel                    (seg_sel                  ),
 	.seg_data                   (seg_data                 ),
-	.seg_data_0                 ({1'b1,7'b1111_111}       ),
-	.seg_data_1                 ({1'b1,7'b1111_111}       ),
-	.seg_data_2                 ({1'b1,7'b1111_111}       ),
-	.seg_data_3                 ({1'b1,7'b1111_111}       ),
-	.seg_data_4                 ({1'b1,7'b1111_111}       ),
-	.seg_data_5                 ({1'b1,seg_data_0}        )
+	.seg_data_0                 ({1'b1, dec_scene}        ),
+	.seg_data_1                 (blank_h ? SEG_BLANK : {1'b1, dec_h}),
+	.seg_data_2                 (blank_t ? SEG_BLANK : {1'b1, dec_t}),
+	.seg_data_3                 ({1'b1, dec_o}            ),
+	.seg_data_4                 ({1'b1, dec_mode}         ),
+	.seg_data_5                 (SEG_DASH                 ),
+	.seg_data_6                 (SEG_DASH                 ),
+	.seg_data_7                 (pic_manual ? SEG_CH_H : SEG_CH_A)
 );
 wire hs_0;
 wire vs_0;
@@ -175,6 +523,189 @@ video_delay video_delay_m0
 	.de_r                       (de                       ),
 	.vout_data					(vout_data)
 );
+
+//============================================================
+// OSD 叠加底座(阶段2a 骨架, 已并入数据通路)
+//   输入 = video_delay 输出(已对齐像素流, 整体滞后 ~20 拍)
+//   输出 = 重建 0 基坐标 + 通用叠加仲裁后的像素流 → osd_menu
+//   ovl_en/ovl_rgb 暂置无效(后续时钟 OSD 层驱动)
+//   测试矩形 TEST_RECT_EN=0 关闭, 坐标重建对功能透明
+//============================================================
+osd_engine #(
+    .DATA_WIDTH   (24),
+    .H_ACTIVE     (16'd640),
+    .V_ACTIVE     (16'd480),
+    .TEST_RECT_EN (1'b0),             // 调试用测试矩形, 正常关闭
+    .TEST_X0      (12'd160),
+    .TEST_Y0      (12'd120),
+    .TEST_X1      (12'd480),
+    .TEST_Y1      (12'd360)
+) osd_engine_m0(
+    .video_clk    (video_clk),
+    .rst          (~rst_n),
+    .hs_i         (hs),
+    .vs_i         (vs),
+    .de_i         (de),
+    .data_i       (vout_data),
+    .ovl_en       (1'b0),             // 待接入时钟等 OSD 层
+    .ovl_rgb      (24'h000000),
+    .hs_o         (osd_hs),
+    .vs_o         (osd_vs),
+    .de_o         (osd_de),
+    .data_o       (osd_data),
+    .px_x         (px_x),
+    .px_y         (px_y)
+);
+
+//============================================================
+// OSD 菜单文字叠加引擎(阶段2a, 四场景首页菜单)
+//   输入 = osd_engine 输出(已对齐像素流 + 0 基坐标 px_x/px_y)
+//   叠加 = 首页菜单(标题+四场景入口+底部提示, 汉字 16×16 点阵 ROM)
+//         / 应急顶部红条(emergency, 最高优先级, 不遮底图全屏切换)
+//   控制 = menu_active(菜单态)/emergency(应急) 跨时钟域电平(内部两级同步)
+//   输出 = 像素流 + 同拍坐标送 osd_welcome (整体延 ~3 拍, 同步随动)
+//============================================================
+osd_menu #(
+    .DATA_W       (24),
+    .H_ACT        (640),
+    .V_ACT        (480)
+) osd_menu_m0(
+    .video_clk    (video_clk),
+    .rst          (~rst_n),
+    .hs_i         (osd_hs),
+    .vs_i         (osd_vs),
+    .de_i         (osd_de),
+    .data_i       (osd_data),
+    .px_x         (px_x),
+    .px_y         (px_y),
+    .menu_en      (menu_active),
+    .emerg_en     (emergency),
+    .hs_o         (menu_hs),
+    .vs_o         (menu_vs),
+    .de_o         (menu_de),
+    .data_o       (menu_data),
+    .px_x_o       (menu_px_x),
+    .px_y_o       (menu_px_y)
+);
+
+//============================================================
+// 迎新展示场景 OSD 信息叠加(osd_welcome, 阶段2b 扩展功能1)
+//   输入 = osd_menu 输出(背景流 + 同拍坐标)
+//   叠加 = 顶部欢迎语(金底50%) / 左下报到地点卡(75%衬底+蓝强调)
+//        / 右下联系方式卡(同上+青强调) / 底部滚动报到流程(每帧左移1px)
+//   非 OSD 区域原样透传背景(背景保持); welcome_en=0(菜单/会议/抢答/应急)
+//   时本模块纯透传。输出像素流 + 坐标送 display_adjust。
+//============================================================
+osd_welcome #(
+    .DATA_W       (24),
+    .H_ACT        (640),
+    .V_ACT        (480)
+) osd_welcome_m0(
+    .video_clk    (video_clk),
+    .rst          (~rst_n),
+    .hs_i         (menu_hs),
+    .vs_i         (menu_vs),
+    .de_i         (menu_de),
+    .data_i       (menu_data),
+    .px_x         (menu_px_x),
+    .px_y         (menu_px_y),
+    .welcome_en   (welcome_en),
+    .hs_o         (wl_hs),
+    .vs_o         (wl_vs),
+    .de_o         (wl_de),
+    .data_o       (wl_data),
+    .px_x_o       (wl_px_x),
+    .px_y_o       (wl_px_y)
+);
+
+//============================================================
+// 会议/抢答/应急 场景 OSD 叠加(osd_scene, 阶段2d 扩展)
+//   输入 = osd_welcome 输出(背景流 + 同拍坐标)
+//   叠加 = 会议(标题条/运行时长面板/4 页公告翻页/滚动会务提示)
+//        / 抢答(标题条/状态面板/2× 倒计时+秒/滚动须知)
+//        / 应急(顶条 4Hz 闪烁+警示三角/深红标题/滚动疏散告警)
+//   三场景互斥(SW 单选)共用一片字形 ROM; 三使能全 0 时纯透传。
+//   输出像素流 + 坐标送 display_adjust。
+//============================================================
+osd_scene #(
+    .DATA_W       (24),
+    .H_ACT        (640),
+    .V_ACT        (480)
+) osd_scene_m0(
+    .video_clk    (video_clk),
+    .rst          (~rst_n),
+    .hs_i         (wl_hs),
+    .vs_i         (wl_vs),
+    .de_i         (wl_de),
+    .data_i       (wl_data),
+    .px_x         (wl_px_x),
+    .px_y         (wl_px_y),
+    .meeting_en   (meeting_en),
+    .quiz_en      (quiz_en),
+    .alarm_en     (alarm_en),
+    .qstate       (q_state),
+    .winner       (q_winner),
+    .t_tens       (q_t_tens),
+    .t_ones       (q_t_ones),
+    .run_hh       (run_hh),
+    .run_mm       (run_mm),
+    .run_ss       (run_ss),
+    .hs_o         (sc_hs),
+    .vs_o         (sc_vs),
+    .de_o         (sc_de),
+    .data_o       (sc_data),
+    .px_x_o       (sc_px_x),
+    .px_y_o       (sc_px_y)
+);
+
+//============================================================
+// 显示末级调节引擎(display_adjust, 阶段2b 扩展功能2/3):
+//   1) 16 档亮度增益(key2 增 / key3 减, 默认 8=×1.0)
+//   2) 亮度档变化显示左上角 16 档图形条(BAR_HOLD 帧后自动隐藏)
+//   3) 场景切换淡入淡出: menu_active 边沿(菜单↔场景)触发,
+//      alpha 逐帧降黑 → 等底层 img_busy 释放(新分区图写毕) → 淡入;
+//      应急(emergency)期间强制不淡出(最高优先级即刻响应)
+//============================================================
+// ---- 场景切换与轮播反馈(display_adjust HUD 提示) ----
+	//   res_level/pic_manual/ui_mode 三个电平已在 sd 域寄存, display_adjust
+	//   内部两级同步后:
+	//     · 缩放档变化 / 切到分辨率模式 → 弹"缩放条"(8 档, 30 帧后消失)
+	//     · 亮度档变化 / 切到亮度模式 → 弹"亮度条"(16 档)
+	//     · KEY4 切轮播↔手动 / 切到图片模式 → 弹"轮播-手动状态卡"
+	//============================================================
+	display_adjust #(
+	    .DATA_W       (24),
+	    .H_ACT        (640),
+	    .V_ACT        (480)
+	) display_adjust_m0(
+	    .video_clk    (video_clk),
+	    .rst          (~rst_n),
+	    .hs_i         (sc_hs),
+	    .vs_i         (sc_vs),
+	    .de_i         (sc_de),
+	    .data_i       (sc_data),
+	    .px_x         (sc_px_x),
+	    .px_y         (sc_px_y),
+	    .menu_active  (menu_active),
+	    .emerg        (emergency),
+	    .bmp_busy     (img_busy),
+	    .bri_level    (bri_level),
+	    .res_level    (res_level),
+	    .pic_manual   (pic_manual),
+	    .ui_mode      (ui_mode),
+	    .hs_o         (fin_hs),
+	    .vs_o         (fin_vs),
+	    .de_o         (fin_de),
+	    .data_o       (fin_data)
+	);
+
+//============================================================
+// 迎新场景 OSD 使能: latch=1(迎新区) 且非应急。
+//  (latch_sw/menu_active/emergency 均在 scene_control 内 sd 域寄存,
+//   组合简单且下游 osd_welcome 内部两级同步, 无亚稳态风险)
+//============================================================
+assign welcome_en = (latch_sw == 3'd1) && ~emergency;
+
 hdmi_tx #(.FAMILY("EG4"))	//EF2、EF3、EG4、AL3、PH1
 
  u3_hdmi_tx
@@ -184,11 +715,11 @@ hdmi_tx #(.FAMILY("EG4"))	//EF2、EF3、EG4、AL3、PH1
 
 		.RST_N (rst_n),
 		
-		//VGA
-		.VGA_HS (hs ),
-		.VGA_VS (vs ),
-		.VGA_DE (de ),
-		.VGA_RGB(vout_data),
+		//VGA(经 OSD 菜单→迎新 OSD→亮度/淡入淡出后)
+		.VGA_HS (fin_hs ),
+		.VGA_VS (fin_vs ),
+		.VGA_DE (fin_de ),
+		.VGA_RGB(fin_data),
 
 		//HDMI
 		.HDMI_CLK_P(HDMI_CLK_P),
@@ -238,8 +769,8 @@ frame_read_write frame_read_write_m0(
 	.write_addr_3               (24'd0            ),
 	.write_addr_index           (2'd0             ), //use only write_addr_0
 	.write_len                  (24'd307200       ), //frame size
-	.write_en                   (sd_card_write_en         ),
-	.write_data                 (sd_card_write_data       )
+	.write_en                   (bmp_scale_wr_en          ),
+	.write_data                 (bmp_scale_wr_data        )
 );
 
 sdram U3

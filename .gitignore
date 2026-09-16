@@ -22,6 +22,10 @@ sim/modelsim.ini
 sim/transcript
 *.wlf
 
+# ===== Python 缓存 =====
+__pycache__/
+*.pyc
+
 # ===== 临时/备份文件 =====
 download.tcl
 *.bak
