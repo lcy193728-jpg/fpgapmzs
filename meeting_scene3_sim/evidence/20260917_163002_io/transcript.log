@@ -1,0 +1,42 @@
+# do run_checks.do
+# Model Technology ModelSim PE vmap 10.3c Lib Mapping Utility 2014.09 Sep 20 2014
+# vmap -modelsim_quiet work work 
+# Modifying modelsim.ini
+# Start time: 16:30:03 on Sep 17,2026
+# vlog rtl/meeting_ctrl.v rtl/meeting_audio.v rtl/meeting_sd_reader.v tb/tb_meeting_edges.v tb/tb_meeting_io.v 
+# Model Technology ModelSim ALTERA vlog 10.3c Compiler 2014.09 Sep 20 2014
+# -- Compiling module meeting_ctrl
+# -- Compiling module meeting_audio
+# -- Compiling module meeting_sd_reader
+# -- Compiling module tb_meeting_edges
+# -- Compiling module tb_meeting_io
+# 
+# Top level modules:
+# 	tb_meeting_edges
+# 	tb_meeting_io
+# End time: 16:30:03 on Sep 17,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+# vsim -c -l runs/20260917_163002_io/transcript.log -do "run_checks.do" 
+# Start time: 16:30:03 on Sep 17,2026
+# Loading work.tb_meeting_io
+# Loading work.meeting_sd_reader
+# Loading work.meeting_audio
+# PASS reader waits for SD initialization
+# PASS sector request address
+# PASS sector request address
+# PASS two sectors and one final-byte marker
+# PASS 48kHz sample enable at exact 25 clocks
+# PASS audio idle silence
+# PASS warning one audible PCM beep
+# PASS timeout exactly two audible beeps
+# PASS alarm repeated beep pattern
+# PASS alarm clear cancels old ordinary sound
+# RESULT checks=10 errors=0
+# ALL TESTS PASSED
+# ** Note: $stop    : tb/tb_meeting_io.v(47)
+#    Time: 375850 ns  Iteration: 1  Instance: /tb_meeting_io
+# Break in Module tb_meeting_io at tb/tb_meeting_io.v line 47
+# Stopped at tb/tb_meeting_io.v line 47
+# 0
+# End time: 16:30:04 on Sep 17,2026, Elapsed time: 0:00:01
+# Errors: 0, Warnings: 0

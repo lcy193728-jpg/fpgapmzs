@@ -1,0 +1,49 @@
+# do run_display.do
+# Model Technology ModelSim PE vmap 10.3c Lib Mapping Utility 2014.09 Sep 20 2014
+# vmap -modelsim_quiet work work 
+# Modifying modelsim.ini
+# Model Technology ModelSim ALTERA vlog 10.3c Compiler 2014.09 Sep 20 2014
+# Start time: 16:32:21 on Sep 17,2026
+# vlog "+incdir+rtl" rtl/meeting_glyph_rom.v rtl/meeting_config.v rtl/meeting_osd.v tb/tb_meeting_display.v 
+# -- Compiling module meeting_glyph_rom
+# -- Compiling module meeting_config
+# -- Compiling module meeting_osd
+# -- Compiling module tb_meeting_display
+# 
+# Top level modules:
+# 	tb_meeting_display
+# End time: 16:32:21 on Sep 17,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+# vsim -c -l runs/20260917_163221_display/transcript.log -do "run_display.do" 
+# Start time: 16:32:21 on Sep 17,2026
+# Loading work.tb_meeting_display
+# Loading work.meeting_config
+# Loading work.meeting_osd
+# Loading work.meeting_glyph_rom
+# PASS display receives parsed TF metadata
+# PASS RGB/sync/coordinates align in full frame
+# PASS RGB/sync/coordinates align in full frame
+# PASS normal countdown green real glyph ink
+# PASS RGB/sync/coordinates align in full frame
+# PASS RGB/sync/coordinates align in full frame
+# PASS warning countdown yellow
+# PASS RGB/sync/coordinates align in full frame
+# PASS overtime red real glyph ink
+# PASS RGB/sync/coordinates align in full frame
+# PASS timeout digits blink
+# PASS RGB/sync/coordinates align in full frame
+# PASS RGB/sync/coordinates align in full frame
+# PASS RGB/sync/coordinates align in full frame
+# PASS alarm freezes meeting notices
+# PASS RGB/sync/coordinates align in full frame
+# PASS notice scroll advances once per frame
+# PASS all four meeting notices loop
+# RESULT checks=18 errors=0
+# ALL TESTS PASSED
+# ** Note: $stop    : tb/tb_meeting_display.v(65)
+#    Time: 30783060 ns  Iteration: 1  Instance: /tb_meeting_display
+# Break in Module tb_meeting_display at tb/tb_meeting_display.v line 65
+# Stopped at tb/tb_meeting_display.v line 65
+# 0
+# End time: 16:32:40 on Sep 17,2026, Elapsed time: 0:00:19
+# Errors: 0, Warnings: 0
