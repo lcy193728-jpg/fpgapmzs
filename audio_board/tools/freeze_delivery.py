@@ -65,12 +65,12 @@ def main():
     (arts/'SHA256SUMS.json').write_text(json.dumps({name+'.bit':results[t]['bit_sha256'] for t,name in
         [('tone','hdmi_tone'),('integrated','pic_sdram_audio')]},indent=2)+'\n')
     (reports/'build_summary.json').write_text(json.dumps({'baseline':BASE,'td_version':'6.2.168116',
-        'simulation_run':False,'hardware_tested':False,'results':results},ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+        'simulation_run':False,'hardware_tested':False,'previous_bottom_layer_hardware_pass_reported_by_user':True,'results':results},ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     (reports/'baseline_git_blobs.json').write_text(json.dumps(baseline,indent=2)+'\n')
     # LF-normalized source snapshot so Git autocrlf does not invalidate it.
     paths=[ROOT/p for p in baseline]
     paths += [p for p in BOARD.rglob('*') if p.is_file() and 'build' not in p.parts and
-              p.suffix in ('.v','.vh','.al','.sdc','.adc')]
+              p.suffix in ('.v','.vh','.al','.sdc','.adc','.inc')]
     paths += [ROOT/'pic_sdram_audio.al']
     snapshot={p.relative_to(ROOT).as_posix():hashlib.sha256(p.read_bytes().replace(b'\r\n',b'\n')).hexdigest() for p in sorted(set(paths))}
     (reports/'source_sha256_lf.json').write_text(json.dumps(snapshot,indent=2)+'\n')
@@ -93,7 +93,10 @@ def main():
         '- 这些警告不作为已证明无影响的结论；队友需同时验证原图、缩放、TF 卡及长时间运行，见 README。',
         '- 25 MHz 对应约 59.524 Hz，沿用原视频时钟；未做 EDID/DDC/HPD 协商，接收器兼容性尚待实测。',
         '- 布线时序余量较小，修改或重新布局后必须重新检查，不以旧报告代替。',
-        '- 未实现各场景不同音源、WAV 读取、语音、应急抢占；本版是共用底层与连续测试音验收版。',
+        '- 本版已接入三种场景旋律、切图提示音与应急报警音；未实现WAV读取/语音，新增联动功能待队友实机验收。',
+        '- 用户确认上一版公共底层已上板正常出声；这不代表本次新增联动状态机及CDC已经实机通过。',
+        '- 新增渐变使用串行移位加法，DSP维持29/29；同一正弦表两个DDS实例各有ROM，BRAM由39增至40。',
+        '- reports/media_math_checks.json为软件数学检查，不是RTL仿真或实机通过证据。',
         '', '## 证据', '',
         '- reports/ 中保留最终完整 TD 日志、布线时序、资源/IO、时序例外及机器可读摘要。',
         '- artifacts/ 中提供本次生成的两个 bit，SHA256SUMS.json 标识其哈希。',

@@ -33,7 +33,7 @@
           <Attr Name="CompileOrder" Val="2" />
         </FileInfo>
       </File>
-      <File Path="../rtl/audio_hdmi_output.v">
+      <File Path="../rtl/audio_event_cdc.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -41,7 +41,7 @@
           <Attr Name="CompileOrder" Val="3" />
         </FileInfo>
       </File>
-      <File Path="../rtl/audio_pcm_fifo.v">
+      <File Path="../rtl/audio_hdmi_output.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -49,7 +49,7 @@
           <Attr Name="CompileOrder" Val="4" />
         </FileInfo>
       </File>
-      <File Path="../rtl/audio_pcm_tone.v">
+      <File Path="../rtl/audio_pcm_fifo.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -57,7 +57,7 @@
           <Attr Name="CompileOrder" Val="5" />
         </FileInfo>
       </File>
-      <File Path="../rtl/audio_video_phase.v">
+      <File Path="../rtl/audio_pcm_tone.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -65,7 +65,7 @@
           <Attr Name="CompileOrder" Val="6" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_audio_acr_packetizer.v">
+      <File Path="../rtl/audio_src_mux.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -73,7 +73,7 @@
           <Attr Name="CompileOrder" Val="7" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_audio_infoframe_packetizer.v">
+      <File Path="../rtl/audio_video_phase.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -81,7 +81,7 @@
           <Attr Name="CompileOrder" Val="8" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_audio_packet_scheduler.v">
+      <File Path="../rtl/hdmi_audio_acr_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -89,7 +89,7 @@
           <Attr Name="CompileOrder" Val="9" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_audio_sample_packetizer.v">
+      <File Path="../rtl/hdmi_audio_infoframe_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -97,7 +97,7 @@
           <Attr Name="CompileOrder" Val="10" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_audio_symbol_core.v">
+      <File Path="../rtl/hdmi_audio_packet_scheduler.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -105,7 +105,7 @@
           <Attr Name="CompileOrder" Val="11" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_avi_infoframe_packetizer.v">
+      <File Path="../rtl/hdmi_audio_sample_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -113,7 +113,7 @@
           <Attr Name="CompileOrder" Val="12" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_bch8.v">
+      <File Path="../rtl/hdmi_audio_symbol_core.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -121,7 +121,7 @@
           <Attr Name="CompileOrder" Val="13" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_data_island_mapper.v">
+      <File Path="../rtl/hdmi_avi_infoframe_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -129,7 +129,7 @@
           <Attr Name="CompileOrder" Val="14" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_data_island_scheduler.v">
+      <File Path="../rtl/hdmi_bch8.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -137,7 +137,7 @@
           <Attr Name="CompileOrder" Val="15" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_terc4_encoder.v">
+      <File Path="../rtl/hdmi_data_island_mapper.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -145,12 +145,36 @@
           <Attr Name="CompileOrder" Val="16" />
         </FileInfo>
       </File>
-      <File Path="../rtl/hdmi_tmds_channel_encoder.v">
+      <File Path="../rtl/hdmi_data_island_scheduler.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
           <Attr Name="BelongTo" Val="design_1" />
           <Attr Name="CompileOrder" Val="17" />
+        </FileInfo>
+      </File>
+      <File Path="../rtl/hdmi_terc4_encoder.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="18" />
+        </FileInfo>
+      </File>
+      <File Path="../rtl/hdmi_tmds_channel_encoder.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="19" />
+        </FileInfo>
+      </File>
+      <File Path="../rtl/pcm_media_tone.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="20" />
         </FileInfo>
       </File>
     </Verilog>

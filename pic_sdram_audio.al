@@ -315,7 +315,7 @@
           <Attr Name="CompileOrder" Val="104" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/audio_hdmi_output.v">
+      <File Path="audio_board/rtl/audio_event_cdc.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -323,7 +323,7 @@
           <Attr Name="CompileOrder" Val="105" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/audio_pcm_fifo.v">
+      <File Path="audio_board/rtl/audio_hdmi_output.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -331,7 +331,7 @@
           <Attr Name="CompileOrder" Val="106" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/audio_pcm_tone.v">
+      <File Path="audio_board/rtl/audio_pcm_fifo.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -339,7 +339,7 @@
           <Attr Name="CompileOrder" Val="107" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/audio_video_phase.v">
+      <File Path="audio_board/rtl/audio_pcm_tone.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -347,7 +347,7 @@
           <Attr Name="CompileOrder" Val="108" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_audio_acr_packetizer.v">
+      <File Path="audio_board/rtl/audio_src_mux.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -355,7 +355,7 @@
           <Attr Name="CompileOrder" Val="109" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_audio_infoframe_packetizer.v">
+      <File Path="audio_board/rtl/audio_video_phase.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -363,7 +363,7 @@
           <Attr Name="CompileOrder" Val="110" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_audio_packet_scheduler.v">
+      <File Path="audio_board/rtl/hdmi_audio_acr_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -371,7 +371,7 @@
           <Attr Name="CompileOrder" Val="111" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_audio_sample_packetizer.v">
+      <File Path="audio_board/rtl/hdmi_audio_infoframe_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -379,7 +379,7 @@
           <Attr Name="CompileOrder" Val="112" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_audio_symbol_core.v">
+      <File Path="audio_board/rtl/hdmi_audio_packet_scheduler.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -387,7 +387,7 @@
           <Attr Name="CompileOrder" Val="113" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_avi_infoframe_packetizer.v">
+      <File Path="audio_board/rtl/hdmi_audio_sample_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -395,7 +395,7 @@
           <Attr Name="CompileOrder" Val="114" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_bch8.v">
+      <File Path="audio_board/rtl/hdmi_audio_symbol_core.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -403,7 +403,7 @@
           <Attr Name="CompileOrder" Val="115" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_data_island_mapper.v">
+      <File Path="audio_board/rtl/hdmi_avi_infoframe_packetizer.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -411,7 +411,7 @@
           <Attr Name="CompileOrder" Val="116" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_data_island_scheduler.v">
+      <File Path="audio_board/rtl/hdmi_bch8.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -419,7 +419,7 @@
           <Attr Name="CompileOrder" Val="117" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_terc4_encoder.v">
+      <File Path="audio_board/rtl/hdmi_data_island_mapper.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
@@ -427,12 +427,36 @@
           <Attr Name="CompileOrder" Val="118" />
         </FileInfo>
       </File>
-      <File Path="audio_board/rtl/hdmi_tmds_channel_encoder.v">
+      <File Path="audio_board/rtl/hdmi_data_island_scheduler.v">
         <FileInfo>
           <Attr Name="UsedInSyn" Val="true" />
           <Attr Name="UsedInP&R" Val="true" />
           <Attr Name="BelongTo" Val="design_1" />
           <Attr Name="CompileOrder" Val="119" />
+        </FileInfo>
+      </File>
+      <File Path="audio_board/rtl/hdmi_terc4_encoder.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="120" />
+        </FileInfo>
+      </File>
+      <File Path="audio_board/rtl/hdmi_tmds_channel_encoder.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="121" />
+        </FileInfo>
+      </File>
+      <File Path="audio_board/rtl/pcm_media_tone.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="122" />
         </FileInfo>
       </File>
     </Verilog>

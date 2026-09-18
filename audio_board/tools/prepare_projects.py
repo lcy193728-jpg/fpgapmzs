@@ -74,31 +74,7 @@ def prepare():
     # The original module name and external ports are unchanged.
     top = re.sub(r'`include "([^"/]+)"',r'`include "../../src/\1"',top)
     pattern = r'hdmi_tx #\(\.FAMILY\("EG4"\)\).*?\n\s*\);'
-    insertion = '''// Public audio bottom layer. Test is continuous in EVERY scene/menu.
-// Future scene sources replace u_audio_test_source via the same PCM interface.
-localparam integer AUDIO_TEST_PROFILE=0; // 0 stereo / 1 left / 2 right
-wire audio_rst_n_ser;
-reset_sync u_audio_serial_reset(.clk(hdmi_5x_clk),.rst_n_async(ext_rst_n),.rst_n_sync(audio_rst_n_ser));
-wire audio_pcm_valid,audio_pcm_ready;
-wire signed [15:0] audio_left,audio_right;
-wire audio_tone_overflow,audio_timing_locked,audio_timing_error;
-wire audio_sequence_error,audio_contract_error;
-wire [31:0] audio_generated_samples,audio_accepted_samples;
-wire [6:0] audio_fifo_level;
-audio_pcm_tone #(.PROFILE(AUDIO_TEST_PROFILE)) u_audio_test_source(
-    .clk(video_clk),.rst_n(rst_n_vid),.enable(1'b1),
-    .sample_valid(audio_pcm_valid),.sample_ready(audio_pcm_ready),
-    .sample_left(audio_left),.sample_right(audio_right),
-    .overflow(audio_tone_overflow),.sample_count(audio_generated_samples));
-audio_hdmi_output u_audio_hdmi(
-    .pixel_clk(video_clk),.serial_clk(hdmi_5x_clk),
-    .pixel_rst_n(rst_n_vid),.serial_rst_n(audio_rst_n_ser),
-    .hs(fin_hs),.vs(fin_vs),.de(fin_de),.rgb(fin_data),
-    .pcm_valid(audio_pcm_valid),.pcm_ready(audio_pcm_ready),.pcm_left(audio_left),.pcm_right(audio_right),
-    .HDMI_CLK_P(HDMI_CLK_P),.HDMI_D0_P(HDMI_D0_P),.HDMI_D1_P(HDMI_D1_P),.HDMI_D2_P(HDMI_D2_P),
-    .timing_locked(audio_timing_locked),.timing_error(audio_timing_error),
-    .sequence_error(audio_sequence_error),.pcm_contract_error(audio_contract_error),
-    .fifo_level(audio_fifo_level),.accepted_samples(audio_accepted_samples));'''
+    insertion = (BOARD/'tools/integrated_audio.v.inc').read_text(encoding='utf-8')
     top,n = re.subn(pattern,lambda _:insertion,top,flags=re.S)
     assert n==1, 'baseline HDMI instance changed: review generator'
     (BOARD/'integrated').mkdir(exist_ok=True)
@@ -149,7 +125,12 @@ audio_hdmi_output u_audio_hdmi(
     adc=(ROOT/'top.adc').read_text(encoding='utf-8')
     (BOARD/'standalone/tone.adc').write_text('\n'.join(l for l in adc.splitlines() if 'HDMI_' in l or re.search(r'\{\s*clk\s*\}',l))+'\n',encoding='utf-8')
     sdc=(ROOT/'top.sdc').read_text(encoding='utf-8')
-    (BOARD/'integrated/audio.sdc').write_text(sdc,encoding='utf-8')
+    (BOARD/'integrated/audio.sdc').write_text(sdc+'''
+# Bundled event payload is held until acknowledge. Capture occurs >=3 pixel
+# cycles after request launch; bound route delay to one 40ns pixel period.
+# Only synchronizer FIRST stages use the existing sync_ff[0] false path.
+set_max_delay -from [get_regs -hier {u_audio_events/payload_hold[*]}] -to [get_regs -hier {u_audio_events/media_id[*] u_audio_events/event_kind[*]}] 40.000 -datapath_only
+''',encoding='utf-8')
     (BOARD/'standalone/tone.sdc').write_text('''# 25 MHz / 125 MHz are RELATED clocks: never false-path the symbol transfer.
 create_clock -name clk -period 20.000 [get_ports {clk}]
 create_generated_clock -name video_clk -source [get_ports {clk}] -master_clock clk -divide_by 2 [get_pins {video_pll_m0/pll_inst.clkc[0]}]

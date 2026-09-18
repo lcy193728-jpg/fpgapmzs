@@ -141,3 +141,8 @@ set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D
 #**************************************************************
 # 输入时钟 clk(R7) 由板级 50MHz 有源晶振直驱, 转换时间为板级固定值,
 # 由器件 input buffer 模型覆盖。保持空白。
+
+# Bundled event payload is held until acknowledge. Capture occurs >=3 pixel
+# cycles after request launch; bound route delay to one 40ns pixel period.
+# Only synchronizer FIRST stages use the existing sync_ff[0] false path.
+set_max_delay -from [get_regs -hier {u_audio_events/payload_hold[*]}] -to [get_regs -hier {u_audio_events/media_id[*] u_audio_events/event_kind[*]}] 40.000 -datapath_only
