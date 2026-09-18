@@ -71,6 +71,27 @@ module frame_read_write
 );
 wire[BURST_BITS - 1:0]                           wrusedw;                    // write used words
 wire[BURST_BITS - 1:0]                           rdusedw;                    // read used words
+//------------------------------------------------------------
+// FIFO 已用字数打一拍(mem_clk 域, 第六讲: 同域逻辑深度超周期 → RTL 层加流水)
+//   根因(实测证据): Async FIFO IP 的 rdusedw 是其内部"写指针同步值 - 读指针"
+//     减法链的输出(IP 内部已耗 ~2.7ns), frame_fifo_write 又直接拿它做
+//     `write_len_latch <= rdusedw + write_cnt` 再驱动 into_burst/状态机,
+//     合计 8.485ns > 8ns(ext_mem_clk 125MHz) → 6 个端点 setup -0.601ns。
+//     属同域(纯 ext_mem_clk)逻辑深度问题, SDC 无法解决(既非跨域也非伪违例),
+//     按课程"改哪一层"应在 RTL 层加一级流水。
+//   语义安全性: rdusedw = "可供突发写出的数据量"。打一拍后取值只会偏小
+//     (偏保守), 而 frame_fifo_write 的两处用法
+//       into_burst = ((write_len_latch <= rdusedw+write_cnt) || rdusedw > BURST_SIZE)
+//     对偏小值均只会**推迟/减少**突发(不会写出 FIFO 里没有的数据),
+//     帧写节奏由 S_CHECK_FIFO 每拍重判, 故功能等价, 仅判定晚 1 拍(8ns)。
+//------------------------------------------------------------
+reg [BURST_BITS - 1:0] rdusedw_r;
+always @(posedge mem_clk or posedge rst) begin
+	if (rst == 1'b1)
+		rdusedw_r <= {BURST_BITS{1'b0}};
+	else
+		rdusedw_r <= rdusedw;
+end
 
 wire 								 App_rd_busy;
 wire								 App_wr_busy;
@@ -131,7 +152,7 @@ frame_fifo_write_m0
 	.write_addr_index           (write_addr_index         ),    
 	.write_len                  (write_len                ),
 	.fifo_aclr                  (write_fifo_aclr          ),
-	.rdusedw                 	(rdusedw                  )
+	.rdusedw                 	(rdusedw_r                )   // 打一拍后使用(见上: 同域逻辑深度流水)
 );
 
 //instantiate an asynchronous FIFO 

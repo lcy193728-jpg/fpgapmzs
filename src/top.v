@@ -15,6 +15,8 @@
 `include "osd_scene.v"
 `include "quiz_ctrl.v"
 `include "bmp_scale.v"
+`include "reset_sync.v"
+`include "sync_2ff.v"
 
 module top(
 	input                       clk,
@@ -59,7 +61,26 @@ always @(posedge clk) begin
     if (!por_cnt[19])
         por_cnt <= por_cnt + 20'd1;   // 计满即停(524288 拍 ≈ 10.5ms@50MHz)
 end
-wire rst_n = por_cnt[19];
+wire rst_n = por_cnt[19];              // POR 完成(仅表示上电已过 ≈10.5ms)
+
+//------------------------------------------------------------
+// 复位源汇总(小鹅通第六讲规范): POR 完成 & 全部 PLL 已锁定
+//   原设计只用 por_cnt[19] 放行, 与 PLL 是否锁定无关 —— 若 PLL 因器件/
+//   温度差异锁定较慢, 系统会在时钟未稳时就开始跑, 属"上电偶发异常"的
+//   来源之一。现改为两条件相与(低有效):
+//     ext_rst_n=0 → 全系统保持复位;
+//     ext_rst_n=1 → 各时钟域由 reset_sync 同步释放(见 PLL 之后的例化)。
+//------------------------------------------------------------
+wire sys_pll_locked;
+wire video_pll_locked;
+wire ext_rst_n = rst_n & sys_pll_locked & video_pll_locked;
+
+// 分域同步释放复位(低有效), 由 PLL 之后的 reset_sync 例化产生:
+wire rst_n_clk;   // clk(50MHz 输入域)      : seg_scan
+wire rst_n_sd;    // sd_card_clk(100MHz) 域 : ui_key_ctrl/scene_control/quiz_ctrl/
+                  //                          sd_card_bmp/bmp_scale/frame_read_write 写侧
+wire rst_n_mem;   // ext_mem_clk(125MHz) 域 : frame_read_write 存储侧 / sdram
+wire rst_n_vid;   // video_clk(25MHz) 域    : 视频时序 / OSD 链 / hdmi_tx
 
 parameter MEM_DATA_BITS         = 32  ;            //external memory user interface data width
 parameter ADDR_BITS             = 21  ;            //external memory user interface address width
@@ -223,11 +244,16 @@ wire                            welcome_en;
 wire [3:0]                      bri_level;     // 亮度档 0..15(ui_key_ctrl 模式1可调)
 wire                            img_busy;      // 底层 BMP 加载忙(sd_card_bmp 导出)
 wire [7:0]                      img_no;        // 当前图序号(sd_card_bmp 导出, ui_key_ctrl 用)
+wire [3:0]                      bmp_error;     // BMP 加载错误码(批次3: 0无/1头校验/2超时/3截断)
 
 //人机交互(ui_key_ctrl)输出
-wire [1:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率
+wire [1:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率/3轮播周期
 wire [3:0]  res_level;      // 分辨率档 0..7
 wire [7:0]  pic_param;      // 图片参数(0=轮播 / N=手动第N张)
+wire [7:0]  ui_period_sec;  // 批次4 轮播间隔档(秒: 2/3/5/10/30)
+wire [31:0] ui_period_cyc;  // 批次4 轮播间隔(时钟周期) → sd_card_bmp
+wire        ui_disp_hold;   // 批次4 参数强显保持中(2 秒)
+wire [1:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时的 ui_mode)
 wire        pic_manual;     // 1=手动单张(冻结自动轮播)
 wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
 wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
@@ -275,32 +301,86 @@ assign vga_data = {vout_data[23:20],vout_data[15:12],vout_data[7:4]};
 //assign vga_out_b  = vout_data[4:0];
 assign sdram_clk = ext_mem_clk;
 //generate SD card controller clock and  SDRAM controller clock
+//※ 第六讲规范: PLL 的 reset 接 ~rst_n(POR 期间保持复位), 并引出 locked
+//   参与复位门控(见 ext_rst_n), 保证时钟稳定后才释放系统复位。
 sys_pll sys_pll_m0(
 	.refclk                     (clk),
 	.clk0_out                   (sd_card_clk),
 	.clk1_out                   (ext_mem_clk),
     .clk2_out					(ext_mem_clk_sft),
-    .reset						(1'b0)
+    .reset						(~rst_n),
+    .locked						(sys_pll_locked)
     );
 //generate video pixel clock	
 video_pll video_pll_m0(
 	.refclk                     (clk),
 	.clk0_out                   (video_clk),
     .clk1_out					(hdmi_5x_clk),
-    .reset						(1'b0)
+    .reset						(~rst_n),
+    .locked						(video_pll_locked)
 	);
+
+//------------------------------------------------------------
+// 分域复位同步(小鹅通第六讲规范: 异步复位、同步释放)
+//   每个时钟域各一个同步器, 两级触发器(释放延迟 2 拍)消除复位撤销时的
+//   亚稳态; 释放沿与本域时钟对齐 → 域内触发器同拍退出复位, 避免"部分
+//   先跑、部分还没跑"的启动竞态。
+//   ※ ext_mem_clk_sft(180° 相移时钟)仅用于采样, 不挂同步器(同课程规范);
+//   ※ hdmi_5x_clk 仅驱动 hdmi_tx 内部串化器, 模块只有一个 RST_N(video 域),
+//     故不单独设同步器。
+//------------------------------------------------------------
+reset_sync u_rst_sync_clk (.clk(clk        ), .rst_n_async(ext_rst_n), .rst_n_sync(rst_n_clk));
+reset_sync u_rst_sync_sd  (.clk(sd_card_clk), .rst_n_async(ext_rst_n), .rst_n_sync(rst_n_sd ));
+reset_sync u_rst_sync_mem (.clk(ext_mem_clk), .rst_n_async(ext_rst_n), .rst_n_sync(rst_n_mem));
+reset_sync u_rst_sync_vid (.clk(video_clk  ), .rst_n_async(ext_rst_n), .rst_n_sync(rst_n_vid));
+
+//------------------------------------------------------------
+// SDRAM 就绪状态跨域同步(小鹅通第六讲规范: 单比特电平跨域)
+//   Sdr_init_done 由 ext_mem_clk(125MHz) 域产生, 这里要送到 sd_card_clk
+//   (100MHz) 域作门控 → 两级同步消亚稳态(晚 2 拍, 对 ms 级启动无影响)。
+//   用途: 实现课程启动序列"复位释放 → SDRAM 初始化 → SD 扫描/加载":
+//         SDRAM 未就绪前, 保持 sd_card_bmp/bmp_scale 复位, 避免 SD 数据
+//         在 SDRAM 未初始化时灌入写 FIFO(JTAG 热重配时该窗口真实存在)。
+//------------------------------------------------------------
+wire Sdr_init_done_sd;
+sync_2ff u_sync_sdr_init (
+    .clk        (sd_card_clk    ),
+    .async_in   (Sdr_init_done  ),
+    .sync_out   (Sdr_init_done_sd)
+);
+wire rst_n_sd_rdy = rst_n_sd & Sdr_init_done_sd;   // sd 域"可开始读写 SD"复位
+
+//------------------------------------------------------------
+// 写通路应答 write_req_ack 跨域同步(小鹅通第六讲规范)
+//   write_req_ack 由 frame_fifo_write 在 ext_mem_clk(125MHz) 域产生, 原先直接
+//   被 sd_card_clk(100MHz) 域的 bmp_read_auto 状态机当电平用 → 未同步的跨域
+//   单比特电平。实测该路径 SWNS -1.199ns / 3 端点, 是真实亚稳态来源(不是伪违例)。
+//   规范做法: 在域边界加两级同步器, 同步后的电平再交给 sd 域使用
+//   (晚 2 拍 = 20ns; 写握手本身是 µs 级节奏, 无影响)。
+//   ※ bmp_scale.frame_start 仍取原始 ack: 该模块内部已有 3 级同步(fs_s0/s1/s2)
+//     并做边沿检测, 不能再叠加延迟, 否则帧起点脉冲与"清写 FIFO"错位。
+//------------------------------------------------------------
+wire write_req_ack_sd;
+sync_2ff u_sync_wr_ack (
+    .clk        (sd_card_clk            ),
+    .async_in   (sd_card_write_req_ack  ),
+    .sync_out   (write_req_ack_sd       )
+);
+
 	
 //============================================================
 // 蓝桥风格人机交互控制器(ui_key_ctrl, sd_card_clk 控制域):
-//   KEY1(A2)=功能模式循环 0图片/切图→1亮度→2缩放→0
+//   KEY1(A2)=功能模式循环 0图片/切图→1亮度→2缩放→3周期→0
 //   KEY2(B2)=当前模式参数 减   KEY3(B1)=当前模式参数 加
 //   KEY4(C1)=**已释放**(顶层保留引脚, 不接逻辑, 留作后续扩展)
 //   模式0(图片/切图): 默认自动轮播; KEY3=下一张 / KEY2=上一张(第1张时按
 //                     KEY2 = 回自动轮播); 按 KEY3 即自动转入手动单张;
-//                     离开模式0(去亮度/缩放)自动回自动轮播
+//                     离开模式0(去亮度/缩放/周期)自动回自动轮播
 //   模式1(亮度): KEY3 + / KEY2 -(0..15)  → display_adjust.bri_level
 //   模式2(缩放): KEY3 + / KEY2 -(0..7)   → bmp_scale 双线性缩放
 //                (档位变化输出 res_chg_pl → 重载当前图, 效果立即可见)
+//   模式3(周期): KEY3 + / KEY2 - 在 2/3/5/10/30 s 档间**环绕** →
+//                ui_period_cyc → bmp_read_auto.slide_interval(轮播间隔运行时可配)
 //   ※ 按键只调参数, 与场景切换无关(场景由拨码决定, 见 scene_control)
 //   ※ 所有场景共用同一套按键语义(全局统一样式)
 //============================================================
@@ -308,7 +388,7 @@ ui_key_ctrl #(
     .BRI_INIT            (4'd8)
 ) ui_key_ctrl_m0(
     .clk                 (sd_card_clk          ),
-    .rst                 (~rst_n               ),
+    .rst                 (~rst_n_sd            ),
     .key1                (key1                 ),
     .key2                (key2                 ),
     .key3                (key3                 ),
@@ -317,6 +397,10 @@ ui_key_ctrl #(
     .mode                (ui_mode              ),
     .bri_level           (bri_level            ),
     .res_level           (res_level            ),
+    .period_sec          (ui_period_sec        ),
+    .period_cycles       (ui_period_cyc        ),
+    .disp_hold           (ui_disp_hold         ),
+    .disp_sel            (ui_disp_sel          ),
     .pic_manual          (pic_manual           ),
     .pic_param           (pic_param            ),
     .key_next_pl         (key_next_pl          ),
@@ -333,7 +417,7 @@ ui_key_ctrl #(
 //============================================================
 scene_control scene_control_m0(
     .clk                 (sd_card_clk          ),
-    .rst                 (~rst_n               ),
+    .rst                 (~rst_n_sd            ),
     .sw_raw              (sw                   ),
     .menu_active         (menu_active          ),
     .latch_sw            (latch_sw             ),
@@ -371,7 +455,7 @@ quiz_ctrl #(
     .TIME_SEC            (8'd10              )
 ) quiz_ctrl_m0(
     .clk                 (sd_card_clk       ),
-    .rst                 (~rst_n            ),
+    .rst                 (~rst_n_sd         ),
     .en                  (quiz_en           ),
     .player_raw          (quiz_btn          ),
     .start_raw           (quiz_start        ),
@@ -389,23 +473,25 @@ assign bmp_slide_en = slideshow_en & ~pic_manual;
 //                     zone_load=场景切换 → 分区重载)
 sd_card_bmp  sd_card_bmp_m0(
 	.clk                        (sd_card_clk              ),
-	.rst                        (~rst_n ),
+	.rst                        (~rst_n_sd_rdy ),
 	.state_code                 (state_code               ),
 	.bmp_width                  (16'd640                 	),  //image width
 	.key_next                   (key_next_pl              ),
 	.key_prev                   (key_prev_pl              ),
 	.slide_en                   (bmp_slide_en             ),
+	.slide_interval             (ui_period_cyc            ),  //批次4 周期档(2/3/5/10/30s)
 	.zone_start                 (zone_start_l             ),
 	.zone_wrap                  (zone_wrap_l              ),
 	.zone_max_img               (zone_max_l               ),
 	.zone_load                  (zone_load_l              ),
 	.reload_req                 (res_chg_pl               ),
 	.write_req                  (sd_card_write_req        ),
-	.write_req_ack              (sd_card_write_req_ack    ),
+	.write_req_ack              (write_req_ack_sd         ),  // ext_mem_clk→sd_card_clk 已两级同步(见 u_sync_wr_ack)
 	.write_en                   (sd_card_write_en         ),
 	.write_data                 (sd_card_write_data       ),
 	.img_no                     (img_no                   ),
 	.img_busy                   (img_busy                 ),
+	.bmp_error                  (bmp_error                ),
 	.SD_nCS                     (sd_ncs                   ),
 	.SD_DCLK                    (sd_dclk                  ),
 	.SD_MOSI                    (sd_mosi                  ),
@@ -429,7 +515,7 @@ sd_card_bmp  sd_card_bmp_m0(
 //============================================================
 bmp_scale bmp_scale_m0(
 	.clk                        (sd_card_clk              ),
-	.rst                        (~rst_n                   ),
+	.rst                        (~rst_n_sd_rdy                   ),
 	.scale_sel                  (res_level                ),
 	.frame_start                (sd_card_write_req_ack    ),
 	.in_en                      (sd_card_write_en         ),
@@ -442,17 +528,27 @@ bmp_scale bmp_scale_m0(
 // 数码管显示(8 位, 用户规格布局):
 //   第1位 = 场景号(0..3)                → seg_data_0
 //   第2~4位 = 当前模式参数(3位十进制, 前导零熄灭)
-//             模式0: 0=轮播 / N=手动第N张; 模式1: 亮度 0..15; 模式2: 档位 0..7
-//   第5位 = 功能模式号(0图片/1亮度/2分辨率) → seg_data_4
+//             模式0: 0=轮播 / N=手动第N张; 模式1: 亮度 0..15;
+//             模式2: 档位 0..7;            模式3: 轮播间隔秒数 2/3/5/10/30
+//             (批次4: 参数刚被改动 → 该值强制保持显示 2 秒后自动返回,
+//              见 ui_key_ctrl 的 disp_hold/disp_sel; 默认观感与之前一致)
+//   第5位 = 功能模式号(0图片/1亮度/2分辨率/3周期) → seg_data_4
 //   第6、7位 = 固定横线 "-" 分隔符      → seg_data_5/6
+//             (批次3: bmp_error≠0 时改为显示 "E" + 错误码 十六进制数字,
+//              即加载出错时第6位=E、第7位=1~3, 正常无错恢复横线。)
 //   第8位 = A=自动轮播 / H=手动单张      → seg_data_7
 //============================================================
+// 参数强显保持: 保持期内用"动作发生时的模式"取值, 否则用当前模式
+//   (disp_sel 只会是 1/2/3 之一 —— 只有模式1/2/3 会产生参数动作)
+wire [1:0] disp_mode = ui_disp_hold ? ui_disp_sel : ui_mode;
+
 // 当前模式对应的参数值(0..255)
 reg [7:0] param_val;
 always @(*) begin
-    case (ui_mode)
+    case (disp_mode)
         2'd1:    param_val = {4'd0, bri_level};   // 亮度档 0..15
         2'd2:    param_val = {4'd0, res_level};   // 分辨率档 0..7
+        2'd3:    param_val = ui_period_sec;       // 轮播间隔秒 2/3/5/10/30
         default: param_val = pic_param;           // 0=轮播 / N=手动第N张
     endcase
 end
@@ -479,9 +575,14 @@ localparam [7:0] SEG_DASH  = 8'hBF;   // 仅 g 段亮 = "-"
 localparam [7:0] SEG_CH_A  = 8'h88;   // 字母 "A" = 自动轮播
 localparam [7:0] SEG_CH_H  = 8'h89;   // 字母 "H" = 手动单张
 
+// 批次3 错误码观测: bmp_error≠0 时第6/7位显示 "E"+错误码(十六进制), 否则横线
+wire        err_show = (bmp_error != 4'd0);
+wire [6:0]  dec_err;
+seg_decoder u_dec_err (.bin_data(bmp_error), .seg_data(dec_err));
+
 seg_scan seg_scan_m0(
 	.clk                        (clk                      ),
-	.rst_n                      (rst_n                    ),
+	.rst_n                      (rst_n_clk                ),
 	.seg_sel                    (seg_sel                  ),
 	.seg_data                   (seg_data                 ),
 	.seg_data_0                 ({1'b1, dec_scene}        ),
@@ -489,8 +590,8 @@ seg_scan seg_scan_m0(
 	.seg_data_2                 (blank_t ? SEG_BLANK : {1'b1, dec_t}),
 	.seg_data_3                 ({1'b1, dec_o}            ),
 	.seg_data_4                 ({1'b1, dec_mode}         ),
-	.seg_data_5                 (SEG_DASH                 ),
-	.seg_data_6                 (SEG_DASH                 ),
+	.seg_data_5                 (err_show ? {1'b1, 7'b000_0110} : SEG_DASH), // "E"
+	.seg_data_6                 (err_show ? {1'b1, dec_err}      : SEG_DASH),
 	.seg_data_7                 (pic_manual ? SEG_CH_H : SEG_CH_A)
 );
 wire hs_0;
@@ -499,7 +600,7 @@ wire de_0;
 video_timing_data video_timing_data_m0
 (
 	.video_clk                  (video_clk                ),
-	.rst                        (~rst_n    ),
+	.rst                        (~rst_n_vid    ),
 	.read_req                   (video_read_req           ),
 	.read_req_ack               (video_read_req_ack       ),
 	//.read_en                    (video_read_en            ),
@@ -512,7 +613,7 @@ video_timing_data video_timing_data_m0
 video_delay video_delay_m0
 (
     .video_clk                  (video_clk                ),
-	.rst                        (~rst_n    ),
+	.rst                        (~rst_n_vid    ),
     .read_en					(video_read_en),
     .read_data					(video_read_data[31:8]),
     .hs                         (hs_0                       ),
@@ -542,7 +643,7 @@ osd_engine #(
     .TEST_Y1      (12'd360)
 ) osd_engine_m0(
     .video_clk    (video_clk),
-    .rst          (~rst_n),
+    .rst          (~rst_n_vid),
     .hs_i         (hs),
     .vs_i         (vs),
     .de_i         (de),
@@ -555,6 +656,34 @@ osd_engine #(
     .data_o       (osd_data),
     .px_x         (px_x),
     .px_y         (px_y)
+);
+
+//============================================================
+// 共享 OSD 字形 ROM(全网仅此一片, 省 BRAM)
+//   三路 OSD 模块(osd_menu / osd_welcome / osd_scene)的字形窗**互斥**:
+//     menu_active / welcome_en / meeting_en|quiz_en|alarm_en 为 SW 单选,
+//     且应急时 menu_active=0、welcome_en=0, 任一时刻至多一路发读请求。
+//   故三路共用一片 ROM: rd_en = 三路读请求之"或", addr = 优先级多路选择。
+//   三模块内部同构(A 级 px2 发地址, ROM 晚一拍回 q → 与 px3 对齐),
+//   因此 rom_en 与 rom_addr 天然同拍, 多路选择不会引入错位。
+//============================================================
+wire        m_rom_en, w_rom_en, s_rom_en;
+wire [12:0] m_rom_addr, w_rom_addr, s_rom_addr;
+wire [31:0] rom_q;
+
+wire        osd_rom_en   = m_rom_en | w_rom_en | s_rom_en;
+wire [12:0] osd_rom_addr = m_rom_en  ? m_rom_addr :
+                           (w_rom_en ? w_rom_addr : s_rom_addr);
+
+osd_font_rom #(
+    .ADDR_W (13),
+    .DEPTH  (5856)
+) u_osd_font_rom (
+    .clk    (video_clk),
+    .rst    (~rst_n_vid),
+    .rd_en  (osd_rom_en),
+    .addr   (osd_rom_addr),
+    .q      (rom_q)
 );
 
 //============================================================
@@ -571,7 +700,7 @@ osd_menu #(
     .V_ACT        (480)
 ) osd_menu_m0(
     .video_clk    (video_clk),
-    .rst          (~rst_n),
+    .rst          (~rst_n_vid),
     .hs_i         (osd_hs),
     .vs_i         (osd_vs),
     .de_i         (osd_de),
@@ -580,6 +709,9 @@ osd_menu #(
     .px_y         (px_y),
     .menu_en      (menu_active),
     .emerg_en     (emergency),
+    .rom_en_o     (m_rom_en),
+    .rom_addr_o   (m_rom_addr),
+    .rom_q        (rom_q),
     .hs_o         (menu_hs),
     .vs_o         (menu_vs),
     .de_o         (menu_de),
@@ -602,7 +734,7 @@ osd_welcome #(
     .V_ACT        (480)
 ) osd_welcome_m0(
     .video_clk    (video_clk),
-    .rst          (~rst_n),
+    .rst          (~rst_n_vid),
     .hs_i         (menu_hs),
     .vs_i         (menu_vs),
     .de_i         (menu_de),
@@ -610,6 +742,9 @@ osd_welcome #(
     .px_x         (menu_px_x),
     .px_y         (menu_px_y),
     .welcome_en   (welcome_en),
+    .rom_en_o     (w_rom_en),
+    .rom_addr_o   (w_rom_addr),
+    .rom_q        (rom_q),
     .hs_o         (wl_hs),
     .vs_o         (wl_vs),
     .de_o         (wl_de),
@@ -633,7 +768,7 @@ osd_scene #(
     .V_ACT        (480)
 ) osd_scene_m0(
     .video_clk    (video_clk),
-    .rst          (~rst_n),
+    .rst          (~rst_n_vid),
     .hs_i         (wl_hs),
     .vs_i         (wl_vs),
     .de_i         (wl_de),
@@ -650,6 +785,9 @@ osd_scene #(
     .run_hh       (run_hh),
     .run_mm       (run_mm),
     .run_ss       (run_ss),
+    .rom_en_o     (s_rom_en),
+    .rom_addr_o   (s_rom_addr),
+    .rom_q        (rom_q),
     .hs_o         (sc_hs),
     .vs_o         (sc_vs),
     .de_o         (sc_de),
@@ -672,6 +810,7 @@ osd_scene #(
 	//     · 缩放档变化 / 切到分辨率模式 → 弹"缩放条"(8 档, 30 帧后消失)
 	//     · 亮度档变化 / 切到亮度模式 → 弹"亮度条"(16 档)
 	//     · KEY4 切轮播↔手动 / 切到图片模式 → 弹"轮播-手动状态卡"
+	//     · 批次4 周期档(ui_mode=3) → 不弹额外提示(沿用上一条提示到期即隐)
 	//============================================================
 	display_adjust #(
 	    .DATA_W       (24),
@@ -679,7 +818,7 @@ osd_scene #(
 	    .V_ACT        (480)
 	) display_adjust_m0(
 	    .video_clk    (video_clk),
-	    .rst          (~rst_n),
+	    .rst          (~rst_n_vid),
 	    .hs_i         (sc_hs),
 	    .vs_i         (sc_vs),
 	    .de_i         (sc_de),
@@ -713,7 +852,7 @@ hdmi_tx #(.FAMILY("EG4"))	//EF2、EF3、EG4、AL3、PH1
 		.PXLCLK_I(video_clk),
 		.PXLCLK_5X_I(hdmi_5x_clk),
 
-		.RST_N (rst_n),
+		.RST_N (rst_n_vid),
 		
 		//VGA(经 OSD 菜单→迎新 OSD→亮度/淡入淡出后)
 		.VGA_HS (fin_hs ),
@@ -731,7 +870,7 @@ hdmi_tx #(.FAMILY("EG4"))	//EF2、EF3、EG4、AL3、PH1
 //video frame data read-write control
 frame_read_write frame_read_write_m0(
     .mem_clk					(ext_mem_clk),
-    .rst						(~rst_n),
+    .rst						(~rst_n_mem),
     .Sdr_init_done				(Sdr_init_done),
     .Sdr_init_ref_vld			(Sdr_init_ref_vld),
     .Sdr_busy					(Sdr_busy),
@@ -777,7 +916,7 @@ sdram U3
 (
 .Clk				(ext_mem_clk),
 .Clk_sft			(ext_mem_clk_sft),
-.Rst				(~rst_n),
+.Rst				(~rst_n_mem),
     
 .Sdr_init_done		(Sdr_init_done),
 .Sdr_init_ref_vld	(Sdr_init_ref_vld),

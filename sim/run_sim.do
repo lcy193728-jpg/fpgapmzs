@@ -1,8 +1,11 @@
 #====================================================================
-# ModelSim 仿真脚本：bmp_read_auto 分区自动轮播 + 场景分区重载
+# ModelSim 仿真脚本：bmp_read_auto 分区自动轮播 + 场景分区重载 + 批次3 容错恢复
 # 用法：在 ModelSim 命令行(Transcript)执行  do {本文件路径}
 #   或先 File -> Change Directory 到 sim 目录，再执行  do run_sim.do
 #====================================================================
+
+# 0. 清旧库(避免上次编译残留)
+if {[file exists work]} { file delete -force work }
 
 # 1. 建立工作库
 vlib work
@@ -32,6 +35,18 @@ add wave /tb_bmp_read_auto/zone_load
 
 add wave -divider "状态机"
 add wave -radix unsigned /tb_bmp_read_auto/state_code
+
+add wave -divider "批次3 容错(错误码/超时/快跳)"
+add wave -radix unsigned /tb_bmp_read_auto/bmp_error
+add wave /tb_bmp_read_auto/err_header_seen
+add wave /tb_bmp_read_auto/err_timeout_seen
+add wave /tb_bmp_read_auto/bad_skip_ok
+add wave /tb_bmp_read_auto/stall_skip_ok
+add wave -radix unsigned /tb_bmp_read_auto/stall_read_cnt
+add wave -radix unsigned /tb_bmp_read_auto/dut/pixel_cnt
+add wave -radix unsigned /tb_bmp_read_auto/dut/retry_cnt
+add wave -radix unsigned /tb_bmp_read_auto/dut/sd_timeout_cnt
+add wave -radix unsigned /tb_bmp_read_auto/dut/file_base_addr
 
 add wave -divider "图序号/读入口(验证下一张/上一张)"
 add wave -radix unsigned /tb_bmp_read_auto/img_no

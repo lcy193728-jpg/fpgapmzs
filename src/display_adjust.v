@@ -53,7 +53,8 @@ module display_adjust #(
     parameter [15:0] MAN_HOLD_FRAMES = 16'd30, // 轮播/手动状态卡保持帧数
     parameter [1:0]  MODE_PIC = 2'd0,    // 与 ui_key_ctrl 一致的模式编码
     parameter [1:0]  MODE_BRI = 2'd1,
-    parameter [1:0]  MODE_RES = 2'd2
+    parameter [1:0]  MODE_RES = 2'd2,
+    parameter [1:0]  MODE_PERIOD = 2'd3  // 批次4: 轮播周期档(不弹 HUD)
 )(
     input                video_clk,      // 像素时钟(≈25.175MHz)
     input                rst,            // 高有效复位
@@ -196,6 +197,8 @@ module display_adjust #(
                 case (mode_s)
                     MODE_BRI: bar_cnt <= BAR_HOLD_FRAMES;   // 切到亮度模式 → 亮度条
                     MODE_RES: res_cnt <= RES_HOLD_FRAMES;   // 切到分辨率模式 → 缩放条
+                    MODE_PERIOD: ;                          // 周期档(批次4): 弹窗沿用
+                                                            // 上一条提示, 不额外弹卡
                     default : man_cnt <= MAN_HOLD_FRAMES;   // 切到图片模式 → 轮播/手动卡
                 endcase
             end

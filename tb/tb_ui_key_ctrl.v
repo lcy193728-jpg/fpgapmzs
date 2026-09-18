@@ -1,16 +1,21 @@
 //====================================================================
-// 模块名 : tb_ui_key_ctrl.v  (2026-09-16 改版: 切图并入模式0, KEY4 释放)
+// 模块名 : tb_ui_key_ctrl.v  (2026-09-17 批次4: 新增"周期"档 + 参数强显保持)
 // 功能   : 全局统一人机交互控制器(ui_key_ctrl)仿真
 // 规格(四个场景下语义完全一致, 与场景解耦):
-//   KEY1 : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→0
+//   KEY1 : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→0
 //   KEY2 : 当前模式参数 减 / KEY3 : 当前模式参数 加
 //     模式0 图片/切图 : 默认自动轮播; KEY3=下一张(并转入手动单张);
 //                       KEY2=上一张(已在第1张时改为回自动轮播);
-//                       离开模式0(去亮度/缩放)自动回自动轮播
+//                       离开模式0(去亮度/缩放/周期)自动回自动轮播
 //     模式1 亮度 : 0..15(默认8), 到边界钳位
 //     模式2 缩放 : 0..7(默认4=100%), 到边界钳位; 有效变化时发 res_chg_pl
+//     模式3 周期 : 2/3/5/10/30s(默认3s), KEY3/KEY2 环绕调档;
+//                  输出 period_cycles = 秒数×CLK_FREQ_HZ
+//   参数强显保持: 任一参数动作 → disp_hold 拉高 DISP_HOLD_CYCLES,
+//                 disp_sel 锁存动作时的模式(顶层据此强显该参数值)
 //   KEY4 : **已释放**(不再参与逻辑, 顶层引脚保留备用)
 // 说明   : 消抖 10ms 对仿真太慢, 用 defparam 把 3 个消抖计数器缩到 100 拍;
+//          保持时长 2s 同样用 defparam 缩到 500 拍, 否则远超仿真超时。
 //          按键统一"上拉高、按下低", 一次按键一个下降沿脉冲。
 //====================================================================
 
@@ -28,6 +33,10 @@ module tb_ui_key_ctrl;
     wire [1:0]  mode;
     wire [3:0]  bri_level;
     wire [3:0]  res_level;
+    wire [7:0]  period_sec;
+    wire [31:0] period_cycles;
+    wire        disp_hold;
+    wire [1:0]  disp_sel;
     wire        pic_manual;
     wire [7:0]  pic_param;
     wire        key_next_pl;
@@ -49,6 +58,10 @@ module tb_ui_key_ctrl;
         .mode       (mode),
         .bri_level  (bri_level),
         .res_level  (res_level),
+        .period_sec (period_sec),
+        .period_cycles(period_cycles),
+        .disp_hold  (disp_hold),
+        .disp_sel   (disp_sel),
         .pic_manual (pic_manual),
         .pic_param  (pic_param),
         .key_next_pl(key_next_pl),
@@ -60,6 +73,8 @@ module tb_ui_key_ctrl;
     defparam dut.u_k1.DEB_MAX = 20'd100;
     defparam dut.u_k2.DEB_MAX = 20'd100;
     defparam dut.u_k3.DEB_MAX = 20'd100;
+    // 缩短参数强显保持(仅仿真; 上板用默认 2s = 200_000_000 拍)
+    defparam dut.DISP_HOLD_CYCLES = 32'd3000;
 
     // 脉冲捕获
     always @(posedge clk or posedge rst) begin
@@ -82,8 +97,8 @@ module tb_ui_key_ctrl;
             end
             else begin
                 fail_cnt = fail_cnt + 1;
-                $display("t=%0t  [FAIL] %0s  (mode=%0d bri=%0d res=%0d manual=%0b param=%0d)",
-                         $time, msg, mode, bri_level, res_level, pic_manual, pic_param);
+                $display("t=%0t  [FAIL] %0s  (mode=%0d bri=%0d res=%0d prd=%0ds manual=%0b param=%0d)",
+                         $time, msg, mode, bri_level, res_level, period_sec, pic_manual, pic_param);
             end
         end
     endtask
@@ -128,16 +143,21 @@ module tb_ui_key_ctrl;
         check(mode == 2'd0 && bri_level == 4'd8 && res_level == 4'd4 &&
               pic_manual == 1'b0 && pic_param == 8'd0,
               "上电默认: 模式0图片/亮度8/缩放4(100%)/自动轮播");
+        check(period_sec == 8'd3 && period_cycles == 32'd300_000_000,
+              "上电默认: 轮播周期档=3s(=300_000_000 周期, 与原固定间隔一致)");
+        check(disp_hold == 1'b0, "上电默认: 无参数强显保持");
 
-        //-------- 2. KEY1 功能模式循环 0→1→2→0→1 --------
+        //-------- 2. KEY1 功能模式循环 0→1→2→3→0→1 --------
         press1;
         check(mode == 2'd1, "KEY1 第1按 -> 模式1 亮度");
         press1;
         check(mode == 2'd2, "KEY1 第2按 -> 模式2 缩放");
         press1;
-        check(mode == 2'd0, "KEY1 第3按 -> 模式0 图片(循环回绕)");
+        check(mode == 2'd3, "KEY1 第3按 -> 模式3 轮播周期");
         press1;
-        check(mode == 2'd1, "KEY1 第4按 -> 模式1 亮度");
+        check(mode == 2'd0, "KEY1 第4按 -> 模式0 图片(循环回绕)");
+        press1;
+        check(mode == 2'd1, "KEY1 第5按 -> 模式1 亮度");
 
         //-------- 3. 模式1: 亮度 KEY3+/KEY2- 与边界钳位 --------
         clear_flags;                       // 之后整段不应出现 res_chg_pl
@@ -183,7 +203,9 @@ module tb_ui_key_ctrl;
               "模式2 回到缩放 4(100%) / 亮度未被改动");
 
         //-------- 5. 模式0: 切图(KEY2/KEY3 即上一张/下一张, 无需独立切换键) ----
-        press1;                             // 2->0
+        press1;                             // 2->3(周期)
+        check(mode == 2'd3, "KEY1 -> 模式3 周期(经过周期档)");
+        press1;                             // 3->0
         check(mode == 2'd0, "KEY1 -> 模式0 图片/切图");
         check(pic_manual == 1'b0 && pic_param == 8'd0,
               "刚进模式0 -> 默认自动轮播(上电/切场景/切模式回来一律如此)");
@@ -230,7 +252,8 @@ module tb_ui_key_ctrl;
         check(~next_seen && res_level == 4'd5, "模式2 KEY3 -> 只调缩放, 不切图");
         clear_flags; press2;                // 5->4, 复位缩放档便于后续用例
         check(res_level == 4'd4, "模式2 KEY2 -> 缩放回到 4(100%)");
-        press1;                             // 2->0
+        press1;                             // 2->3(周期)
+        press1;                             // 3->0
         press1;                             // 0->1
         check(mode == 2'd1, "KEY1 -> 模式1(进入消抖鲁棒性测试段)");
 
@@ -260,6 +283,48 @@ module tb_ui_key_ctrl;
         key3 = 1'b0; settle(110); key3 = 1'b1; settle(110);   // 第 2 次
         check(res_level == 4'd6 && rchg_seen,
               "快速连按 KEY2... KEY3 两次(各 110 拍) -> 缩放 4->6(连按不丢键)");
+
+        //-------- 7. 模式3 周期档(批次4): KEY1 进入, KEY2/KEY3 环绕调档 --------
+        press1;                             // 2->3
+        check(mode == 2'd3, "KEY1 -> 模式3 轮播周期");
+        check(period_sec == 8'd3,
+              "周期档默认值 = 3s(与原固定 SLIDE_INTERVAL 一致, 默认行为不变)");
+
+        clear_flags;                        // 之后整段不应出现切图/缩放重载脉冲
+        press3; check(period_sec == 8'd5,  "周期档 KEY3 -> 3s→5s");
+        press3; check(period_sec == 8'd10, "周期档 KEY3 -> 5s→10s");
+        press3; check(period_sec == 8'd30, "周期档 KEY3 -> 10s→30s");
+        press3; check(period_sec == 8'd2,  "周期档 KEY3 到顶环绕 -> 30s→2s");
+        check(period_cycles == 32'd200_000_000,
+              "2s 档 -> 周期数 200_000_000(=2s×100MHz)");
+        press2; check(period_sec == 8'd30, "周期档 KEY2 到底环绕 -> 2s→30s");
+        press2; check(period_sec == 8'd10, "周期档 KEY2 -> 30s→10s");
+        press2; check(period_sec == 8'd5,  "周期档 KEY2 -> 10s→5s");
+        press2; check(period_sec == 8'd3,  "周期档 KEY2 -> 5s→3s(调回默认)");
+        check(~next_seen && ~prev_seen && ~rchg_seen,
+              "周期档调档 -> 不切图(无上/下一张脉冲)、不触发缩放重载");
+
+        //-------- 8. 参数强显保持(2s, 仿真 defparam 缩到 3000 拍) --------
+        //   (a) 刚在周期档调过档 → 保持中, 显示选择=周期档(3)
+        check(disp_hold == 1'b1 && disp_sel == 2'd3,
+              "刚调周期档 -> 参数强显保持中, disp_sel=周期档(顶层据此强显秒数)");
+        settle(3500);                       // > 保持时长
+        check(disp_hold == 1'b0,
+              "保持超时 -> disp_hold 自动落低(回到常规显示)");
+
+        //   (b) 模式1 调亮度 → disp_sel=1; 切到模式2 后保持期内仍锁定亮度
+        press1;                             // 3->0
+        press1;                             // 0->1
+        check(mode == 2'd1, "KEY1 -> 模式1 亮度");
+        press3;                             // 亮度 9->10
+        check(bri_level == 4'd10 && disp_hold == 1'b1 && disp_sel == 2'd1,
+              "模式1 调亮度 -> 保持中, disp_sel=亮度");
+        press1;                             // 1->2(离开亮度档)
+        check(mode == 2'd2 && disp_hold == 1'b1 && disp_sel == 2'd1,
+              "离开模式1 后保持期内 disp_sel 仍=亮度(第2~4位继续显示亮度值 2 秒)");
+        settle(3500);
+        check(disp_hold == 1'b0 && mode == 2'd2,
+              "保持到期 -> 退回常规显示(按当前模式2 取缩放值), 模式本身不变");
 
         $display("=== ui_key_ctrl 仿真结束,失败数=%0d ===", fail_cnt);
         if (fail_cnt == 0) $display("=== [ALL PASS] ===");

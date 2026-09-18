@@ -51,29 +51,32 @@ module tb_osd_menu;
 
     //================================================================
     // 菜单帧期望逐色计数(几何公式推导, 见下方分组算式):
-    //   ROM 墨点(gen 打印): TITLE=797(2×,×4=3188)  CT0..3=363/270/355/393(各×4)
-    //     TG0..3=644/666/600/644(1×)  MARQ=1493(每行两整周期,×2=2986)
-    //   白色=3188+4×(363+270+355+393)=3188+5524=8712
-    //   副标题=644+666+600+644=2554;  滚动橙=1493×2=2986
-    //   金线=2行×288px(x176..463)=576
+    //   ★V3.4 定版字库(思源黑体 / Noto Sans SC; 32×32 真字模 2× 带 + 16px 直渲 1× 带)
+    //     对应的墨点(gen 打印):
+    //     TITLE=2616(1:1)  CT0..3=1129/888/1122/1114  TG0..3=532/499/513/536
+    //     MARQ=1295(带内一周期 = 320px)
+    //   白色 = 2616 + 4 卡标题(1129+888+1122+1114=4253) = 6869
+    //   副标题 = 532+499+513+536 = 2080;  滚动橙 = 1295×2(整行含两周期) = 2590
+    //   金线 = 2行×288px(x176..463) = 576
     //   卡: 每卡 色块8×80=640 / 描边2120 / 内衬37240-卡字 / 卡外BG列2×5600
-    //   宣传黑底=42行×640-2986=23894
-    //   BG_FULL=116556 (0..27行17920 + 标题行20480-3188 + 60..63行2560
+    //   宣传黑底 = 42行×640 − 2590 = 24290
+    //   BG_FULL = (0..27行17920 + 标题行20480-2616 + 60..63行2560
     //     + 金线行1280-576 + 66..79行8960 + 卡外11200×4 + 卡间3×6400
-    //     + 430..437行5120)
-    //   校验和: 116556+140882+8480+2560+8712+2554+2986+576+23894=307200
+    //     + 430..437行5120) = 117128
+    //   卡片内衬 = 4×(40000-640-2120) − 4253 − 2080 = 142627
+    //   校验和: 117128+142627+8480+2560+6869+2080+2590+576+24290 = 307200
     //================================================================
     localparam TOT_PIX   = H_ACT * V_ACT;              // 307200
     localparam EMERG_PIX = 52 * H_ACT;                 // 33280
-    localparam EX_BGFULL = 116556;
-    localparam EX_CARD   = 140882;
+    localparam EX_BGFULL = 117128;
+    localparam EX_CARD   = 142627;
     localparam EX_BD     = 8480;
     localparam EX_ACC    = 640;
-    localparam EX_TXTW   = 8712;
-    localparam EX_TAG    = 2554;
-    localparam EX_MARQ   = 2986;
+    localparam EX_TXTW   = 6869;
+    localparam EX_TAG    = 2080;
+    localparam EX_MARQ   = 2590;
     localparam EX_ULINE  = 576;
-    localparam EX_MQBG   = 23894;
+    localparam EX_MQBG   = 24290;
 
     //--------------- 信号 ----------------
     reg         clk;
@@ -101,6 +104,18 @@ module tb_osd_menu;
     integer     phase_bad;              // 相位步进失败次数
 
     //--------------- 例化被测模块 ----------------
+    // 共享字形 ROM(与 top.v 同构: 实体在 TB 顶层例化, 被 u_menu 读)
+    wire        rom_en_m;
+    wire [12:0] rom_addr_m;
+    wire [31:0] rom_q;
+    osd_font_rom #(.ADDR_W(13), .DEPTH(5856)) u_font_rom (
+        .clk   (clk),
+        .rst   (rst),
+        .rd_en (rom_en_m),
+        .addr  (rom_addr_m),
+        .q     (rom_q)
+    );
+
     osd_menu #(
         .DATA_W     (24),
         .H_ACT      (H_ACT),
@@ -117,6 +132,9 @@ module tb_osd_menu;
         .px_y      (py_i),
         .menu_en   (menu_en),
         .emerg_en  (emerg_en),
+        .rom_en_o  (rom_en_m),
+        .rom_addr_o(rom_addr_m),
+        .rom_q     (rom_q),
         .hs_o      (hs_o),
         .vs_o      (vs_o),
         .de_o      (de_o),
@@ -200,24 +218,24 @@ module tb_osd_menu;
 
     task check_spots; begin
         if (valid_cnt == 2) begin
-            // ---- 文字带采样点(gen 打印) ----
-            chk(182, 30, C_TXTW, "TITLE ON");
+            // ---- 文字带采样点(V3.4 思源黑体字库, gen 打印) ----
+            chk(182, 29, C_TXTW, "TITLE ON");
             chk(176, 28, C_BGFULL,"TITLE OFF");
-            chk(100, 94, C_TXTW, "CT0 ON");
+            chk(115, 93, C_TXTW, "CT0 ON");
             chk( 98, 92, C_CARD, "CT0 OFF");
-            chk(112,184, C_TXTW, "CT1 ON");
+            chk(114,183, C_TXTW, "CT1 ON");
             chk( 98,182, C_CARD, "CT1 OFF");
-            chk(104,274, C_TXTW, "CT2 ON");
+            chk(104,273, C_TXTW, "CT2 ON");
             chk( 98,272, C_CARD, "CT2 OFF");
-            chk(114,364, C_TXTW, "CT3 ON");
+            chk(113,363, C_TXTW, "CT3 ON");
             chk( 98,362, C_CARD, "CT3 OFF");
-            chk(101,133, C_TAG,  "TG0 ON");
+            chk(101,132, C_TAG,  "TG0 ON");
             chk( 98,132, C_CARD, "TG0 OFF");
-            chk(101,223, C_TAG,  "TG1 ON");
+            chk(117,222, C_TAG,  "TG1 ON");
             chk( 98,222, C_CARD, "TG1 OFF");
-            chk(104,313, C_TAG,  "TG2 ON");
+            chk(104,312, C_TAG,  "TG2 ON");
             chk( 98,312, C_CARD, "TG2 OFF");
-            chk(106,403, C_TAG,  "TG3 ON");
+            chk(106,402, C_TAG,  "TG3 ON");
             chk( 98,402, C_CARD, "TG3 OFF");
             // ---- 矢量几何特征点 ----
             chk(  5,  5, C_BGFULL,"BG 顶");

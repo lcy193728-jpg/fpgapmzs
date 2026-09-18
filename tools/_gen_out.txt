@@ -1,0 +1,76 @@
+﻿垂直定位 cell=16: top_rel=14 ink_h=17 → 墨盒占 0..16 行
+垂直定位 cell=32: top_rel=28 ink_h=33 → 墨盒占 0..32 行
+======== gen_osd_font V3 输出 ========
+字体=msyh.ttc  字模: scale=2 用 32×32(直渲 th112) / scale=1 用 16×16(超采1× th128)
+ROM 位宽=32bit  深度(words)=5856  ADDR_W=13  (183Kbit)
+---- 分区 base 表(★RTL 里的 base 常量必须与此一致) ----
+  TITLE    base=    0 N= 9 cell=32 scale=2 ty= 28 gx=176 墨点=2882 "校园多功能信息终端"
+  CT0      base=  288 N= 4 cell=32 scale=2 ty= 92 gx= 98 墨点=1269 "迎新展示"
+  CT1      base=  416 N= 4 cell=32 scale=2 ty=182 gx= 98 墨点= 985 "会议公示"
+  CT2      base=  544 N= 4 cell=32 scale=2 ty=272 gx= 98 墨点=1260 "抢答现场"
+  CT3      base=  672 N= 4 cell=32 scale=2 ty=362 gx= 98 墨点=1283 "应急告警"
+  TG0      base=  800 N= 7 cell=16 scale=1 ty=132 gx= 98 墨点= 555 "轮播与手动切图"
+  TG1      base=  912 N= 7 cell=16 scale=1 ty=222 gx= 98 墨点= 548 "日程与滚动字幕"
+  TG2      base= 1024 N= 7 cell=16 scale=1 ty=312 gx= 98 墨点= 575 "多路与硬件仲裁"
+  TG3      base= 1136 N= 7 cell=16 scale=1 ty=402 gx= 98 墨点= 563 "应急最高优先级"
+  MARQ     base= 1248 N=20 cell=16 scale=1 ty=451 gx=  0 墨点=1368 "欢迎使用 校园信息终端 ＳＷ键 切换场景"
+  W_TITLE  base= 1568 N= 7 cell=32 scale=2 ty= 14 gx=208 墨点=2102 "热烈欢迎新同学"
+  W_PLACE  base= 1792 N=10 cell=16 scale=1 ty=400 gx= 85 墨点= 755 "报到地点：东区体育馆"
+  W_CONT   base= 1952 N=15 cell=16 scale=1 ty=400 gx=355 墨点= 659 "新生QQ群：123456789"
+  W_FLOW   base= 2192 N=20 cell=16 scale=1 ty=452 gx=  0 墨点=1218 "迎新报到流程 签到 领卡 入住 军训物资"
+  MT_TITLE base= 2512 N= 8 cell=32 scale=2 ty= 14 gx=192 墨点=2307 "校园会议信息公示"
+  MA0      base= 2768 N=10 cell=16 scale=1 ty=196 gx=240 墨点= 670 "第一会议室 项目评审"
+  MA1      base= 2928 N=10 cell=16 scale=1 ty=196 gx=240 墨点= 640 "第二会议室 学术报告"
+  MA2      base= 3088 N=10 cell=16 scale=1 ty=196 gx=240 墨点= 658 "第三会议室 社团例会"
+  MA3      base= 3248 N=10 cell=16 scale=1 ty=196 gx=240 墨点= 672 "综合报告厅 迎新宣讲"
+  M_RUN    base= 3408 N= 3 cell=16 scale=1 ty= 76 gx=396 墨点= 196 "已运行"
+  M_FOOT   base= 3456 N=20 cell=16 scale=1 ty=452 gx=  0 墨点=1430 "会议进行中 请保持安静 并将手机调至静音"
+  QT_TITLE base= 3776 N= 5 cell=32 scale=2 ty= 20 gx=240 墨点=1372 "抢答进行中"
+  QW_WAIT  base= 3936 N= 4 cell=32 scale=2 ty= 96 gx=256 墨点=1223 "等待开始"
+  QR_READY base= 4064 N= 3 cell=32 scale=2 ty= 96 gx=272 墨点= 821 "抢答中"
+  QWL_WIN  base= 4160 N= 2 cell=32 scale=2 ty= 96 gx=192 墨点= 573 "选手"
+  QWR_WIN  base= 4224 N= 5 cell=32 scale=2 ty= 96 gx=288 墨点=1483 "号抢答成功"
+  QN_NONE  base= 4384 N= 8 cell=32 scale=2 ty= 96 gx=192 墨点=1925 "时间到 无人抢答"
+  QS_SEC   base= 4640 N= 1 cell=32 scale=2 ty=180 gx=336 墨点= 298 "秒"
+  Q_FOOT   base= 4672 N=20 cell=16 scale=1 ty=452 gx=  0 墨点=1516 "请各位选手仔细听题 抢答请按键 先按先得"
+  AT_TITLE base= 4992 N=10 cell=32 scale=2 ty= 82 gx=160 墨点=2972 "紧急情况 请立即疏散"
+  A_FOOT   base= 5312 N=24 cell=16 scale=1 ty=452 gx=  0 墨点=1780 "紧急告警 请全体人员沿疏散通道迅速撤离 注意安全"
+  NUM      base= 5696 N=10 cell=16 scale=1 ty=  0 gx=  0 墨点= 344 "0123456789"
+静态文字带采样点 (物理像素, ON=字形应写字色 / OFF=字形区内应底色):
+  TITLE    ON=(181,28)  OFF=(176,28)
+  CT0      ON=(101,92)  OFF=(98,92)
+  CT1      ON=(112,183)  OFF=(98,182)
+  CT2      ON=(104,272)  OFF=(98,272)
+  CT3      ON=(113,362)  OFF=(98,362)
+  TG0      ON=(101,132)  OFF=(98,132)
+  TG1      ON=(102,222)  OFF=(98,222)
+  TG2      ON=(104,312)  OFF=(98,312)
+  TG3      ON=(106,402)  OFF=(98,402)
+  W_TITLE  ON=(214,14)  OFF=(208,14)
+  W_PLACE  ON=(88,400)  OFF=(85,400)
+  W_CONT   ON=(360,400)  OFF=(355,400)
+  MT_TITLE ON=(197,14)  OFF=(192,14)
+  MA0      ON=(243,196)  OFF=(240,196)
+  MA1      ON=(243,196)  OFF=(240,196)
+  MA2      ON=(243,196)  OFF=(240,196)
+  MA3      ON=(243,196)  OFF=(240,196)
+  M_RUN    ON=(397,76)  OFF=(396,76)
+  QT_TITLE ON=(246,20)  OFF=(240,20)
+  QW_WAIT  ON=(262,96)  OFF=(256,96)
+  QR_READY ON=(278,96)  OFF=(272,96)
+  QWL_WIN  ON=(211,97)  OFF=(192,96)
+  QWR_WIN  ON=(294,96)  OFF=(288,96)
+  QN_NONE  ON=(217,96)  OFF=(192,96)
+  QS_SEC   ON=(356,180)  OFF=(336,180)
+  AT_TITLE ON=(179,82)  OFF=(160,82)
+数字带 NUM 逐字符墨点(下标=字符 0..9): [39, 26, 35, 32, 31, 31, 42, 25, 43, 40]
+滚动宣传语: 行451~466 条带黑底行438~479, 带宽20格/行(=×16px)
+应急红条: 行0~51 全区宽
+卡片: top=[80, 170, 260, 350] h=80 gap=10 x=[70,570) 左侧8px色块/边框/标题/副标题见 osd_menu
+---- 场景 2/3/4 几何(与 src/osd_scene.v 同源) ----
+  会议: 标题2×(ty14,gx192,N8) 公告1×(ty196,gx240,N10,4条) 运行标签1×(ty76,gx396,N3) 滚动(ty452,N20/周期320px)
+  抢答: 标题2×(ty20,gx240,N5) 状态2×(ty96,gx256/272/192/288) 倒计时秒2×(ty180,gx336,N1) 滚动(ty452,N20/320px)
+  应急: 标题2×(ty82,gx160,N10) 滚动(ty452,N24/384px)
+  数字带 NUM: N10(0~9), 硬件按 digit 选列(base 见上表)
+已生成: E:\FPGA\ALST\fpgapmzs\src\osd_font_rom.v  (5961 行)
+==========================================

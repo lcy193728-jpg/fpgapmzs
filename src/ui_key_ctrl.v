@@ -2,7 +2,7 @@
 // 模块名 : ui_key_ctrl.v —— 全局统一人机交互控制器(2026-09-16 改版)
 //
 // 设计目标(全局统一样式, 与场景完全解耦: 四个场景下按键含义一致):
-//   KEY1(A2) : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→0
+//   KEY1(A2) : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→0
 //   KEY2(B2) : 当前模式参数 减
 //   KEY3(B1) : 当前模式参数 加
 //   KEY4(C1) : **已释放(不使用)** —— 原"自动↔手动"改由模式0统一承担
@@ -21,6 +21,20 @@
 //                 0/1/2/3/4/5/6/7 → 25%/33%/50%/67%/100%/150%/200%/300%
 //                 (真实生效: 送 bmp_scale 双线性插值缩放引擎重采样后写帧缓存)
 //                 档位变化时给出 res_chg_pl 脉冲 → 重载当前图, 效果立即可见
+//   模式3 周期  : 参数 = **自动轮播间隔档**(2/3/5/10/30 s, 默认 3s —— 与原
+//                 固定参数 SLIDE_INTERVAL(3s@100MHz) 完全一致, 保证默认
+//                 观感与行为不变)
+//                 KEY3 加档 / KEY2 减档, 到端点**环绕**(0→1→2→3→4→0),
+//                 与亮度/缩放的"边界钳位"不同(档位是离散枚举, 环绕更顺手)。
+//                 输出 period_cycles(周期数) 送 bmp_read_auto 的运行时
+//                 轮播间隔输入。进入本档同样回自动轮播(否则计时器不跑)。
+//
+// 数码管"参数强显保持"(小鹅通第三讲 seg7_panel 的 HOLD 机制):
+//   · 任何一次参数动作(亮度/缩放/周期 ±) → 输出 disp_hold 拉高 2 秒,
+//     并锁存当时所在模式 disp_sel; 顶层据此让第2~4位临时显示该参数值,
+//     2 秒后自动回到"当前模式"的常规显示。
+//   · 默认观感不变: 在模式1/2/3 内本就在显示对应参数, 加不加保持都一样;
+//     只有"调完参数立刻切回模式0"时, 参数值会多留 2 秒再回到图序号。
 //
 // 其它约定:
 //   · 按键统一"上拉高、按下拉低", 本模块内部两级同步 + 10ms 计数器消抖,
@@ -43,21 +57,31 @@ module ui_key_ctrl #(
     parameter [3:0] RES_MAX  = 4'd7,       // 缩放上限
     parameter [1:0] MODE_PIC = 2'd0,       // 功能模式: 图片
     parameter [1:0] MODE_BRI = 2'd1,       // 功能模式: 亮度
-    parameter [1:0] MODE_RES = 2'd2        // 功能模式: 缩放
+    parameter [1:0] MODE_RES = 2'd2,       // 功能模式: 缩放
+    parameter [1:0] MODE_PERIOD = 2'd3,    // 功能模式: 轮播周期(批次4 新增)
+    // ---- 批次4 轮播周期档 ----
+    parameter [2:0] PERIOD_NUM = 3'd5,     // 档位数(2/3/5/10/30 s)
+    parameter [2:0] PERIOD_DEF = 3'd1,     // 默认档 = 3s(与原 SLIDE_INTERVAL 一致)
+    parameter [31:0] CLK_FREQ_HZ      = 32'd100_000_000, // 本模块时钟=sd_card_clk
+    parameter [31:0] DISP_HOLD_CYCLES = 32'd200_000_000  // 参数强显保持(2s@100MHz)
 )(
     input               clk,               // sd_card_clk(100MHz)
     input               rst,               // 高有效复位
     // ---- 板载按键原始电平(上拉高、按下低) ----
-    input               key1,              // 功能模式循环 0图片/切图→1亮度→2缩放→0
+    input               key1,              // 功能模式循环 0图片/切图→1亮度→2缩放→3周期→0
     input               key2,              // 当前模式参数 减
     input               key3,              // 当前模式参数 加
     // ---- 上下文 ----
     input       [7:0]   img_no,            // bmp_read_auto 当前图序号(1..N; 0=空闲)
     input               scene_chg,         // 场景切换脉冲(清手动→自动)
     // ---- 输出 ----
-    output reg  [1:0]   mode,              // 功能模式 0图片/1亮度/2缩放
+    output reg  [1:0]   mode,              // 功能模式 0图片/1亮度/2缩放/3周期
     output reg  [3:0]   bri_level,         // 亮度档 0..15(模式1可调)
     output reg  [3:0]   res_level,         // 缩放档 0..7(模式2可调)
+    output wire [7:0]   period_sec,        // 轮播间隔档(秒: 2/3/5/10/30, 模式3可调)
+    output wire [31:0]  period_cycles,     // 轮播间隔(时钟周期) → bmp_read_auto
+    output wire         disp_hold,         // 1=参数强显保持期(2 秒)
+    output reg  [1:0]   disp_sel,          // 保持期显示的模式(产生动作时的 mode)
     output reg          pic_manual,        // 1=手动单张(冻结自动轮播) / 0=自动轮播
     output      [7:0]   pic_param,         // 显示用图片参数: 0=轮播, >0=手动第N张
     output              key_next_pl,       // 手动"下一张"单周期脉冲
@@ -103,6 +127,82 @@ module ui_key_ctrl #(
     assign res_chg_pl = res_chg_f;
 
     //--------------------------------------------------------------
+    // 批次4 轮播周期档(模式3)
+    //   档位环绕: KEY3 → idx+1(4→0), KEY2 → idx-1(0→4)
+    //   档位→"秒"(显示用) 与 "周期数"(送 bmp_read_auto) 两条输出:
+    //     · 秒:    2/3/5/10/30, 默认 3s(与原固定 SLIDE_INTERVAL 等价)
+    //     · 周期数: localparam 常量选择器 + 输出寄存
+    //   ※ 实测教训(2026-09-17): 直接写 `period_sec_r * CLK_FREQ_HZ` 会被 TD
+    //     例化成 DSP 乘法器(MULT18 3.56ns), 且恰好落在
+    //     "档位 mux → 乘法器 → 下游 32bit 比较器/CE" 一条链上,
+    //     syn_1 实测 Setup slack 只剩 +17ps(全设计唯一瓶颈)。
+    //     改为"localparam 折叠常量 + 寄存器输出"后: 链上只剩
+    //     档位 mux(常量)→ 寄存器, 并省下一个 DSP(板上 DSP 已用 28/29)。
+    //     30s@100MHz = 3.0e9 < 2^32, 32bit 无符号不溢出。
+    //--------------------------------------------------------------
+    localparam [31:0] PER_CYC_2S  = CLK_FREQ_HZ * 32'd2;
+    localparam [31:0] PER_CYC_3S  = CLK_FREQ_HZ * 32'd3;
+    localparam [31:0] PER_CYC_5S  = CLK_FREQ_HZ * 32'd5;
+    localparam [31:0] PER_CYC_10S = CLK_FREQ_HZ * 32'd10;
+    localparam [31:0] PER_CYC_30S = CLK_FREQ_HZ * 32'd30;
+
+    reg [2:0]  period_idx;
+    reg [7:0]  period_sec_r;
+    reg [31:0] period_cycles_r;
+
+    always @(*) begin
+        case (period_idx)
+            3'd0:    period_sec_r = 8'd2;
+            3'd1:    period_sec_r = 8'd3;
+            3'd2:    period_sec_r = 8'd5;
+            3'd3:    period_sec_r = 8'd10;
+            default: period_sec_r = 8'd30;
+        endcase
+    end
+    assign period_sec = period_sec_r;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            period_cycles_r <= PER_CYC_3S;       // 复位默认 = 3s(与原固定间隔一致)
+        else case (period_idx)
+            3'd0:    period_cycles_r <= PER_CYC_2S;
+            3'd1:    period_cycles_r <= PER_CYC_3S;
+            3'd2:    period_cycles_r <= PER_CYC_5S;
+            3'd3:    period_cycles_r <= PER_CYC_10S;
+            default: period_cycles_r <= PER_CYC_30S;
+        endcase
+    end
+    assign period_cycles = period_cycles_r;
+
+    wire per_up_c = k3_p & (mode == MODE_PERIOD);
+    wire per_dn_c = k2_p & (mode == MODE_PERIOD);
+
+    //--------------------------------------------------------------
+    // 参数强显保持(2 秒): 任一参数动作 → 重置保持计时并锁存"动作时的模式"
+    //   · disp_hold 供顶层把数码管第2~4位临时改显该参数, 2 秒后自动返回
+    //   · 计时器由参数动作重装(连按不断刷新), 归零后 disp_hold 落低
+    //--------------------------------------------------------------
+    wire bri_up_c  = k3_p & (mode == MODE_BRI) & (bri_level < BRI_MAX);
+    wire bri_dn_c  = k2_p & (mode == MODE_BRI) & (bri_level > 4'd0);
+    wire param_evt_all = res_up_c | res_dn_c | bri_up_c | bri_dn_c | per_up_c | per_dn_c;
+
+    reg [31:0] hold_cnt;
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            hold_cnt <= 32'd0;
+            disp_sel <= MODE_PIC;
+        end
+        else if (param_evt_all) begin
+            hold_cnt <= DISP_HOLD_CYCLES;
+            disp_sel <= mode;
+        end
+        else if (hold_cnt != 32'd0) begin
+            hold_cnt <= hold_cnt - 32'd1;
+        end
+    end
+    assign disp_hold = (hold_cnt != 32'd0);
+
+    //--------------------------------------------------------------
     // 参数寄存器更新
     //--------------------------------------------------------------
     always @(posedge clk or posedge rst) begin
@@ -110,18 +210,19 @@ module ui_key_ctrl #(
             mode       <= MODE_PIC;
             bri_level  <= BRI_INIT;
             res_level  <= RES_INIT;
+            period_idx <= PERIOD_DEF;
             pic_manual <= 1'b0;
             img_no_l   <= 8'd0;
         end
         else begin
-            // ---- KEY1: 功能模式循环 0→1→2→0 ----
+            // ---- KEY1: 功能模式循环 0→1→2→3→0 ----
             if (k1_p)
-                mode <= (mode == MODE_RES) ? MODE_PIC : (mode + 2'd1);
+                mode <= (mode == MODE_PERIOD) ? MODE_PIC : (mode + 2'd1);
 
             // ---- 模式1: 亮度 ± ----
-            if (k3_p && (mode == MODE_BRI) && (bri_level < BRI_MAX))
+            if (bri_up_c)
                 bri_level <= bri_level + 4'd1;
-            if (k2_p && (mode == MODE_BRI) && (bri_level > 4'd0))
+            if (bri_dn_c)
                 bri_level <= bri_level - 4'd1;
 
             // ---- 模式2: 缩放档 ± ----
@@ -130,9 +231,17 @@ module ui_key_ctrl #(
             if (res_dn_c)
                 res_level <= res_level - 4'd1;
 
+            // ---- 模式3: 轮播周期档 ± (环绕) ----
+            if (per_up_c)
+                period_idx <= (period_idx >= PERIOD_NUM - 3'd1) ? 3'd0
+                                                               : (period_idx + 3'd1);
+            if (per_dn_c)
+                period_idx <= (period_idx == 3'd0) ? (PERIOD_NUM - 3'd1)
+                                                   : (period_idx - 3'd1);
+
             // ---- 自动轮播 / 手动单张(模式0 内由切图动作自动转换, 无独立键) ----
             //   · 场景切换           → 回自动(新场景默认轮播)
-            //   · 非模式0(亮度/缩放) → 回自动(那两种模式 KEY2/3 去调参数, 别冻图)
+            //   · 非模式0(亮度/缩放/周期) → 回自动(那几档 KEY2/3 去调参数, 别冻图)
             //   · 模式0 按 KEY3      → 转手动(切下一张 + 停自动计时)
             //   · 模式0 第1张按 KEY2 → 回自动(与"上一张"共用一键, 已在首张则退自动)
             if (scene_chg)

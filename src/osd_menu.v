@@ -15,8 +15,9 @@
 //   px1/2/3 + sync1/2/3)统一延迟 3 拍; 输出为组合仲裁(恒定延迟 3 clk)。
 //   字形 ROM(osd_font_rom, 同步读, 晚 addr 一拍): A 级(px2)发地址,
 //   ROM 回读一拍 → q 恰与 px3/da3 对齐; 仲裁在 da3 节拍用 px3 + q 判定。
-//   · 2× 放大(标题/卡标题): A 级 row=(py-ty)>>1, col=(px-gx)>>5,
-//     物理列 f=(px-gx)&31 >>1 —— RTL 复制行列, ROM 仍存 16×16 原字模。
+//   · 2× 带(标题/卡标题): A 级 row=py-ty, col=(px-gx)>>5, 取位 rom_q[31-((px-gx)&31)]
+//     —— ROM 里直接存 32×32 真字模, 1:1 显示(物理尺寸 = 原 16×16 放大 2 倍)。
+//   · 1× 带(副标题): A 级 row=py-ty, col=(px-gx)>>4, 取位 rom_q[15-((px-gx)&15)]。
 //   · 滚动条 : A 级按 (px+phase) 对 320px 取模得到单元内偏移, phase 在
 //     每帧 vsync 上升沿 +1(0..319), 实现整行平滑左移, 无缝循环。
 // 时钟域 : 本模块 video_clk(≈25.175MHz); menu_en/emerg_en 为
@@ -44,6 +45,10 @@ module osd_menu #(
     // ---- 控制(异步电平, 模块内同步) ----
     input                menu_en,            // 1=菜单态
     input                emerg_en,           // 1=应急中
+    // ---- 共享字形 ROM 接口(top 层统一例化一片, 三路 OSD 互斥使用) ----
+    input  [31:0]        rom_q,          // ROM 读数据(晚 rom_addr_o 一拍)
+    output               rom_en_o,       // ROM 读使能(本模块当拍读请求)
+    output [12:0]        rom_addr_o,     // ROM 读地址
     // ---- 输出: 送 osd_welcome(再经 display_adjust 后送 hdmi_tx) ----
     output               hs_o, vs_o, de_o,
     output [DATA_W-1:0]  data_o,
@@ -70,13 +75,16 @@ module osd_menu #(
 
     //--------------------------------------------------------------
     // 几何常量(与 tools/gen_osd_font.py BANDS 表一致, 勿单独改动)
-    //   顶部大标题(2×)      : 行 28..60   x 176..464   9 格  base  0
+    //   顶部大标题(2×)      : 行 28..60   x 176..464   9 格  base    0
     //   卡1..4 标题(2×)     : 行 92/182/272/362..+32 x 98..226 4 格
-    //                            base 144/208/272/336
+    //                            base 288/416/544/672
     //   卡1..4 副标题(1×)   : 行 132/222/312/402..+16 x 98..210 7 格
-    //                            base 400/512/624/736
-    //   滚动宣传语(1×,20格) : 行 451..467  base 848 (每行 20 字周期 320px)
+    //                            base 800/912/1024/1136
+    //   滚动宣传语(1×,20格) : 行 451..467  base 1248 (每行 20 字周期 320px)
     //   卡区                : x 70..570, top 80/170/260/350, 高 80, 距 10
+    //   ★字模分辨率(字库 V3): 2× 带存 32×32 真字模(1:1 显示, 物理尺寸不变);
+    //     1× 带存 16×16 字模。ROM 位宽 32bit, 深度 5856。
+    //     2× 带取位用 rom_q[31-...], 1× 带用 rom_q[15-...]。
     //--------------------------------------------------------------
     localparam [11:0] T_TY   = 12'd28;
     localparam [11:0] T_GX   = 12'd176;
@@ -88,7 +96,7 @@ module osd_menu #(
     localparam [11:0] TOP0   = 12'd80;         // 卡1 top
     localparam [11:0] GAP    = 12'd10;         // 卡间距
     localparam [11:0] TX     = 12'd98;         // 卡内文字 x(标题与副标题同)
-    localparam [10:0] MQ_BASE= 11'd848;        // 滚动条 ROM base
+    localparam [10:0] MQ_BASE= 11'd1248;       // 滚动条 ROM base
     localparam [11:0] MQ_TY  = 12'd451;        // 滚动条字形行起点
     localparam [11:0] MQ_Y0  = 12'd438;        // 黑底上边
     localparam [4:0]  MQ_P   = 5'd20;          // 每行格数
@@ -193,16 +201,16 @@ module osd_menu #(
     always @* begin
         gx2 = 12'd0; ty2 = 12'd0; n2 = 5'd0; b2 = 11'd0; s2 = 1'b0; mq2 = 1'b0;
         case (rid2)
-            ID_TITLE: begin gx2=12'd176; ty2=12'd28;  n2=5'd9;  b2=11'd0;   s2=1'b1; end
-            ID_CT0:   begin gx2=12'd98;  ty2=12'd92;  n2=5'd4;  b2=11'd144; s2=1'b1; end
-            ID_CT1:   begin gx2=12'd98;  ty2=12'd182; n2=5'd4;  b2=11'd208; s2=1'b1; end
-            ID_CT2:   begin gx2=12'd98;  ty2=12'd272; n2=5'd4;  b2=11'd272; s2=1'b1; end
-            ID_CT3:   begin gx2=12'd98;  ty2=12'd362; n2=5'd4;  b2=11'd336; s2=1'b1; end
-            ID_TG0:   begin gx2=12'd98;  ty2=12'd132; n2=5'd7;  b2=11'd400; s2=1'b0; end
-            ID_TG1:   begin gx2=12'd98;  ty2=12'd222; n2=5'd7;  b2=11'd512; s2=1'b0; end
-            ID_TG2:   begin gx2=12'd98;  ty2=12'd312; n2=5'd7;  b2=11'd624; s2=1'b0; end
-            ID_TG3:   begin gx2=12'd98;  ty2=12'd402; n2=5'd7;  b2=11'd736; s2=1'b0; end
-            ID_MARQ:  begin gx2=12'd0;   ty2=12'd451; n2=5'd20; b2=11'd848; s2=1'b0; mq2=1'b1; end
+            ID_TITLE: begin gx2=12'd176; ty2=12'd28;  n2=5'd9;  b2=11'd0;    s2=1'b1; end
+            ID_CT0:   begin gx2=12'd98;  ty2=12'd92;  n2=5'd4;  b2=11'd288;  s2=1'b1; end
+            ID_CT1:   begin gx2=12'd98;  ty2=12'd182; n2=5'd4;  b2=11'd416;  s2=1'b1; end
+            ID_CT2:   begin gx2=12'd98;  ty2=12'd272; n2=5'd4;  b2=11'd544;  s2=1'b1; end
+            ID_CT3:   begin gx2=12'd98;  ty2=12'd362; n2=5'd4;  b2=11'd672;  s2=1'b1; end
+            ID_TG0:   begin gx2=12'd98;  ty2=12'd132; n2=5'd7;  b2=11'd800;  s2=1'b0; end
+            ID_TG1:   begin gx2=12'd98;  ty2=12'd222; n2=5'd7;  b2=11'd912;  s2=1'b0; end
+            ID_TG2:   begin gx2=12'd98;  ty2=12'd312; n2=5'd7;  b2=11'd1024; s2=1'b0; end
+            ID_TG3:   begin gx2=12'd98;  ty2=12'd402; n2=5'd7;  b2=11'd1136; s2=1'b0; end
+            ID_MARQ:  begin gx2=12'd0;   ty2=12'd451; n2=5'd20; b2=11'd1248; s2=1'b0; mq2=1'b1; end
             default:  ;
         endcase
     end
@@ -227,25 +235,21 @@ module osd_menu #(
                 if ((px2 >= gx2) &&
                     (px2 < gx2 + (s2 ? ({1'b0, n2} << 5) : ({1'b0, n2} << 4)))) begin
                     rom_en   = 1'b1;
-                    rom_addr = b2 + (((py2 - ty2) >> (s2 ? 1'b1 : 1'b0)) * n2)
+                    // 行号 = py2-ty2(2× 带存 32×32 真字模, 不再 >>1 折叠)
+                    rom_addr = b2 + ((py2 - ty2) * n2)
                                  + ((px2 - gx2) >> (s2 ? 5'd5 : 5'd4));
                 end
             end
         end
     end
 
-    // 字形 ROM(同步读, q 晚 addr 一拍); 深度=全部场景字模(osd_scene 同库, gen 生成)
-    wire [15:0] rom_q;
-    osd_font_rom #(
-        .ADDR_W (13),
-        .DEPTH  (4608)
-    ) u_font_rom (
-        .clk    (video_clk),
-        .rst    (rst),
-        .rd_en  (rom_en),
-        .addr   (rom_addr),
-        .q      (rom_q)
-    );
+    // 字形 ROM(同步读, q 晚 addr 一拍; 深度=全部场景字模(osd_scene 同库, gen 生成)
+    //   ★V3: 位宽 16→32(2× 带每行一个 32bit word 存 32×32 字模;
+    //        1× 带仍每行一个 word 但只用低 16 位), 深度 4608→5856。
+    //   ★资源优化: ROM 实体移到 top 层统一例化(三路 OSD 互斥, 只占一份 BRAM),
+    //     本模块只把读请求/地址送出, 并接收共享读数据 rom_q。
+    assign rom_en_o   = rom_en;
+    assign rom_addr_o = rom_addr;
 
     //--------------------------------------------------------------
     // B 级(仲裁): 按 py3 分类所在文字带(供字形位判定)
@@ -301,9 +305,12 @@ module osd_menu #(
             end
             else if ((px3 >= gx3) &&
                      (px3 < gx3 + (s3 ? ({1'b0, n3} << 5) : ({1'b0, n3} << 4)))) begin
-                // 字内列号: 2× 复制 -> 相邻两物理列同一位
-                ink = rom_q[15 - (((px3 - gx3) & (s3 ? 12'd31 : 12'd15)) >>
-                                  (s3 ? 1'b1 : 1'b0))];
+                // 字内列号: 2× 带 = 32×32 字模 1:1(取第 31..0 位);
+                //           1× 带 = 16×16 字模(取第 15..0 位)
+                if (s3)
+                    ink = rom_q[31 - ((px3 - gx3) & 12'd31)];
+                else
+                    ink = rom_q[15 - ((px3 - gx3) & 12'd15)];
             end
         end
     end

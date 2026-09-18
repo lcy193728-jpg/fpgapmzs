@@ -24,13 +24,15 @@ module video_pll (
   refclk,
   reset,
   clk0_out,
-  clk1_out 
+  clk1_out,
+  locked
 );
 
   input refclk;
   input reset;
   output clk0_out;
   output clk1_out;
+  output locked;    // 新增(第六讲规范): PLL 锁定指示, 高有效, 供顶层复位门控
 
   wire clk0_buf;
 
@@ -67,7 +69,7 @@ module video_pll (
     .refclk(refclk),
     .reset(reset),
     .stdby(1'b0),
-    .extlock(open),
+    .extlock(locked),
     .load_reg(1'b0),
     .psclk(1'b0),
     .psdown(1'b0),

@@ -41,6 +41,10 @@ module osd_welcome #(
     input  [11:0]        px_y,           // 与 data_i 同拍 y(0 基)
     // ---- 控制(异步电平, 模块内两级同步) ----
     input                welcome_en,     // 1=迎新场景(叠加本层)
+    // ---- 共享字形 ROM 接口(top 层统一例化一片, 三路 OSD 互斥使用) ----
+    input  [31:0]        rom_q,          // ROM 读数据(晚 rom_addr_o 一拍)
+    output               rom_en_o,       // ROM 读使能(本模块当拍读请求)
+    output [12:0]        rom_addr_o,     // ROM 读地址
     // ---- 输出: 送 display_adjust ----
     output               hs_o, vs_o, de_o,
     output [DATA_W-1:0]  data_o,
@@ -65,7 +69,7 @@ module osd_welcome #(
     localparam [11:0] T_TY    = 12'd14;  // 欢迎语字形行起点(2×, 占 32 行)
     localparam [11:0] T_GX    = 12'd208; // 欢迎语字形 x 起点(7 格×32)
     localparam [4:0]  T_N     = 5'd7;
-    localparam [10:0] T_BASE  = 11'd1168;
+    localparam [10:0] T_BASE  = 11'd1568;
     localparam [11:0] TP_Y0   = 12'd8;   // 金底条: 行 8..51
     localparam [11:0] TP_Y1   = 12'd52;
     localparam [11:0] TP_X0   = 12'd168; // 金底条: x 168..471(左右各留 40px)
@@ -74,10 +78,10 @@ module osd_welcome #(
     localparam [11:0] P_TY    = 12'd400; // 信息卡字形行起点(1×)
     localparam [11:0] L_GX    = 12'd85;  // 报到地点 x 起点(10 格×16)
     localparam [4:0]  L_N     = 5'd10;
-    localparam [10:0] L_BASE  = 11'd1280;
+    localparam [10:0] L_BASE  = 11'd1792;
     localparam [11:0] R_GX    = 12'd355; // 联系方式 x 起点(15 格×16)
     localparam [4:0]  R_N     = 5'd15;
-    localparam [10:0] R_BASE  = 11'd1440;
+    localparam [10:0] R_BASE  = 11'd1952;
     localparam [11:0] CD_Y0   = 12'd392; // 信息卡: 行 392..431
     localparam [11:0] CD_Y1   = 12'd432;
     localparam [11:0] L_X0    = 12'd24;  // 报到地点卡 x 24..305
@@ -92,7 +96,7 @@ module osd_welcome #(
     localparam [11:0] F_TY    = 12'd452; // 流程滚动字形行起点(1×)
     localparam [4:0]  F_N     = 5'd20;   // 带宽 20 格
     localparam [11:0] F_PER   = 12'd320; // 周期 = F_N*16
-    localparam [10:0] F_BASE  = 11'd1680;
+    localparam [12:0] F_BASE  = 13'd2192;   // ★V3 base 已 > 2047, 宽度 11→13
     localparam [11:0] F_Y0    = 12'd438; // 暗带: 行 438..479
     localparam [11:0] F_Y1    = 12'd480;
 
@@ -183,10 +187,10 @@ module osd_welcome #(
         rom_addr = 13'd0;
         if (w_ok && de2 && (rid2 != 2'd0)) begin
             case (rid2)
-                2'd1: begin  // 欢迎语 2×
+                2'd1: begin  // 欢迎语 2×(32×32 真字模 1:1, 不再 >>1 折叠)
                     if ((px2 >= T_GX) && (px2 < T_GX + ({1'b0, T_N} << 5))) begin
                         rom_en   = 1'b1;
-                        rom_addr = T_BASE + (((py2 - T_TY) >> 1) * {1'b0, T_N})
+                        rom_addr = T_BASE + ((py2 - T_TY) * {1'b0, T_N})
                                  + ((px2 - T_GX) >> 5);
                     end
                 end
@@ -211,17 +215,10 @@ module osd_welcome #(
     end
 
     // 字形 ROM(同步读, q 晚 addr 一拍; 与菜单/会议/抢答/应急共用同一生成文件)
-    wire [15:0] rom_q;
-    osd_font_rom #(
-        .ADDR_W (13),
-        .DEPTH  (4608)
-    ) u_font_rom (
-        .clk    (video_clk),
-        .rst    (rst),
-        .rd_en  (rom_en),
-        .addr   (rom_addr),
-        .q      (rom_q)
-    );
+    //   ★V3: 位宽 16→32, 深度 4608→5856(2× 带存 32×32 真字模; 1× 带用低 16 位)
+    //   ★资源优化: ROM 实体移到 top 层统一例化(三路 OSD 互斥, 只占一份 BRAM)。
+    assign rom_en_o   = rom_en;
+    assign rom_addr_o = rom_addr;
 
     //--------------------------------------------------------------
     // B 级: 文字带分类(按 py3) + 墨点判定
@@ -243,9 +240,9 @@ module osd_welcome #(
         ink = 1'b0;
         if (w_ok && de3 && (rid3 != 2'd0)) begin
             case (rid3)
-                2'd1: begin  // 欢迎语 2×: 相邻两物理列同一位
+                2'd1: begin  // 欢迎语 2×: 32×32 真字模 1:1
                     if ((px3 >= T_GX) && (px3 < T_GX + ({1'b0, T_N} << 5)))
-                        ink = rom_q[15 - (((px3 - T_GX) & 12'd31) >> 1)];
+                        ink = rom_q[31 - ((px3 - T_GX) & 12'd31)];
                 end
                 2'd2: begin  // 信息卡 1×: 左(报到地点)/右(联系方式)
                     if ((px3 >= L_GX) && (px3 < L_GX + ({1'b0, L_N} << 4)))

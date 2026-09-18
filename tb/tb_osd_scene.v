@@ -10,8 +10,10 @@
 //            · 出现未定义颜色即判 FAIL(抓毛刺/仲裁错误)。
 //
 // 期望值来源: 各带**墨点数由本 TB 直接从字形 ROM 读回统计**
-//          (u_scene.u_font_rom.mem[]), 因此与 ROM 内容自洽:
-//            2× 带: 墨点像素 = 4 × Σ bit;   1× 带: = Σ bit;
+//          (u_font_rom.mem[]), 因此与 ROM 内容自洽:
+//            ★V3 字库: 2× 带存 32×32 真字模 1:1 显示 → 墨点 = Σ popcount32;
+//                      1× 带存 16×16 字模       → 墨点 = Σ popcount(低 16 位);
+//              NUM 数字带仍为 16×16 字模, 硬件 2× 行列折叠 → 屏上 = 4 × Σ;
 //            滚动带(周期 320px, 整 2 周期铺满 640) 墨点 = 2 × Σ bit;
 //            应急滚动带(周期 384px) 墨点 = Σ(24 字) + Σ(前 16 字)。
 //          区域面积(由 osd_scene.v 几何常数推得, 与 px3/py3 无关的固定掩膜):
@@ -132,6 +134,18 @@ module tb_osd_scene;
     integer     i, r, c;
 
     //--------------- 例化被测模块 ----------------
+    // 共享字形 ROM(与 top.v 同构: 实体在 TB 顶层例化, 被 u_scene 读)
+    wire        rom_en_s;
+    wire [12:0] rom_addr_s;
+    wire [31:0] rom_q;
+    osd_font_rom #(.ADDR_W(13), .DEPTH(5856)) u_font_rom (
+        .clk   (clk),
+        .rst   (rst),
+        .rd_en (rom_en_s),
+        .addr  (rom_addr_s),
+        .q     (rom_q)
+    );
+
     osd_scene #(
         .DATA_W  (24),
         .H_ACT   (H_ACT),
@@ -155,6 +169,9 @@ module tb_osd_scene;
         .run_hh     (run_hh),
         .run_mm     (run_mm),
         .run_ss     (run_ss),
+        .rom_en_o   (rom_en_s),
+        .rom_addr_o (rom_addr_s),
+        .rom_q      (rom_q),
         .hs_o       (hs_o),
         .vs_o       (vs_o),
         .de_o       (de_o),
@@ -226,13 +243,26 @@ module tb_osd_scene;
     //================================================================
     // 字形 ROM 墨点统计(直接读回 ROM, 与生成器自洽)
     //================================================================
-    function integer pc16; input [15:0] v; integer k; begin
-        pc16 = 0;
-        for (k = 0; k < 16; k = k + 1)
-            if (v[k]) pc16 = pc16 + 1;
+    function integer pc32; input [31:0] v; integer k; begin
+        pc32 = 0;
+        for (k = 0; k < 32; k = k + 1)
+            if (v[k]) pc32 = pc32 + 1;
     end endfunction
 
-    task band_ink;                       // 带墨点 = ΣΣ popcount(mem[base+r*N+c])
+    task band_ink32;                     // 32×32 帯(2× 真字模 1:1)墨点: 行 0..31
+        input  integer base;
+        input  integer n;
+        output integer ink;
+        integer rr, cc;
+        begin
+            ink = 0;
+            for (rr = 0; rr < 32; rr = rr + 1)
+                for (cc = 0; cc < n; cc = cc + 1)
+                    ink = ink + pc32(u_font_rom.mem[base + rr*n + cc]);
+        end
+    endtask
+
+    task band_ink;                       // 16×16 帯(1×)墨点: 行 0..15, 取低 16 位
         input  integer base;
         input  integer n;
         output integer ink;
@@ -241,7 +271,7 @@ module tb_osd_scene;
             ink = 0;
             for (rr = 0; rr < 16; rr = rr + 1)
                 for (cc = 0; cc < n; cc = cc + 1)
-                    ink = ink + pc16(u_scene.u_font_rom.mem[base + rr*n + cc]);
+                    ink = ink + pc32(u_font_rom.mem[base + rr*n + cc] & 32'hFFFF);
         end
     endtask
 
@@ -254,41 +284,41 @@ module tb_osd_scene;
         begin
             ink = 0;
             for (rr = 0; rr < 16; rr = rr + 1)
-                ink = ink + pc16(u_scene.u_font_rom.mem[base + rr*n + cc]);
+                ink = ink + pc32(u_font_rom.mem[base + rr*n + cc] & 32'hFFFF);
         end
     endtask
 
     task calc_expect; begin
-        band_ink(2000,  8, ink_mt);      // MT_TITLE  (2×)
-        band_ink(2128, 10, ink_ma);      // MA0       (1×)
-        band_ink(2768,  3, ink_mrun);    // M_RUN     (1×)
-        band_ink(2816, 20, ink_mf);      // M_FOOT    (1×, 周期 320 → ×2)
-        band_ink(3136,  5, ink_qt);      // QT_TITLE  (2×)
-        band_ink(3216,  4, ink_qw);      // QW_WAIT   (2×)
-        band_ink(3280,  3, ink_qr);      // QR_READY  (2×)
-        band_ink(3328,  2, ink_ql);      // QWL_WIN   (2×)
-        band_ink(3360,  5, ink_qx);      // QWR_WIN   (2×)
-        band_ink(3440,  8, ink_qn);      // QN_NONE   (2×)
-        band_ink(3568,  1, ink_qsec);    // QS_SEC    (2×)
-        band_ink(3584, 20, ink_qf);      // Q_FOOT    (1×, 周期 320 → ×2)
-        band_ink(3904, 10, ink_at);      // AT_TITLE  (2×)
+        band_ink32(2512,  8, ink_mt);    // MT_TITLE  (2×, 32×32 1:1)
+        band_ink  (2768, 10, ink_ma);    // MA0       (1×)
+        band_ink  (3408,  3, ink_mrun);  // M_RUN     (1×)
+        band_ink  (3456, 20, ink_mf);    // M_FOOT    (1×, 周期 320 → ×2)
+        band_ink32(3776,  5, ink_qt);    // QT_TITLE  (2×)
+        band_ink32(3936,  4, ink_qw);    // QW_WAIT   (2×)
+        band_ink32(4064,  3, ink_qr);    // QR_READY  (2×)
+        band_ink32(4160,  2, ink_ql);    // QWL_WIN   (2×)
+        band_ink32(4224,  5, ink_qx);    // QWR_WIN   (2×)
+        band_ink32(4384,  8, ink_qn);    // QN_NONE   (2×)
+        band_ink32(4640,  1, ink_qsec);  // QS_SEC    (2×)
+        band_ink  (4672, 20, ink_qf);    // Q_FOOT    (1×, 周期 320 → ×2)
+        band_ink32(4992, 10, ink_at);    // AT_TITLE  (2×)
 
-        band_ink(4064, 24, ink_af_all);  // A_FOOT 全 24 格
+        band_ink(5312, 24, ink_af_all);  // A_FOOT 全 24 格
         ink_af16 = 0;
         for (i = 0; i < 16; i = i + 1) begin
-            char_ink(4064, 24, i, ink_tmp);
+            char_ink(5312, 24, i, ink_tmp);
             ink_af16 = ink_af16 + ink_tmp;
         end
         ink_af = ink_af_all + ink_af16;  // 周期 384: 全 24 格 + 再出现的前 16 格
 
         for (i = 0; i < 10; i = i + 1)
-            char_ink(4448, 10, i, num_ink[i]);
+            char_ink(5696, 10, i, num_ink[i]);
 
         // ---- 会议(运行 12:34:56 / 页码 0 → 显示 '1') ----
         rdig = num_ink[1]+num_ink[2]+num_ink[3]+num_ink[4]+num_ink[5]+num_ink[6];
         mt_digpart = rdig + 64 + num_ink[1];       // 6 位数字 + 冒号 64 + 页码 '1'
-        ex_mt_navy  = MT_AREA_BAND - 4*ink_mt;
-        ex_mt_gold  = 4*ink_mt + mt_digpart;
+        ex_mt_navy  = MT_AREA_BAND - ink_mt;      // 32×32 真字模 1:1
+        ex_mt_gold  = ink_mt + mt_digpart;
         ex_mt_white = ink_ma;
         ex_mt_steel = ink_mrun;
         ex_mt_panel = MT_AREA_RUNP + MT_AREA_ANNP - ink_mrun - ink_ma - mt_digpart;
@@ -297,16 +327,17 @@ module tb_osd_scene;
         ex_mt_bg    = TOT_PIX - MT_AREA_BAND - MT_AREA_RUNP - MT_AREA_ANNP - FOOT_AREA;
 
         // ---- 抢答(公共量) ----
-        q_dig_run  = 4*num_ink[5] + 4*ink_qsec;    // 倒计时 '5'(2×) + '秒'(2×)
-        ex_qz_navy = QZ_AREA_BAND - 4*ink_qt;
-        ex_qz_gold = 4*ink_qt;                     // + 各状态数字(见 case)
+        //   NUM 带仍为 16×16 字模, 硬件 2× 行列折叠 → 屏上墨点 = 4 × 字模墨点
+        q_dig_run  = 4*num_ink[5] + ink_qsec;      // 倒计时 '5'(折叠×4) + '秒'(32×32 1:1)
+        ex_qz_navy = QZ_AREA_BAND - ink_qt;
+        ex_qz_gold = ink_qt;                       // + 各状态数字(见 case)
         ex_qz_orng = 2*ink_qf;
         ex_qz_dark = FOOT_AREA - 2*ink_qf;
         ex_qz_bg   = TOT_PIX - QZ_AREA_BAND - QZ_AREA_PANL - FOOT_AREA;
 
         // ---- 应急 ----
-        ex_al_white = 4*ink_at;
-        ex_al_alred = AL_AREA_TBND - 4*ink_at;
+        ex_al_white = ink_at;                      // 32×32 真字模 1:1
+        ex_al_alred = AL_AREA_TBND - ink_at;
         ex_al_dark  = FOOT_AREA - ink_af;
         ex_al_bg    = TOT_PIX - AL_AREA_BAR - AL_AREA_TBND - FOOT_AREA;
 
@@ -358,45 +389,45 @@ module tb_osd_scene;
     end endtask
 
     task spot_meeting; begin
-        chk(198, 16, C_GOLD,  "MT_TITLE ON");      // 标题条字
+        chk(198, 15, C_GOLD,  "MT_TITLE ON");      // 标题条字
         chk(192, 14, C_NAVY,  "MT_TITLE OFF");
-        chk(243,197, C_WHITE, "MA0 ON");           // 公告页 0
+        chk(243,196, C_WHITE, "MA0 ON");           // 公告页 0
         chk(240,196, C_PANEL, "MA0 OFF");
-        chk(414, 77, C_STEEL, "M_RUN ON");         // "已运行" 第2字(格内 col2,row1)
+        chk(398, 76, C_STEEL, "M_RUN ON");         // "已运行" 首字
         chk(396, 76, C_PANEL, "M_RUN OFF");
         chk(485, 81, C_GOLD,  "冒号点");           // RTL 绘制冒号
         chk( 60,200, BG,      "会议区外透传");
     end endtask
 
     task spot_qz0; begin
-        chk(246, 22, C_GOLD,  "QT_TITLE ON");
+        chk(246, 21, C_GOLD,  "QT_TITLE ON");
         chk(240, 20, C_NAVY,  "QT_TITLE OFF");
-        chk(262, 98, C_WHITE, "QW_WAIT ON");
+        chk(262, 97, C_WHITE, "QW_WAIT ON");
         chk(256, 96, C_PANEL, "QW_WAIT OFF");
-        chk(356,180, C_GOLD,  "QS_SEC ON");
+        chk(356,181, C_GOLD,  "QS_SEC ON");
         chk(100,300, BG,      "抢答区外透传");
     end endtask
 
     task spot_qz1; begin
-        chk(278, 98, C_WHITE, "QR_READY ON");
+        chk(278, 97, C_WHITE, "QR_READY ON");
         chk(272, 96, C_PANEL, "QR_READY OFF");
-        chk(356,180, C_GOLD,  "QS_SEC ON(抢答中)");
+        chk(356,181, C_GOLD,  "QS_SEC ON(抢答中)");
     end endtask
 
     task spot_qz2; begin
-        chk(206, 98, C_WHITE, "QWL_WIN ON");
+        chk(211, 97, C_WHITE, "QWL_WIN ON");
         chk(192, 96, C_PANEL, "QWL_WIN OFF");
-        chk(296, 98, C_WHITE, "QWR_WIN ON");
+        chk(326, 97, C_WHITE, "QWR_WIN ON");
         chk(288, 96, C_PANEL, "QWR_WIN OFF");
     end endtask
 
     task spot_qz3; begin
-        chk(216, 98, C_WHITE, "QN_NONE ON");
+        chk(217, 97, C_WHITE, "QN_NONE ON");
         chk(192, 96, C_PANEL, "QN_NONE OFF");
     end endtask
 
     task spot_alarm; begin
-        chk (170, 84, C_WHITE, "AT_TITLE ON");     // 深红衬底标题字
+        chk (169, 83, C_WHITE, "AT_TITLE ON");     // 深红衬底标题字
         chk (160, 82, C_ALRED, "AT_TITLE OFF");
         chk (320, 10, C_GOLD,  "警示三角(非感叹号)");
         chk (100,200, BG,      "应急区外透传");
@@ -539,7 +570,7 @@ module tb_osd_scene;
                                      c_steel, c_panel, c_orng, c_dark);
                         end
                         3: begin   // 段3: 抢答 qstate=0 等待开始(倒计时 05)
-                            ex_qz_white = 4*ink_qw;
+                            ex_qz_white = ink_qw;
                             ex_qz_dig   = q_dig_run;
                             ex_qz_panel = QZ_AREA_PANL - ex_qz_white - ex_qz_dig;
                             chk_cnt("抢答0BG",   c_bg,    ex_qz_bg);
@@ -555,7 +586,7 @@ module tb_osd_scene;
                                      $time, valid_cnt, c_bg, c_white, c_gold, c_panel);
                         end
                         4: begin   // 段4: 抢答 qstate=1 抢答中
-                            ex_qz_white = 4*ink_qr;
+                            ex_qz_white = ink_qr;
                             ex_qz_dig   = q_dig_run;
                             ex_qz_panel = QZ_AREA_PANL - ex_qz_white - ex_qz_dig;
                             chk_cnt("抢答1BG",   c_bg,    ex_qz_bg);
@@ -569,8 +600,8 @@ module tb_osd_scene;
                                      $time, valid_cnt, c_bg, c_white, c_gold, c_panel);
                         end
                         5: begin   // 段5: 抢答 qstate=2 已锁定(3 号)
-                            ex_qz_white = 4*ink_ql + 4*ink_qx;
-                            ex_qz_dig   = 4*num_ink[3];             // winner=2 → '3'(2×)
+                            ex_qz_white = ink_ql + ink_qx;
+                            ex_qz_dig   = 4*num_ink[3];             // winner=2 → '3'(NUM 折叠×4)
                             ex_qz_panel = QZ_AREA_PANL - ex_qz_white - ex_qz_dig;
                             chk_cnt("抢答2BG",   c_bg,    ex_qz_bg);
                             chk_cnt("抢答2NAVY", c_navy,  ex_qz_navy);
@@ -583,7 +614,7 @@ module tb_osd_scene;
                                      $time, valid_cnt, c_bg, c_white, c_gold, c_panel);
                         end
                         6: begin   // 段6: 抢答 qstate=3 时间到
-                            ex_qz_white = 4*ink_qn;
+                            ex_qz_white = ink_qn;
                             ex_qz_dig   = 0;
                             ex_qz_panel = QZ_AREA_PANL - ex_qz_white;
                             chk_cnt("抢答3BG",   c_bg,    ex_qz_bg);

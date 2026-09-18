@@ -12,6 +12,7 @@ module sd_card_bmp(
 	input                       key_next,           //手动"下一张"单周期脉冲(上层消抖后给出)
 	input                       key_prev,           //手动"上一张"单周期脉冲(上层消抖后给出)
 	input                       slide_en,           //自动轮播使能(手动/应急=0 冻结当前画面)
+	input [31:0]                slide_interval,     //批次4 轮播间隔(时钟周期, 周期档 2/3/5/10/30s)
 	// ---- 场景分区重载(透传 bmp_read_auto, sd_card_clk 同域) ----
 	input [31:0]                zone_start,         //新分区扫描起点扇区
 	input [31:0]                zone_wrap,          //新分区扫描上限扇区
@@ -24,6 +25,7 @@ module sd_card_bmp(
 	output[31:0]                write_data,         //bmp image data
 	output[7:0]                 img_no,             //当前显示图序号(透传, 数码管/上层用)
 	output                      img_busy,           //底层图加载忙(扫/读/挂起), 供切场淡入淡出
+	output[3:0]                 bmp_error,          //加载错误码(批次3 透传: 0无/1头校验/2超时/3截断)
 	output                      SD_nCS,             //SD card chip select (SPI mode)
 	output                      SD_DCLK,            //SD card clock
 	output                      SD_MOSI,            //SD card controller data output
@@ -50,6 +52,7 @@ bmp_read_auto bmp_read_auto_m0(
 	.key_trigger               (key_next               ),
 	.key_prev                  (key_prev               ),
 	.slide_en                  (slide_en               ),
+	.slide_interval            (slide_interval         ),
 	.zone_start                (zone_start             ),
 	.zone_wrap                 (zone_wrap              ),
 	.zone_max_img              (zone_max_img           ),
@@ -65,7 +68,8 @@ bmp_read_auto bmp_read_auto_m0(
 	.bmp_data_wr_en            (bmp_data_wr_en         ),
 	.bmp_data                  (bmp_data               ),
 	.img_no                    (img_no                 ),
-	.img_busy                  (img_busy               )
+	.img_busy                  (img_busy               ),
+	.bmp_error                 (bmp_error              )
 );
 sd_card_top  sd_card_top_m0(
 	.clk                       (clk                    ),
