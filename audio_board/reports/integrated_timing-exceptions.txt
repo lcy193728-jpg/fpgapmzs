@@ -1,0 +1,237 @@
+Created by          : Tang Dynasty v6.2.168116
+                    : Copyright (c) 2012-2025 Anlogic Inc.
+Generated           : Fri Sep 18 16:36:25 2026
+
+Top Model           : top
+Device              : EG4S20BG256
+Speed               : NA
+STA coverage        : 99.81%
+Constraint File     : D:/fpga_work/fpgapmzs/audio_board/integrated/audio.sdc;
+Confidence          : Routed
+Check Corner        : Both (Slow and Fast)
+CRPR Enabled        : Yes
+Report Scheme       : 10 end point(s) per path group, 1 path(s) per end point
+
+
+Check Status
+-------------
+
+Corner   | Max      Min     
+------------------------------------
+Slow     | yes      yes     
+Fast     | yes      yes     
+
+MCP/SMD Summary
+--------------------
+
+		Max Check
+		--------------------
+		     Total    Dominated     Shadowed      Ignored   Constraint
+		         8            8            0            0   set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+
+		Min Check
+		--------------------
+		     Total    Dominated     Shadowed      Ignored   Constraint
+
+Status of timing exceptions
+--------------------------------------------------
+
+MCP/SMD Details
+--------------------
+
+
+Constraint     :   set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+Check Type     :   Max
+--------------------------------------------------------------------------------
+Total Paths    :            8
+Dominated      :            8,        100.0%
+
+
+Details on timing exceptions
+--------------------------------------------------
+
+Timing details for constraint:
+	set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+--------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+Path Group     :     
+set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+
+Type           :     SMD
+
+Statistics:
+Max            : SWNS      5.427ns, STNS      0.000ns,         0 Viol Endpoints,         4 Total Endpoints,         8 Paths Analyzed
+Min            : HWNS      0.000ns, HTNS      0.000ns,         0 Viol Endpoints,         0 Total Endpoints,         0 Paths Analyzed
+----------------------------------------------------------------------------------------------------
+
+Max Paths
+----------------------------------------------------------------------------------------------------
+Slack               : 5.427ns
+Begin Point         : HDMI_CLK_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_CLK_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=25)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_CLK_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y032            2.573    f     2.573          pin: HDMI_CLK_P_syn_2.opad
+net (fo=1)          K1                  0.000          2.573          net: HDMI_CLK_P,  audio_board/integrated/top_audio.v(45)
+                                                                      pin: HDMI_CLK_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              K1                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+Slack               : 5.427ns
+Begin Point         : HDMI_D0_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_D0_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=25)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_D0_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y008            2.573    f     2.573          pin: HDMI_D0_P_syn_2.opad
+net (fo=1)          F5                  0.000          2.573          net: HDMI_D0_P,  audio_board/integrated/top_audio.v(48)
+                                                                      pin: HDMI_D0_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              F5                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+Slack               : 5.427ns
+Begin Point         : HDMI_D1_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_D1_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=25)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_D1_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y005            2.573    f     2.573          pin: HDMI_D1_P_syn_2.opad
+net (fo=1)          E3                  0.000          2.573          net: HDMI_D1_P,  audio_board/integrated/top_audio.v(47)
+                                                                      pin: HDMI_D1_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              E3                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+Slack               : 5.427ns
+Begin Point         : HDMI_D2_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_D2_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=25)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_D2_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y002            2.573    f     2.573          pin: HDMI_D2_P_syn_2.opad
+net (fo=1)          B3                  0.000          2.573          net: HDMI_D2_P,  audio_board/integrated/top_audio.v(46)
+                                                                      pin: HDMI_D2_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              B3                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+
+
+Min Paths
+----------------------------------------------------------------------------------------------------
+
+
+
+

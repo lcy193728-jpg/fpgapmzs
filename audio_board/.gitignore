@@ -1,0 +1,7 @@
+build/
+*_Runs/
+log/
+standalone/log/
+integrated/log/
+standalone/*_Runs/
+integrated/*_Runs/
