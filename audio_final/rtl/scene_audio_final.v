@@ -55,14 +55,14 @@ module scene_audio_final #(
     integer code_i,step_i,delta_i,pred_i,index_i;
     EG_LOGIC_BRAM #(
       .DATA_WIDTH_A(8),.DATA_WIDTH_B(8),.ADDR_WIDTH_A(14),.ADDR_WIDTH_B(14),
-      .DATA_DEPTH_A(16384),.DATA_DEPTH_B(16384),.MODE("SP"),
-      .REGMODE_A("NOREG"),.INIT_FILE(`ALARM_INIT_FILE),
+      .DATA_DEPTH_A(16384),.DATA_DEPTH_B(16384),.MODE("DP"),
+      .REGMODE_A("NOREG"),.REGMODE_B("OUTREG"),.INIT_FILE(`ALARM_INIT_FILE),
       .FILL_ALL("NONE"),.IMPLEMENT("9K")
     ) u_alarm_rom (
-      .doa(alarm_byte),.dob(),.dia(8'b0),.dib(8'b0),
-      .cea(1'b1),.ocea(1'b1),.clka(clk),.wea(1'b0),.rsta(1'b0),.bea(1'b0),
-      .ceb(1'b0),.oceb(1'b0),.clkb(clk),.web(1'b0),.rstb(1'b0),.beb(1'b0),
-      .addra(alarm_addr),.addrb(14'b0)
+      .doa(),.dob(alarm_byte),.dia(8'b0),.dib(8'b0),
+      .cea(1'b0),.ocea(1'b0),.clka(clk),.wea(1'b0),.rsta(1'b0),.bea(1'b0),
+      .ceb(1'b1),.oceb(1'b1),.clkb(clk),.web(1'b0),.rstb(1'b0),.beb(1'b0),
+      .addra(14'b0),.addrb(alarm_addr)
     );
     function integer ima_step; input integer idx; begin case(idx)
       0:ima_step=7;1:ima_step=8;2:ima_step=9;3:ima_step=10;4:ima_step=11;5:ima_step=12;6:ima_step=13;7:ima_step=14;

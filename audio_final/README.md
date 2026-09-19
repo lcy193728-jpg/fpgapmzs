@@ -74,8 +74,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - ModelSim `vlog`已执行新增RTL和集成顶层的语法编译：0 error；按用户要求未运行功能仿真。
 - TD EDA 6.2.168.116已完成综合、布局布线、最终时序分析和bitgen：
-  `SWNS=+0.218 ns`，`HWNS=0 ns`。
-- 最终资源：LUT 8956/19600、寄存器4594、BRAM 56/64、DSP 29/29；均未超限。
+  `SWNS=+0.196 ns`，`HWNS=+0.004 ns`。
+- 最终资源：LUT 8952/19600、寄存器4592、BRAM 56/64、DSP 29/29；均未超限。
 - 位流：`artifacts/pic_sdram_audio_final.bit`；SHA-256见 `artifacts/SHA256SUMS.txt`。
 - 最终面积、时序和完整构建日志位于 `reports/`。这些是软件构建结果，不代表已经完成实板验收。
 
@@ -85,3 +85,11 @@ Set-ExecutionPolicy -Scope Process Bypass
   是 `audio_feature_events.v` 的参数，后续接入正式会议计时事件时只需替换事件源。
 - 真实警报和可视化缓存使全工程使用56/64个BRAM，DSP已使用29/29。TD若报告资源超限，应停止下载并回传资源报告，
   不能删除既有功能或改用旧报告判断。
+
+## 上板问题修订
+
+- 首版上板反馈真实警报只剩很小的滴滴声。检查发现警报ROM使用了逻辑BRAM的
+  单端口A口读取方式，而该工程已验证的安路存储模板采用DP模式B口同步读取；这是
+  当前最可能的板端差异来源。
+- 当前版本已改为DP模式B口并启用输出寄存器，ADPCM数据地址在两次取样间有充分
+  建立时间；更新后的bit和报告已替换到 `artifacts/`、`reports/`。
