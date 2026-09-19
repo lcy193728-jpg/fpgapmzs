@@ -868,16 +868,18 @@ reset_sync u_audio_serial_reset(.clk(hdmi_5x_clk),.rst_n_async(ext_rst_n),.rst_n
 wire audio_timing_locked,audio_timing_error,audio_sequence_error,audio_contract_error;
 wire [31:0] audio_accepted_samples,audio_media_samples,audio_mux_pairs,audio_zero_samples;
 wire [6:0] audio_fifo_level;
-wire audio_menu_sync,audio_emergency_sync;
+wire audio_menu_sync,audio_emergency_sync;wire [1:0] audio_scene_sync;
 wire feature_event_valid;wire [1:0] feature_event_kind,feature_event_media;
 wire zero_valid,zero_ready,media_valid,media_ready;
 wire signed [15:0] zero_left,zero_right,media_left,media_right;
 wire [8:0] media_gain;wire media_overflow,zero_overflow;wire [2:0] media_state;
 sync_2ff u_audio_menu_sync(.clk(video_clk),.async_in(menu_active),.sync_out(audio_menu_sync));
 sync_2ff u_audio_emergency_sync(.clk(video_clk),.async_in(emergency),.sync_out(audio_emergency_sync));
+sync_2ff u_audio_scene0_sync(.clk(video_clk),.async_in(scene_id[0]),.sync_out(audio_scene_sync[0]));
+sync_2ff u_audio_scene1_sync(.clk(video_clk),.async_in(scene_id[1]),.sync_out(audio_scene_sync[1]));
 audio_feature_events u_feature_events(
- .clk(video_clk),.rst_n(rst_n_vid),.menu_active(menu_active),.emergency(emergency),
- .scene_id(scene_id),.q_state(q_state),.q_t_tens(q_t_tens),.q_t_ones(q_t_ones),
+ .clk(video_clk),.rst_n(rst_n_vid),.menu_active(audio_menu_sync),.emergency(audio_emergency_sync),
+ .scene_id(audio_scene_sync),.q_state(q_state),.q_t_tens(q_t_tens),.q_t_ones(q_t_ones),
  .event_valid(feature_event_valid),.event_kind(feature_event_kind),.event_media(feature_event_media));
 audio_pcm_tone #(.PROFILE(0)) u_zero_source(
  .clk(video_clk),.rst_n(rst_n_vid),.enable(1'b0),.sample_valid(zero_valid),.sample_ready(zero_ready),
@@ -885,6 +887,7 @@ audio_pcm_tone #(.PROFILE(0)) u_zero_source(
 scene_audio_final u_scene_audio(
  .clk(video_clk),.rst_n(rst_n_vid),.event_valid(feature_event_valid),.event_kind(feature_event_kind),
  .media_id(feature_event_media),.menu_active(audio_menu_sync),.emergency(audio_emergency_sync),
+ .active_scene(audio_scene_sync),
  .sample_valid(media_valid),.sample_ready(media_ready),.sample_left(media_left),.sample_right(media_right),
  .sample_gain(media_gain),.overflow(media_overflow),.state_debug(media_state),.sample_count(audio_media_samples));
 audio_src_mux u_audio_mux(

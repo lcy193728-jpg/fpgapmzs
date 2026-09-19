@@ -5,9 +5,9 @@ $taskExe=Join-Path $TdRoot 'bin\td_commands_prompt.exe'
 if(!(Test-Path -LiteralPath $taskExe)){throw "TD executable missing: $taskExe"}
 $taskLogDir=Join-Path $taskRoot 'audio_final\build'
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
-# TD resolves logical-BRAM initialization files from its run directory.
-Copy-Item -LiteralPath (Join-Path $taskRoot 'audio_final\assets\alarm_4k_adpcm.dath') -Destination (Join-Path $taskLogDir 'alarm_4k_adpcm.dath') -Force
-$taskAsset=(Resolve-Path (Join-Path $taskRoot 'audio_final\assets\alarm_4k_adpcm.dath')).Path.Replace('\','/')
+# TD requires an absolute path for logical-BRAM initialization files.
+Copy-Item -LiteralPath (Join-Path $taskRoot 'audio_final\assets\alarm_3k_pcm8.dath') -Destination (Join-Path $taskLogDir 'alarm_3k_pcm8.dath') -Force
+$taskAsset=(Resolve-Path (Join-Path $taskRoot 'audio_final\assets\alarm_3k_pcm8.dath')).Path.Replace('\','/')
 $taskHeader=Join-Path $taskRoot 'audio_final\rtl\alarm_init_path.vh'
 [IO.File]::WriteAllText($taskHeader,('`define ALARM_INIT_FILE "'+$taskAsset+'"'+[Environment]::NewLine),[Text.Encoding]::ASCII)
 $taskTcl=(Join-Path $PSScriptRoot 'build_td.tcl').Replace('\','/')

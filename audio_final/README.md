@@ -18,10 +18,11 @@
 ## 真实警报资源
 
 来源文件为用户本机 `D:\App\QQMusic\铃声 - 防空警报_L.ogg`。工具截取前7秒、
-立体声合成单声道、重采样为4 kHz后编码为IMA-ADPCM；FPGA每个解码样本保持12个
-48 kHz采样周期。有效压缩数据为14000字节，`assets/alarm_4k_adpcm.dath` 补齐为
-16384字节并随bit进入片内BRAM，不占TF卡扇区和SDRAM，不影响现有图片读取。转换参数、原文件哈希和
-资源哈希见 `assets/alarm_audio.json`。`alarm_4k_reference.wav` 供上板前试听。
+立体声合成单声道、重采样为3 kHz并量化为有符号8 bit PCM；FPGA把每个ROM采样保持
+16个周期后直接形成48 kHz PCM，不再使用ADPCM状态解码。有效数据21000字节，
+`assets/alarm_3k_pcm8.dath` 补齐为21504字节并随bit进入片内BRAM，不占TF卡扇区和
+SDRAM，不影响现有图片读取。转换参数和哈希见 `assets/alarm_audio.json`，
+`alarm_3k_pcm8_board_48k.wav` 是当前位流理论上应输出的声音，供上板前直接试听对照。
 
 重新生成资源需要Codex Python运行环境中的 `numpy`、`scipy`、`soundfile`：
 
@@ -74,8 +75,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - ModelSim `vlog`已执行新增RTL和集成顶层的语法编译：0 error；按用户要求未运行功能仿真。
 - TD EDA 6.2.168.116已完成综合、布局布线、最终时序分析和bitgen：
-  `SWNS=+0.196 ns`，`HWNS=+0.004 ns`。
-- 最终资源：LUT 8952/19600、寄存器4592、BRAM 56/64、DSP 29/29；均未超限。
+  `SWNS=+0.183 ns`，`HWNS=+0.004 ns`。
+- 最终资源：LUT 8759/19600、寄存器4588、BRAM 61/64、DSP 29/29；均未超限。
 - 位流：`artifacts/pic_sdram_audio_final.bit`；SHA-256见 `artifacts/SHA256SUMS.txt`。
 - 最终面积、时序和完整构建日志位于 `reports/`。这些是软件构建结果，不代表已经完成实板验收。
 
@@ -83,13 +84,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - 会议工程当前没有独立发言计时端口，因此提醒以“进入会议场景”为计时起点；两个秒数
   是 `audio_feature_events.v` 的参数，后续接入正式会议计时事件时只需替换事件源。
-- 真实警报和可视化缓存使全工程使用56/64个BRAM，DSP已使用29/29。TD若报告资源超限，应停止下载并回传资源报告，
+- 真实警报和可视化缓存使全工程使用61/64个BRAM，DSP已使用29/29。TD若报告资源超限，应停止下载并回传资源报告，
   不能删除既有功能或改用旧报告判断。
 
 ## 上板问题修订
 
-- 首版上板反馈真实警报只剩很小的滴滴声。检查发现警报ROM使用了逻辑BRAM的
-  单端口A口读取方式，而该工程已验证的安路存储模板采用DP模式B口同步读取；这是
-  当前最可能的板端差异来源。
-- 当前版本已改为DP模式B口并启用输出寄存器，ADPCM数据地址在两次取样间有充分
-  建立时间；更新后的bit和报告已替换到 `artifacts/`、`reports/`。
+- 两次上板反馈警报只剩长短滴声，说明ADPCM软件参考结果不能代表器件内状态解码结果。
+  当前版本已删除硬件ADPCM解码器，改为直接读取有符号PCM8，避免步长表、预测器和
+  半字节状态产生板端差异。
+- 首版进入迎新无声，是菜单同步状态与欢迎事件同拍时可能丢弃事件。当前音频模块直接
+  检测“菜单→迎新”电平转换，不再依赖这一拍的外部事件。

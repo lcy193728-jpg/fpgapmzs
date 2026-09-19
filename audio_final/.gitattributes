@@ -1,3 +1,4 @@
 *.bit binary
 *.pcm binary
 *.wav binary
+*.raw binary

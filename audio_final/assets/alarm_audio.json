@@ -7,7 +7,12 @@
   "stored_rate": 4000,
   "samples": 28000,
   "adpcm_bytes": 14000,
+  "bram_depth": 16384,
   "adpcm_sha256": "07d9f4867d3870c4fdf866febf8de08df794b89dceb6c56c66e4a020b58b1f6d",
   "decoded_snr_db": 17.714441679271385,
-  "bram_depth": 16384
+  "active_format": "signed PCM8",
+  "active_rate": 3000,
+  "active_samples": 21000,
+  "active_bram_depth": 21504,
+  "active_sha256": "b4a12c233a4298c87bdbc62f7018413768db451fccf206f9d465c724bf7aedab"
 }
