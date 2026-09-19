@@ -1,0 +1,13 @@
+{
+  "source": "D:\\App\\QQMusic\\铃声 - 防空警报_L.ogg",
+  "source_sha256": "5e5cba946f3f91e3c4c90e47c134df04e0bc9752a6315e963a635a7e90d2ffc7",
+  "source_rate": 44100,
+  "source_channels": 2,
+  "clip_seconds": 7,
+  "stored_rate": 4000,
+  "samples": 28000,
+  "adpcm_bytes": 14000,
+  "adpcm_sha256": "07d9f4867d3870c4fdf866febf8de08df794b89dceb6c56c66e4a020b58b1f6d",
+  "decoded_snr_db": 17.714441679271385,
+  "bram_depth": 16384
+}

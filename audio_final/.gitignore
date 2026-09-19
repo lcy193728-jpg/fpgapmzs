@@ -1,0 +1,4 @@
+build/
+syntax_work*/
+*.log
+assets/alarm_6k_*
