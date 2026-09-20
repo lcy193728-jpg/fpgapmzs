@@ -51,10 +51,11 @@ module display_adjust #(
     // ---- 缩放(分辨率)条 + 轮播/手动状态卡 ----
     parameter [15:0] RES_HOLD_FRAMES = 16'd30, // 缩放档变化后条保持帧数
     parameter [15:0] MAN_HOLD_FRAMES = 16'd30, // 轮播/手动状态卡保持帧数
-    parameter [1:0]  MODE_PIC = 2'd0,    // 与 ui_key_ctrl 一致的模式编码
-    parameter [1:0]  MODE_BRI = 2'd1,
-    parameter [1:0]  MODE_RES = 2'd2,
-    parameter [1:0]  MODE_PERIOD = 2'd3  // 批次4: 轮播周期档(不弹 HUD)
+    parameter [2:0]  MODE_PIC = 3'd0,    // 与 ui_key_ctrl 一致的模式编码
+    parameter [2:0]  MODE_BRI = 3'd1,
+    parameter [2:0]  MODE_RES = 3'd2,
+    parameter [2:0]  MODE_PERIOD = 3'd3, // 批次4: 轮播周期档(不弹 HUD)
+    parameter [2:0]  MODE_MEET = 3'd4    // 会议计时档(2026-09-19: 不弹 HUD)
 )(
     input                video_clk,      // 像素时钟(≈25.175MHz)
     input                rst,            // 高有效复位
@@ -70,7 +71,7 @@ module display_adjust #(
     input        [3:0]   bri_level,      // 亮度档 0..15(默认 8)
     input        [3:0]   res_level,      // 缩放档 0..7(默认 4=100%)
     input                pic_manual,     // 1=手动单张 / 0=自动轮播
-    input        [1:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放
+    input        [2:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放/3周期/4会议
     // ---- 输出: 送 hdmi_tx ----
     output               hs_o, vs_o, de_o,
     output [DATA_W-1:0]  data_o
@@ -94,14 +95,14 @@ module display_adjust #(
     reg  [3:0] l_s0, l_s1;
     reg  [3:0] r_s0, r_s1;      // 缩放(分辨率)档 0..7
     reg        p_s0, p_s1;      // 轮播(0)/手动(1)
-    reg  [1:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放
+    reg  [2:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放/3周期/4会议
     wire menu_s  = m_s1;
     wire emerg_s = e_s1;
     wire busy_s  = b_s1;
     wire [3:0] lvl_s  = l_s1;
     wire [3:0] res_s  = r_s1;
     wire       man_s  = p_s1;
-    wire [1:0] mode_s = u_s1;
+    wire [2:0] mode_s = u_s1;
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
@@ -157,7 +158,7 @@ module display_adjust #(
     reg [15:0] res_cnt;        // 缩放条剩余显示帧数(0=隐藏)
     reg        man_past;      // 上一拍轮播/手动标志(变化 → 显示状态卡)
     reg [15:0] man_cnt;        // 状态卡剩余显示帧数(0=隐藏)
-    reg [1:0]  mode_past;     // 上一拍功能模式(切换 → 弹该模式的提示)
+    reg [2:0]  mode_past;     // 上一拍功能模式(切换 → 弹该模式的提示)
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
@@ -199,6 +200,8 @@ module display_adjust #(
                     MODE_RES: res_cnt <= RES_HOLD_FRAMES;   // 切到分辨率模式 → 缩放条
                     MODE_PERIOD: ;                          // 周期档(批次4): 弹窗沿用
                                                             // 上一条提示, 不额外弹卡
+                    MODE_MEET:   ;                          // 会议计时档: 不弹 HUD
+                                                            // (会议画面自带完整面板)
                     default : man_cnt <= MAN_HOLD_FRAMES;   // 切到图片模式 → 轮播/手动卡
                 endcase
             end

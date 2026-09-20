@@ -8,6 +8,9 @@
 //   重复添加这些 .v(会造成模块重复定义); 若工程树中已存在请移除。
 //   (osd_scene/quiz_ctrl 为阶段2d 新增的会议/抢答/应急场景层, 同法并入)
 //   (bmp_scale 为双线性插值缩放引擎, 串在 sd_card_bmp→frame_read_write 写通路)
+//   (meeting_cfg/meeting_ctrl/meeting_osd 为 2026-09-19 从 dev_sim 会议场景三
+//    整合进来的"会议议程控制与计时"链; meeting_osd 自带 meeting_fmt(串行 BCD
+//    格式化)与 meeting_glyph_rom(4096×16 会议专用字库), 均同法并入)
 //====================================================================
 `include "osd_welcome.v"
 `include "display_adjust.v"
@@ -15,14 +18,17 @@
 `include "osd_scene.v"
 `include "quiz_ctrl.v"
 `include "bmp_scale.v"
+`include "meeting_cfg.v"
+`include "meeting_ctrl.v"
+`include "meeting_osd.v"
 `include "reset_sync.v"
 `include "sync_2ff.v"
 
 module top(
 	input                       clk,
-	input                       key1,       //KEY1(A2)：场景内功能模式循环 0图片/切图→1亮度→2分辨率
-	input                       key2,       //KEY2(B2)：当前模式参数 减
-	input                       key3,       //KEY3(B1)：当前模式参数 加
+	input                       key1,       //KEY1(A2)：功能模式循环 0图片→1亮度→2缩放→3周期→4会议计时→0
+	input                       key2,       //KEY2(B2)：当前模式参数 减; 模式4=会议计时 开始/暂停/继续
+	input                       key3,       //KEY3(B1)：当前模式参数 加; 模式4=当前议程项 重新计时
 	input                       key4,       //KEY4(C1)：预留(已释放——原"自动/手动切换"并入模式0)
 	input [3:0]                 sw,         //板载拨码直接选场景: sw[0]=SW1场景0迎新
                                             //  sw[1]=SW2场景1会议 sw[2]=SW3场景2抢答
@@ -247,18 +253,62 @@ wire [7:0]                      img_no;        // 当前图序号(sd_card_bmp �
 wire [3:0]                      bmp_error;     // BMP 加载错误码(批次3: 0无/1头校验/2超时/3截断)
 
 //人机交互(ui_key_ctrl)输出
-wire [1:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率/3轮播周期
+wire [2:0]  ui_mode;        // 功能模式 0图片/1亮度/2缩放/3轮播周期/4会议计时
 wire [3:0]  res_level;      // 分辨率档 0..7
 wire [7:0]  pic_param;      // 图片参数(0=轮播 / N=手动第N张)
 wire [7:0]  ui_period_sec;  // 批次4 轮播间隔档(秒: 2/3/5/10/30)
 wire [31:0] ui_period_cyc;  // 批次4 轮播间隔(时钟周期) → sd_card_bmp
 wire        ui_disp_hold;   // 批次4 参数强显保持中(2 秒)
-wire [1:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时的 ui_mode)
+wire [2:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时的 ui_mode)
 wire        pic_manual;     // 1=手动单张(冻结自动轮播)
 wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
 wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
 wire        res_chg_pl;     // 缩放档变化脉冲(1拍) → bmp 缩放引擎重载当前图
+wire        key2_pl, key3_pl; // KEY2/KEY3 消抖按下脉冲(模式4 会议计时用, 见下)
 wire        bmp_slide_en;   // bmp 轮播使能 = 场景轮播使能 且 非手动单张
+
+//------------------------------------------------------------
+// 会议议程配置链(TF 卡固定扇区 → sd 域解析 → video 域显示/计时)
+//   sd_card_bmp.v 内部已例化 meeting_sd_rd(开机独占总线读 3 个扇区),
+//   本层只负责: 把写口接到 meeting_cfg 的 BRAM, 再串起
+//   meeting_cfg(video 域快照) → meeting_ctrl(七状态计时) → meeting_osd(画面)。
+//   ※ 会议逻辑全部在 video_clk(25MHz) 域, 与 OSD 同域, 无需额外握手。
+//------------------------------------------------------------
+wire        mtg_ram_we;         // 配置 RAM 写使能(→ meeting_cfg 写口)
+wire [10:0] mtg_ram_addr;       // 配置 RAM 写地址(0..1271)
+wire [7:0]  mtg_ram_data;       // 配置 RAM 写数据
+wire        mtg_ready;          // 配置有效(MTG1 解析通过)
+wire        mtg_error;          // 配置无效(坏/截断/超时)
+wire [4:0]  mtg_total;          // 议程项数 1..16
+wire        mtg_done;           // 配置读取收尾(此信号后 BMP 通路放行)
+
+wire        mtg_cfg_ready_v;    // 以下均由 meeting_cfg 在 video 域输出
+wire        mtg_cfg_error_v;
+wire [4:0]  mtg_total_v;
+wire [15:0] mtg_duration_v, mtg_next_duration_v;
+wire [319:0] mtg_title, mtg_next_title, mtg_meeting_name, mtg_organizer, mtg_venue;
+wire [319:0] mtg_notice, mtg_overview_title;
+wire [159:0] mtg_speaker, mtg_next_speaker;
+
+wire [2:0]  mtg_state;          // meeting_ctrl: 七状态
+wire [3:0]  mtg_current;        // 当前议程项(0 起)
+wire [15:0] mtg_remaining, mtg_overtime;
+wire        mtg_alarm_paused;
+wire [31:0] mtg_uptime;
+wire [1:0]  mtg_notice_sel;     // meeting_osd 输出(注意事项页选择)
+wire [3:0]  mtg_ov_index;       // meeting_osd 输出(议程总览行号)
+
+// 跨域电平(会议使能/应急告警) → video 域两级同步
+wire        meeting_en_v;
+wire        alarm_v;
+
+// 会议 OSD 输出像素流(插在 osd_scene 与 display_adjust 之间)
+wire        mo_hs;
+wire        mo_vs;
+wire        mo_de;
+wire [23:0] mo_data;
+wire [11:0] mo_px_x;
+wire [11:0] mo_px_y;
 
 
 wire									  write_clk;
@@ -370,7 +420,7 @@ sync_2ff u_sync_wr_ack (
 	
 //============================================================
 // 蓝桥风格人机交互控制器(ui_key_ctrl, sd_card_clk 控制域):
-//   KEY1(A2)=功能模式循环 0图片/切图→1亮度→2缩放→3周期→0
+//   KEY1(A2)=功能模式循环 0图片/切图→1亮度→2缩放→3周期→4会议计时→0
 //   KEY2(B2)=当前模式参数 减   KEY3(B1)=当前模式参数 加
 //   KEY4(C1)=**已释放**(顶层保留引脚, 不接逻辑, 留作后续扩展)
 //   模式0(图片/切图): 默认自动轮播; KEY3=下一张 / KEY2=上一张(第1张时按
@@ -381,6 +431,11 @@ sync_2ff u_sync_wr_ack (
 //                (档位变化输出 res_chg_pl → 重载当前图, 效果立即可见)
 //   模式3(周期): KEY3 + / KEY2 - 在 2/3/5/10/30 s 档间**环绕** →
 //                ui_period_cyc → bmp_read_auto.slide_interval(轮播间隔运行时可配)
+//   模式4(会议): 本模式不调显示参数(进入即回自动轮播); 仅把 KEY2/KEY3 的
+//                消抖脉冲 key2_pl/key3_pl 导出, 由顶层在"会议场景(latch=2)"
+//                下接 meeting_ctrl: KEY2=开始/暂停/继续, KEY3=当前项重新计时。
+//                (这就是把 dev_sim 会议场景三的 KEY1/KEY4 控制改造成本板
+//                 "统一按键样式"的落地方式; 原按键功能全部保留, 无副作用)
 //   ※ 按键只调参数, 与场景切换无关(场景由拨码决定, 见 scene_control)
 //   ※ 所有场景共用同一套按键语义(全局统一样式)
 //============================================================
@@ -405,7 +460,9 @@ ui_key_ctrl #(
     .pic_param           (pic_param            ),
     .key_next_pl         (key_next_pl          ),
     .key_prev_pl         (key_prev_pl          ),
-    .res_chg_pl          (res_chg_pl           )
+    .res_chg_pl          (res_chg_pl           ),
+    .key2_pl             (key2_pl              ),  // 模式4: 会议计时 开始/暂停/继续
+    .key3_pl             (key3_pl              )   // 模式4: 当前议程项 重新计时
 );
 
 //============================================================
@@ -485,6 +542,19 @@ sd_card_bmp  sd_card_bmp_m0(
 	.zone_max_img               (zone_max_l               ),
 	.zone_load                  (zone_load_l              ),
 	.reload_req                 (res_chg_pl               ),
+	// ---- 会议议程配置(TF 卡固定扇区, MTG1 字节流) ----
+	//   开机先独占总线读 3 个扇区 → 解析结果直写 meeting_cfg 的配置 BRAM;
+	//   读毕(或超时) mtg_done=1 才放行 BMP 扫描(方案A 开机串行化)。
+	//   ⚠ 该扇区号必须与卡上实际写入位置一致, 且不得压在 BMP 素材区
+	//     (素材区见上方 Z_*_START, 最大到 135704)。改卡布局后同步此处。
+	.mtg_start_sector           (32'd200000               ),
+	.mtg_ram_we                 (mtg_ram_we               ),
+	.mtg_ram_addr               (mtg_ram_addr             ),
+	.mtg_ram_data               (mtg_ram_data             ),
+	.mtg_ready                  (mtg_ready                ),
+	.mtg_error                  (mtg_error                ),
+	.mtg_total                  (mtg_total                ),
+	.mtg_done                   (mtg_done                 ),
 	.write_req                  (sd_card_write_req        ),
 	.write_req_ack              (write_req_ack_sd         ),  // ext_mem_clk→sd_card_clk 已两级同步(见 u_sync_wr_ack)
 	.write_en                   (sd_card_write_en         ),
@@ -540,15 +610,16 @@ bmp_scale bmp_scale_m0(
 //============================================================
 // 参数强显保持: 保持期内用"动作发生时的模式"取值, 否则用当前模式
 //   (disp_sel 只会是 1/2/3 之一 —— 只有模式1/2/3 会产生参数动作)
-wire [1:0] disp_mode = ui_disp_hold ? ui_disp_sel : ui_mode;
+wire [2:0] disp_mode = ui_disp_hold ? ui_disp_sel : ui_mode;
 
 // 当前模式对应的参数值(0..255)
 reg [7:0] param_val;
 always @(*) begin
     case (disp_mode)
-        2'd1:    param_val = {4'd0, bri_level};   // 亮度档 0..15
-        2'd2:    param_val = {4'd0, res_level};   // 分辨率档 0..7
-        2'd3:    param_val = ui_period_sec;       // 轮播间隔秒 2/3/5/10/30
+        3'd1:    param_val = {4'd0, bri_level};   // 亮度档 0..15
+        3'd2:    param_val = {4'd0, res_level};   // 分辨率档 0..7
+        3'd3:    param_val = ui_period_sec;       // 轮播间隔秒 2/3/5/10/30
+        3'd4:    param_val = 8'd0;                // 会议计时模式: 无参数, 百/十/个位全灭
         default: param_val = pic_param;           // 0=轮播 / N=手动第N张
     endcase
 end
@@ -568,7 +639,7 @@ seg_decoder u_dec_scene (.bin_data({2'b0, scene_id}), .seg_data(dec_scene));
 seg_decoder u_dec_h     (.bin_data(p_h              ), .seg_data(dec_h    ));
 seg_decoder u_dec_t     (.bin_data(p_t              ), .seg_data(dec_t    ));
 seg_decoder u_dec_o     (.bin_data(p_o              ), .seg_data(dec_o    ));
-seg_decoder u_dec_mode  (.bin_data({2'b0, ui_mode }), .seg_data(dec_mode ));
+seg_decoder u_dec_mode  (.bin_data({1'b0, ui_mode }), .seg_data(dec_mode ));
 
 localparam [7:0] SEG_BLANK = 8'hFF;   // 全灭(含小数点)
 localparam [7:0] SEG_DASH  = 8'hBF;   // 仅 g 段亮 = "-"
@@ -675,9 +746,12 @@ wire        osd_rom_en   = m_rom_en | w_rom_en | s_rom_en;
 wire [12:0] osd_rom_addr = m_rom_en  ? m_rom_addr :
                            (w_rom_en ? w_rom_addr : s_rom_addr);
 
+// 深度必须覆盖 osd_font_rom.v 里实际写入的最大下标(现为 6992 words:
+//   0..5855 旧字模 + 5856..6991 会议议程字模 AG0/AG1..AG_HINT)。
+//   原写 5856 会让 mem[5856..] 越界 → TD HDL-8007 → osd_font_rom 变 black box。
 osd_font_rom #(
     .ADDR_W (13),
-    .DEPTH  (5856)
+    .DEPTH  (6992)
 ) u_osd_font_rom (
     .clk    (video_clk),
     .rst    (~rst_n_vid),
@@ -797,6 +871,159 @@ osd_scene #(
 );
 
 //============================================================
+// 会议议程控制链(2026-09-19 从 dev_sim 会议场景三整合进本上板工程)
+//   数据流: TF 卡固定扇区 →(sd_card_bmp 内 meeting_sd_rd, sd 域)
+//           → meeting_cfg(BRAM + video 域快照) → meeting_ctrl(七状态计时)
+//           ⇄ meeting_osd(会议画面, 串在 osd_scene 之后)
+//   按键  : 只在"会议场景(latch=2) + 功能模式4"下, 把 KEY2/KEY3 的消抖脉冲
+//           跨到 video 域接 meeting_ctrl 的 press[0](开始/暂停/继续)与
+//           press[3](当前项重新计时); 其它场景/模式完全不采用 → 原按键
+//           功能(亮度/缩放/周期/切图)一字未改。
+//   ※ 会议逻辑全部在 video_clk(25MHz) 域(dev_sim 控制域是 100MHz, 上板按
+//     实际像素域改 SEC_CYCLES=25_000_000, 计时仍是真实秒)。
+//============================================================
+// ---- 使能/告警 电平跨域(sd_card_clk → video_clk, 两级同步) ----
+sync_2ff u_sync_meet_en (
+    .clk        (video_clk    ),
+    .async_in   (meeting_en   ),
+    .sync_out   (meeting_en_v )
+);
+sync_2ff u_sync_alarm (
+    .clk        (video_clk    ),
+    .async_in   (emergency    ),
+    .sync_out   (alarm_v      )
+);
+
+// ---- 会议按键脉冲跨域: 100MHz 单拍(10ns) vs video 周期(40ns) ----
+//   直接两级同步会漏采, 故先转"翻转电平", 同步后再做边沿检测还原单拍脉冲。
+wire k2_meet = key2_pl & meeting_en & (ui_mode == 3'd4);
+wire k3_meet = key3_pl & meeting_en & (ui_mode == 3'd4);
+
+reg k2_tog, k3_tog;
+always @(posedge sd_card_clk) begin
+    if (!rst_n_sd) begin
+        k2_tog <= 1'b0;
+        k3_tog <= 1'b0;
+    end
+    else begin
+        if (k2_meet) k2_tog <= ~k2_tog;
+        if (k3_meet) k3_tog <= ~k3_tog;
+    end
+end
+
+reg k2_s0, k2_s1, k2_s2, k3_s0, k3_s1, k3_s2;
+always @(posedge video_clk) begin
+    if (!rst_n_vid) begin
+        k2_s0 <= 1'b0; k2_s1 <= 1'b0; k2_s2 <= 1'b0;
+        k3_s0 <= 1'b0; k3_s1 <= 1'b0; k3_s2 <= 1'b0;
+    end
+    else begin
+        k2_s0 <= k2_tog; k2_s1 <= k2_s0; k2_s2 <= k2_s1;
+        k3_s0 <= k3_tog; k3_s1 <= k3_s0; k3_s2 <= k3_s1;
+    end
+end
+
+wire meet_press_start  = k2_s1 ^ k2_s2;   // 1 拍: 开始/暂停/继续
+wire meet_press_retime = k3_s1 ^ k3_s2;   // 1 拍: 当前议程项重新计时
+
+// ---- 配置存储 + 视频域快照(写口在 sd 域, 读口在 video 域) ----
+meeting_cfg meeting_cfg_m0(
+    .wr_clk         (sd_card_clk        ),
+    .wr_en          (mtg_ram_we         ),
+    .wr_addr        (mtg_ram_addr       ),
+    .wr_data        (mtg_ram_data       ),
+    .cfg_ready      (mtg_ready          ),
+    .cfg_error      (mtg_error          ),
+    .cfg_total      (mtg_total          ),
+    .cfg_current    (mtg_current        ),
+    .clk            (video_clk          ),
+    .rst            (~rst_n_vid         ),
+    .notice_sel     (mtg_notice_sel     ),
+    .overview_index (mtg_ov_index       ),
+    .ready          (mtg_cfg_ready_v    ),
+    .error          (mtg_cfg_error_v    ),
+    .total          (mtg_total_v        ),
+    .current        (                   ),
+    .duration       (mtg_duration_v     ),
+    .next_duration  (mtg_next_duration_v),
+    .title          (mtg_title          ),
+    .meeting_name   (mtg_meeting_name   ),
+    .organizer      (mtg_organizer      ),
+    .venue          (mtg_venue          ),
+    .notice         (mtg_notice         ),
+    .overview_title (mtg_overview_title ),
+    .speaker        (mtg_speaker        ),
+    .next_title     (mtg_next_title     ),
+    .next_speaker   (mtg_next_speaker   )
+);
+
+// ---- 七状态议程计时(会议场景内使能; 配置有效才走计时) ----
+meeting_ctrl #(
+    .SEC_CYCLES     (25_000_000         )   // video_clk = 25.000MHz
+) meeting_ctrl_m0(
+    .clk            (video_clk          ),
+    .rst            (~rst_n_vid         ),
+    .en             (meeting_en_v       ),
+    .config_ready   (mtg_cfg_ready_v    ),
+    .alarm          (alarm_v            ),
+    .press          ({meet_press_retime, 1'b0, 1'b0, meet_press_start}),
+    .end_long       (1'b0               ),  // 本板只用 KEY2/KEY3 两个功能, 不设长按
+    .home_long      (1'b0               ),
+    .total          (mtg_total_v        ),
+    .duration       (mtg_duration_v     ),
+    .state          (mtg_state          ),
+    .current        (mtg_current        ),
+    .remaining      (mtg_remaining      ),
+    .overtime       (mtg_overtime       ),
+    .alarm_paused   (mtg_alarm_paused   ),
+    .warn_event     (                   ),
+    .timeout_event  (                   ),
+    .uptime         (mtg_uptime         )
+);
+
+// ---- 会议场景画面(插在 osd_scene 与 display_adjust 之间) ----
+//   使能 = 会议场景 且 配置已就绪: 配置缺失时本层不画, 自动退回 osd_scene
+//   原有的"会议公告"画面(优雅降级; osd_scene 本身一字未改)。
+meeting_osd meeting_osd_m0(
+    .clk            (video_clk          ),
+    .rst            (~rst_n_vid         ),
+    .en             (meeting_en_v & mtg_cfg_ready_v),
+    .alarm          (alarm_v            ),
+    .hs_i           (sc_hs              ),
+    .vs_i           (sc_vs              ),
+    .de_i           (sc_de              ),
+    .data_i         (sc_data            ),
+    .px_x           (sc_px_x            ),
+    .px_y           (sc_px_y            ),
+    .state          (mtg_state          ),
+    .current        (mtg_current        ),
+    .total          (mtg_total_v        ),
+    .remaining      (mtg_remaining      ),
+    .overtime       (mtg_overtime       ),
+    .duration       (mtg_duration_v     ),
+    .next_duration  (mtg_next_duration_v),
+    .uptime         (mtg_uptime         ),
+    .alarm_paused   (mtg_alarm_paused   ),
+    .title          (mtg_title          ),
+    .next_title     (mtg_next_title     ),
+    .meeting_name   (mtg_meeting_name   ),
+    .organizer      (mtg_organizer      ),
+    .venue          (mtg_venue          ),
+    .notice         (mtg_notice         ),
+    .overview_title (mtg_overview_title ),
+    .speaker        (mtg_speaker        ),
+    .next_speaker   (mtg_next_speaker   ),
+    .hs_o           (mo_hs              ),
+    .vs_o           (mo_vs              ),
+    .de_o           (mo_de              ),
+    .data_o         (mo_data            ),
+    .px_x_o         (mo_px_x            ),
+    .px_y_o         (mo_px_y            ),
+    .notice_sel     (mtg_notice_sel     ),
+    .overview_index (mtg_ov_index       )
+);
+
+//============================================================
 // 显示末级调节引擎(display_adjust, 阶段2b 扩展功能2/3):
 //   1) 16 档亮度增益(key2 增 / key3 减, 默认 8=×1.0)
 //   2) 亮度档变化显示左上角 16 档图形条(BAR_HOLD 帧后自动隐藏)
@@ -819,12 +1046,12 @@ osd_scene #(
 	) display_adjust_m0(
 	    .video_clk    (video_clk),
 	    .rst          (~rst_n_vid),
-	    .hs_i         (sc_hs),
-	    .vs_i         (sc_vs),
-	    .de_i         (sc_de),
-	    .data_i       (sc_data),
-	    .px_x         (sc_px_x),
-	    .px_y         (sc_px_y),
+	    .hs_i         (mo_hs),
+    .vs_i         (mo_vs),
+    .de_i         (mo_de),
+    .data_i       (mo_data),
+    .px_x         (mo_px_x),
+    .px_y         (mo_px_y),
 	    .menu_active  (menu_active),
 	    .emerg        (emergency),
 	    .bmp_busy     (img_busy),

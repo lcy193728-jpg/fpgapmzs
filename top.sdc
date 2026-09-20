@@ -109,6 +109,25 @@ set_false_path -from [get_clocks {sd_card_clk}] -to [get_clocks {clk}]
 set_false_path -from [get_pins {sys_pll_m0/pll_inst.extlock}]
 set_false_path -from [get_pins {video_pll_m0/pll_inst.extlock}]
 
+# ※ 2026-09-19 补充(复位网络整体免检)。上面两条只免检了"复位源"到同步器这一跳,
+#   但复位网络经 TD 高扇出综合复制后(实测 u_rst_sync_*/sync_ff[1] 展开成 87 个
+#   复制寄存器, 网名形如 rst_n_sd_dup_*/rst_n_mem_dup_*/RST_I_dup_*)会驱动
+#   **全设计每个触发器的异步复位端**(实测 17455 个 .sr 引脚)。这些路径的"数据"
+#   就是复位电平本身, 其恢复/移除检查(等价 hold)在复位已由两级同步器对齐本域
+#   时钟的前提下没有物理意义。
+#   未免检时的实测后果: 整合会议场景后 phy 阶段报 Hold WNS -61ps / 63 个违例
+#   端点(全是复位网的 .sr 落点), route 的 hold 修复 buffer 落位冲突
+#   (PHY-8023) → RUN-8102 布线不收敛; 而同一工程无会议场景时只有 27 个违例
+#   端点, 恰好能收敛 —— 即本次不收敛属于"复位网 hold 伪违例"被新逻辑放大。
+#   故补齐两条:
+#     (a) 从 4 个分域复位同步器输出寄存器出发的路径全部免检(限实例 u_rst_sync_*,
+#         避免误伤 sync_2ff 这类真正传数据的同步器 —— 实测 */sync_ff[1] 会多命中
+#         Sdr_init_done_sd / meeting_en_v / alarm / write_req_ack 等数据同步输出);
+#     (b) 以任意触发器异步复位端(.sr)为终点的路径全部免检, 覆盖
+#         rst_n_sd_rdy = rst_n_sd & Sdr_init_done_sd 这类组合复位网。
+set_false_path -from [get_regs -hier {u_rst_sync_*/sync_ff[1]}]
+set_false_path -to [get_pins -hier {*.sr}]
+
 #**************************************************************
 # Set Clock Uncertainty
 #**************************************************************

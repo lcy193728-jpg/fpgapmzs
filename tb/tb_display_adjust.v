@@ -98,7 +98,7 @@ module tb_display_adjust;
     reg  [3:0]  bri_level;
     reg  [3:0]  res_level;               // 缩放档 0..7(默认 4=100%)
     reg         pic_manual;              // 1=手动单张 / 0=自动轮播
-    reg  [1:0]  ui_mode;                 // 功能模式 0图片/1亮度/2缩放
+    reg  [2:0]  ui_mode;                 // 功能模式 0图片/1亮度/2缩放/3周期/4会议
     wire        hs_o, vs_o, de_o;
     wire [23:0] data_o;
 

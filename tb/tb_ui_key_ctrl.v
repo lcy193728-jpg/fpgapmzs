@@ -2,7 +2,7 @@
 // 模块名 : tb_ui_key_ctrl.v  (2026-09-17 批次4: 新增"周期"档 + 参数强显保持)
 // 功能   : 全局统一人机交互控制器(ui_key_ctrl)仿真
 // 规格(四个场景下语义完全一致, 与场景解耦):
-//   KEY1 : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→0
+//   KEY1 : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→4会议计时→0
 //   KEY2 : 当前模式参数 减 / KEY3 : 当前模式参数 加
 //     模式0 图片/切图 : 默认自动轮播; KEY3=下一张(并转入手动单张);
 //                       KEY2=上一张(已在第1张时改为回自动轮播);
@@ -30,13 +30,15 @@ module tb_ui_key_ctrl;
     reg  [7:0]  img_no;
     reg         scene_chg;
 
-    wire [1:0]  mode;
+    wire [2:0]  mode;                   // 0图片/1亮度/2缩放/3周期/4会议计时
+    wire        key2_pl;                // 会议模式: KEY2 消抖按下脉冲(导出)
+    wire        key3_pl;                // 会议模式: KEY3 消抖按下脉冲(导出)
     wire [3:0]  bri_level;
     wire [3:0]  res_level;
     wire [7:0]  period_sec;
     wire [31:0] period_cycles;
     wire        disp_hold;
-    wire [1:0]  disp_sel;
+    wire [2:0]  disp_sel;
     wire        pic_manual;
     wire [7:0]  pic_param;
     wire        key_next_pl;
@@ -66,7 +68,9 @@ module tb_ui_key_ctrl;
         .pic_param  (pic_param),
         .key_next_pl(key_next_pl),
         .key_prev_pl(key_prev_pl),
-        .res_chg_pl (res_chg_pl)
+        .res_chg_pl (res_chg_pl),
+        .key2_pl    (key2_pl),
+        .key3_pl    (key3_pl)
     );
 
     // 缩短内部消抖时间(仅仿真; 上板用默认 10ms = 1_000_000 拍)
@@ -147,7 +151,7 @@ module tb_ui_key_ctrl;
               "上电默认: 轮播周期档=3s(=300_000_000 周期, 与原固定间隔一致)");
         check(disp_hold == 1'b0, "上电默认: 无参数强显保持");
 
-        //-------- 2. KEY1 功能模式循环 0→1→2→3→0→1 --------
+        //-------- 2. KEY1 功能模式循环 0→1→2→3→4→0→1 --------
         press1;
         check(mode == 2'd1, "KEY1 第1按 -> 模式1 亮度");
         press1;
@@ -155,9 +159,20 @@ module tb_ui_key_ctrl;
         press1;
         check(mode == 2'd3, "KEY1 第3按 -> 模式3 轮播周期");
         press1;
-        check(mode == 2'd0, "KEY1 第4按 -> 模式0 图片(循环回绕)");
+        check(mode == 3'd4, "KEY1 第4按 -> 模式4 会议计时(2026-09-19 新增)");
+        // 模式4: KEY2/KEY3 只作会议计时控制脉冲, 不改任何显示参数
+        clear_flags;
+        press3;
+        check(bri_level == 4'd8 && res_level == 4'd4 && period_sec == 8'd3 &&
+              mode == 3'd4,
+              "模式4 KEY3 -> 不改亮度/缩放/周期(仅出会议脉冲)");
+        press2;
+        check(pic_manual == 1'b0 && mode == 3'd4,
+              "模式4 KEY2 -> 图片仍自动轮播 / 模式不变");
         press1;
-        check(mode == 2'd1, "KEY1 第5按 -> 模式1 亮度");
+        check(mode == 2'd0, "KEY1 第5按 -> 模式0 图片(循环回绕)");
+        press1;
+        check(mode == 2'd1, "KEY1 第6按 -> 模式1 亮度");
 
         //-------- 3. 模式1: 亮度 KEY3+/KEY2- 与边界钳位 --------
         clear_flags;                       // 之后整段不应出现 res_chg_pl
@@ -205,7 +220,8 @@ module tb_ui_key_ctrl;
         //-------- 5. 模式0: 切图(KEY2/KEY3 即上一张/下一张, 无需独立切换键) ----
         press1;                             // 2->3(周期)
         check(mode == 2'd3, "KEY1 -> 模式3 周期(经过周期档)");
-        press1;                             // 3->0
+        press1;                             // 3->4(会议)
+        press1;                             // 4->0
         check(mode == 2'd0, "KEY1 -> 模式0 图片/切图");
         check(pic_manual == 1'b0 && pic_param == 8'd0,
               "刚进模式0 -> 默认自动轮播(上电/切场景/切模式回来一律如此)");
@@ -253,7 +269,8 @@ module tb_ui_key_ctrl;
         clear_flags; press2;                // 5->4, 复位缩放档便于后续用例
         check(res_level == 4'd4, "模式2 KEY2 -> 缩放回到 4(100%)");
         press1;                             // 2->3(周期)
-        press1;                             // 3->0
+        press1;                             // 3->4(会议)
+        press1;                             // 4->0
         press1;                             // 0->1
         check(mode == 2'd1, "KEY1 -> 模式1(进入消抖鲁棒性测试段)");
 
@@ -313,7 +330,8 @@ module tb_ui_key_ctrl;
               "保持超时 -> disp_hold 自动落低(回到常规显示)");
 
         //   (b) 模式1 调亮度 → disp_sel=1; 切到模式2 后保持期内仍锁定亮度
-        press1;                             // 3->0
+        press1;                             // 3->4(会议)
+        press1;                             // 4->0
         press1;                             // 0->1
         check(mode == 2'd1, "KEY1 -> 模式1 亮度");
         press3;                             // 亮度 9->10
