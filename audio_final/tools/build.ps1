@@ -27,4 +27,18 @@ foreach($taskMetric in @('SWNS','HWNS')){
   if($taskSlack -lt 0){throw "$taskMetric=$taskSlack ns; do not download this build"}
   Write-Output "$taskMetric=$taskSlack ns"
 }
-Write-Output (Select-String -LiteralPath $taskLog -SimpleMatch 'FINAL_AUDIO_BUILD_COMPLETE:').Line
+$taskBit=Join-Path $taskLogDir 'pic_sdram_audio_final.bit'
+if(!(Test-Path -LiteralPath $taskBit)){throw "Missing generated bitstream: $taskBit"}
+$taskArtifacts=Join-Path $taskRoot 'audio_final\artifacts'
+$taskReports=Join-Path $taskRoot 'audio_final\reports'
+New-Item -ItemType Directory -Force -Path $taskArtifacts,$taskReports | Out-Null
+$taskArtifactBit=Join-Path $taskArtifacts 'pic_sdram_audio_final.bit'
+Copy-Item -LiteralPath $taskBit -Destination $taskArtifactBit -Force
+Copy-Item -LiteralPath $taskLog -Destination (Join-Path $taskReports 'build-output.txt') -Force
+Copy-Item -LiteralPath (Join-Path $taskLogDir 'pic_sdram_audio_final_phy.area') -Destination $taskReports -Force
+Copy-Item -LiteralPath $taskTiming -Destination $taskReports -Force
+$taskHash=(Get-FileHash -Algorithm SHA256 -LiteralPath $taskArtifactBit).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText((Join-Path $taskArtifacts 'SHA256SUMS.txt'),
+  "$taskHash  pic_sdram_audio_final.bit`n",[Text.Encoding]::ASCII)
+Write-Output "FINAL_AUDIO_BUILD_COMPLETE: $taskArtifactBit"
+Write-Output "SHA256=$taskHash"

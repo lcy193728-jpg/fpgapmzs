@@ -11,13 +11,16 @@
 | 迎新(scene_id=0) | 每次从菜单/其他场景进入时，100 ms提示音后播放现有六音欢迎旋律两遍，约3.1 s；切图不重播，结束后静音 | 最终PCM波形和峰值条；结束后归零 |
 | 会议(scene_id=1) | 无入场旋律、无背景音乐。进入后计时，60 s播放一次提醒音，120 s播放两次超时音；离开重置 | 不显示 |
 | 抢答(scene_id=2) | 倒计时显示3、2、1时各响一次；选手锁定后播放成功旋律；无人抢答时播放两次超时音。暂不含“请抢答”和获胜选手语音 | 最终PCM波形和峰值条 |
-| 应急(scene_id=3) | 最高优先级；循环播放用户提供录音的前7秒；解除后淡出并静音，不补播被中断声音 | 最终PCM波形和峰值条 |
+| 应急(scene_id=3) | 最高优先级；循环播放真实机械防空警报录音的前7秒；解除后淡出并静音，不补播被中断声音 | 最终PCM波形和峰值条 |
 
 所有声音保持48 kHz、16 bit双声道同值PCM，空闲时仍连续发送零样本。
 
 ## 真实警报资源
 
-来源文件为用户本机 `D:\App\QQMusic\铃声 - 防空警报_L.ogg`。工具截取前7秒、
+旧的QQ音乐铃声资源经试听只呈现电子滴声，已停止使用。当前来源为 Wikimedia Commons
+的真实机械警报录音 [`Sirene.ogg`](https://commons.wikimedia.org/wiki/File:Sirene.ogg)，
+作者 GeoTrinity，采用 CC BY-SA 3.0 许可；仓库保留原始文件
+`assets/sirene_wikimedia_original.ogg` 及来源元数据。工具截取其前7秒、
 立体声合成单声道、重采样为3 kHz并量化为有符号8 bit PCM；FPGA把每个ROM采样保持
 16个周期后直接形成48 kHz PCM，不再使用ADPCM状态解码。有效数据21000字节，
 `assets/alarm_3k_pcm8.dath` 补齐为21504字节并随bit进入片内BRAM，不占TF卡扇区和
@@ -37,7 +40,8 @@ SDRAM，不影响现有图片读取。转换参数和哈希见 `assets/alarm_aud
 2. 保留原四分区图片TF卡，警报资源无需复制到卡。
 3. 可直接使用已通过布局布线的 `audio_final/artifacts/pic_sdram_audio_final.bit`。
 4. 如需重编译，运行下方脚本；脚本会按当前仓库绝对路径自动生成TD所需的警报ROM路径，
-   然后完成综合、布局布线、时序检查和bitgen。不要把工程搬动后直接复用旧的中间数据库。
+   然后完成综合、布局布线、时序检查和bitgen，并把新位流、报告及SHA-256自动发布到
+   `audio_final/artifacts/` 与 `audio_final/reports/`。不要从 `audio_final/build/` 手工挑选文件。
 5. 检查本次资源报告：BRAM不得超限；Setup/Hold均不得为负。
 6. 首次只JTAG/SRAM下载bit，不要先写Flash。
 
@@ -76,7 +80,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 - ModelSim `vlog`已执行新增RTL和集成顶层的语法编译：0 error；按用户要求未运行功能仿真。
 - TD EDA 6.2.168.116已完成综合、布局布线、最终时序分析和bitgen：
   `SWNS=+0.183 ns`，`HWNS=+0.004 ns`。
-- 最终资源：LUT 8759/19600、寄存器4588、BRAM 61/64、DSP 29/29；均未超限。
+- 最终资源：LUT 11505/19600、寄存器4539/19600、BRAM 61/64、DSP 29/29；均未超限。
 - 位流：`artifacts/pic_sdram_audio_final.bit`；SHA-256见 `artifacts/SHA256SUMS.txt`。
 - 最终面积、时序和完整构建日志位于 `reports/`。这些是软件构建结果，不代表已经完成实板验收。
 

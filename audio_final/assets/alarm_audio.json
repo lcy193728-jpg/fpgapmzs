@@ -1,18 +1,21 @@
 {
-  "source": "D:\\App\\QQMusic\\铃声 - 防空警报_L.ogg",
-  "source_sha256": "5e5cba946f3f91e3c4c90e47c134df04e0bc9752a6315e963a635a7e90d2ffc7",
-  "source_rate": 44100,
-  "source_channels": 2,
+  "source": "D:\\fpga_work\\fpgapmzs\\audio_final\\assets\\sirene_wikimedia_original.ogg",
+  "source_sha256": "f595519b22ca200c47ed8dc5c2469e34c2f30969c31b2934fc650e812c912736",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Sirene.ogg",
+  "source_author": "GeoTrinity",
+  "source_license": "CC BY-SA 3.0",
+  "source_rate": 8000,
+  "source_channels": 1,
   "clip_seconds": 7,
   "stored_rate": 4000,
   "samples": 28000,
   "adpcm_bytes": 14000,
   "bram_depth": 16384,
-  "adpcm_sha256": "07d9f4867d3870c4fdf866febf8de08df794b89dceb6c56c66e4a020b58b1f6d",
-  "decoded_snr_db": 17.714441679271385,
+  "adpcm_sha256": "d11b2a1f55da12870a37d5af7b5789139349edd29e33d3dd0148163f6800dbfe",
+  "decoded_snr_db": 16.1562962324046,
   "active_format": "signed PCM8",
   "active_rate": 3000,
   "active_samples": 21000,
   "active_bram_depth": 21504,
-  "active_sha256": "b4a12c233a4298c87bdbc62f7018413768db451fccf206f9d465c724bf7aedab"
+  "active_sha256": "42d17b31e210dadd28dcb3df2bb431ff951f7111edb2d2e4a80e04bc82323aa1"
 }

@@ -4,10 +4,10 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-SRC = Path(r"D:\App\QQMusic\铃声 - 防空警报_L.ogg")
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"
 ASSETS.mkdir(parents=True, exist_ok=True)
+SRC = ASSETS / "sirene_wikimedia_original.ogg"
 RATE = 4000
 SECONDS = 7
 
@@ -68,6 +68,8 @@ sf.write(ASSETS/'alarm_3k_pcm8_board_48k.wav',
          np.repeat(pcm8.astype(np.int16)<<8,16),48000,subtype='PCM_16')
 meta={
  'source':str(SRC),'source_sha256':hashlib.sha256(SRC.read_bytes()).hexdigest(),
+ 'source_url':'https://commons.wikimedia.org/wiki/File:Sirene.ogg',
+ 'source_author':'GeoTrinity','source_license':'CC BY-SA 3.0',
  'source_rate':sr,'source_channels':audio.shape[1],'clip_seconds':SECONDS,
  'stored_rate':RATE,'samples':len(pcm),'adpcm_bytes':len(adpcm),'bram_depth':bram_depth,
  'adpcm_sha256':hashlib.sha256(adpcm).hexdigest(),
