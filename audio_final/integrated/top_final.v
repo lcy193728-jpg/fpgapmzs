@@ -18,6 +18,9 @@
 `include "../../src/bmp_scale.v"
 `include "../../src/reset_sync.v"
 `include "../../src/sync_2ff.v"
+`include "../../src/emergency_alarm_ctrl.v"
+`include "../../src/emergency_font_rom.v"
+`include "../../src/emergency_multi_overlay.v"
 `include "../rtl/audio_feature_events.v"
 `include "../rtl/scene_audio_final.v"
 `include "../rtl/audio_viz_overlay.v"
@@ -234,6 +237,8 @@ wire signed [15:0] audio_left,audio_right;
 wire                            meeting_en;    // 1=会议场景(latch=2 且非应急)
 wire                            quiz_en;       // 1=抢答场景(latch=3 且非应急)
 wire                            alarm_en;      // 1=应急(最高优先级)
+wire [1:0]                      alarm_type;    // KEY4 循环: 火灾/地震/恶劣天气/临时疏散
+wire [3:0]                      alarm_mt, alarm_mo, alarm_st, alarm_so;
 wire [1:0]                      q_state;       // 抢答状态 0等待 1抢答中 2锁定 3超时
 wire [1:0]                      q_winner;      // 胜者 0..3(屏显 +1)
 wire [3:0]                      q_t_tens;      // 倒计时 BCD 十位
@@ -452,6 +457,13 @@ scene_control scene_control_m0(
 assign meeting_en = (latch_sw == 3'd2) & ~emergency;
 assign quiz_en    = (latch_sw == 3'd3) & ~emergency;
 assign alarm_en   = emergency;
+
+// KEY4 原为预留键，仅在应急场景中用于四类告警循环选择；进入应急默认火灾。
+emergency_alarm_ctrl #(.CLK_HZ(100_000_000)) u_alarm_type_ctrl(
+    .clk(sd_card_clk), .rst(~rst_n_sd), .alarm_en(alarm_en), .key4_raw(key4),
+    .alarm_type(alarm_type), .elapsed_m_tens(alarm_mt), .elapsed_m_ones(alarm_mo),
+    .elapsed_s_tens(alarm_st), .elapsed_s_ones(alarm_so)
+);
 
 //============================================================
 // 抢答台控制(quiz_ctrl, sd_card_clk 域):
@@ -798,7 +810,7 @@ osd_scene #(
     .px_y         (wl_px_y),
     .meeting_en   (meeting_en),
     .quiz_en      (quiz_en),
-    .alarm_en     (alarm_en),
+    .alarm_en     (1'b0), // 四类应急画面由下级 emergency_multi_overlay 统一绘制
     .qstate       (q_state),
     .winner       (q_winner),
     .t_tens       (q_t_tens),
@@ -817,10 +829,21 @@ osd_scene #(
     .px_y_o       (sc_px_y)
 );
 
+wire em_hs, em_vs, em_de;
+wire [23:0] em_data;
+wire [11:0] em_px_x, em_px_y;
+emergency_multi_overlay u_emergency_multi(
+    .clk(video_clk),.rst(~rst_n_vid),.hs_i(sc_hs),.vs_i(sc_vs),.de_i(sc_de),
+    .data_i(sc_data),.px_x(sc_px_x),.px_y(sc_px_y),.alarm_en(alarm_en),
+    .alarm_type(alarm_type),.min_tens(alarm_mt),.min_ones(alarm_mo),
+    .sec_tens(alarm_st),.sec_ones(alarm_so),.hs_o(em_hs),.vs_o(em_vs),
+    .de_o(em_de),.data_o(em_data),.px_x_o(em_px_x),.px_y_o(em_px_y)
+);
+
 // Actual final-PCM visualization: welcome, quiz and alarm only.
 audio_viz_overlay u_audio_viz(
-    .clk(video_clk),.rst(~rst_n_vid),.hs_i(sc_hs),.vs_i(sc_vs),.de_i(sc_de),
-    .data_i(sc_data),.px_x(sc_px_x),.px_y(sc_px_y),.menu_active(menu_active),
+    .clk(video_clk),.rst(~rst_n_vid),.hs_i(em_hs),.vs_i(em_vs),.de_i(em_de),
+    .data_i(em_data),.px_x(em_px_x),.px_y(em_px_y),.menu_active(menu_active),
     .scene_id(scene_id),.pcm_take(audio_pcm_valid&&audio_pcm_ready),.pcm(audio_left),
     .hs_o(viz_hs),.vs_o(viz_vs),.de_o(viz_de),.data_o(viz_data),
     .px_x_o(viz_px_x),.px_y_o(viz_px_y));
