@@ -15,8 +15,13 @@ lines = [
     "暂停室外活动前往室内安全区", "远离树木和高空坠物",
     "按照现场人员指引有序撤离", "前往东区操场集合点",
     "持续时间：", "告警尚未解除", "仅管理员可解除告警",
-    "按键四切换告警类型", "0123456789："
+    "火灾警报 请沿东侧安全通道有序撤离 禁止乘坐电梯".ljust(32),
+    "地震避险 远离玻璃和高大物体 双手保护头部".ljust(32),
+    "恶劣天气 暂停室外活动前往室内安全区 远离树木和高空坠物".ljust(32),
+    "临时疏散 按照现场人员指引有序撤离 前往东区操场集合点".ljust(32),
+    "0123456789："
 ]
+assert all(len(s) == 32 for s in lines[22:26])
 chars = []
 for s in lines:
     for ch in s:
@@ -48,7 +53,7 @@ with map_out.open("w", encoding="utf-8", newline="\n") as f:
     f.write("  input [4:0] text_id; input [4:0] char_pos;\n  begin\n")
     f.write("    emergency_glyph_id = 7'h7f;\n    case ({text_id,char_pos})\n")
     for tid, text in enumerate(lines):
-        f.write(f"      // {tid}: {text}\n")
+        f.write(f"      // {tid}: {text.rstrip()}\n")
         for pos, ch in enumerate(text):
             f.write(f"      10'd{tid*32+pos}: emergency_glyph_id = 7'd{ids[ch]};\n")
     f.write("      default: emergency_glyph_id = 7'h7f;\n    endcase\n  end\nendfunction\n")

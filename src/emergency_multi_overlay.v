@@ -27,10 +27,19 @@ module emergency_multi_overlay #(
     end
 
     reg [21:0] blink_cnt; reg blink;
+    reg vs_d; reg [8:0] scroll_phase;
+    wire vs_rise = vs_i & ~vs_d;
     always @(posedge clk) begin
       if(rst||!alarm_s) begin blink_cnt<=0;blink<=0; end
       else if(blink_cnt==BLINK_DIV-1) begin blink_cnt<=0;blink<=~blink; end
       else blink_cnt<=blink_cnt+1'b1;
+    end
+    always @(posedge clk) begin
+      if(rst||!alarm_s) begin vs_d<=0;scroll_phase<=0; end
+      else begin
+        vs_d<=vs_i;
+        if(vs_rise) scroll_phase<=scroll_phase+1'b1; // 512px 周期，每帧左移 1px
+      end
     end
 
     reg hs1,vs1,de1,hs2,vs2,de2; reg [23:0] d1,d2;
@@ -43,15 +52,15 @@ module emergency_multi_overlay #(
 
     // Text rows: large heading/type plus seven compact information rows.
     reg [4:0] text_id; reg [4:0] char_pos; reg [3:0] glyph_row; reg [3:0] glyph_col;
-    reg text_hit; reg [11:0] text_x0; reg large_text;
+    reg text_hit; reg [11:0] text_x0; reg large_text,type_large,scroll_text;
     reg [6:0] gid; reg font_en; reg [10:0] font_addr; wire [15:0] font_q;
     reg text_hit_q; reg [3:0] glyph_col_q; reg large_q;
     integer len;
     always @(*) begin
-      text_id=0;char_pos=0;glyph_row=0;glyph_col=0;text_hit=0;text_x0=0;large_text=0;len=0;
+      text_id=0;char_pos=0;glyph_row=0;glyph_col=0;text_hit=0;text_x0=0;large_text=0;type_large=0;scroll_text=0;len=0;
       if(alarm_s && de1) begin
         if(y1>=12'd16 && y1<12'd48) begin text_id=0;text_x0=256;large_text=1; end
-        else if(y1>=12'd68 && y1<12'd100) begin text_id={3'd0,type_s}+1'b1;text_x0=256;large_text=1; end
+        else if(y1>=12'd58 && y1<12'd122) begin text_id={3'd0,type_s}+1'b1;text_x0=192;type_large=1; end
         else if(y1>=12'd142 && y1<12'd158) begin text_id=(type_s<2)?5:((type_s==2)?6:7);text_x0=200; end
         else if(y1>=12'd174 && y1<12'd190) begin text_id=(type_s<2)?8:((type_s==2)?9:10);text_x0=200; end
         else if(y1>=12'd222 && y1<12'd238) begin text_id=11+({3'd0,type_s}<<1);text_x0=200; end
@@ -59,13 +68,21 @@ module emergency_multi_overlay #(
         else if(y1>=12'd310 && y1<12'd326) begin text_id=19;text_x0=240; end
         else if(y1>=12'd350 && y1<12'd366) begin text_id=20;text_x0=272; end
         else if(y1>=12'd390 && y1<12'd406) begin text_id=21;text_x0=248; end
-        else if(y1>=12'd448 && y1<12'd464) begin text_id=22;text_x0=248; end
+        else if(y1>=12'd448 && y1<12'd464) begin text_id=22+{3'd0,type_s};scroll_text=1; end
         len=emergency_text_len(text_id);
-        if(large_text) begin
+        if(type_large) begin
+          if(x1>=12'd192 && x1<12'd448) begin
+            text_hit=1;char_pos=(x1-12'd192)>>6;glyph_col=((x1-12'd192)&63)>>2;
+            glyph_row=(y1-12'd58)>>2;
+          end
+        end else if(large_text) begin
           if(x1>=text_x0 && x1<text_x0+len*32) begin
             text_hit=1;char_pos=(x1-text_x0)>>5;glyph_col=((x1-text_x0)&31)>>1;
             glyph_row=((y1-(text_id==0?16:68))&31)>>1;
           end
+        end else if(scroll_text) begin
+          text_hit=1;char_pos=(x1+scroll_phase)>>4;glyph_col=(x1+scroll_phase)&15;
+          glyph_row=y1-448;
         end else if(len!=0 && x1>=text_x0 && x1<text_x0+len*16) begin
           text_hit=1;char_pos=(x1-text_x0)>>4;glyph_col=(x1-text_x0)&15;
           case(text_id) 5,6,7:glyph_row=y1-142;8,9,10:glyph_row=y1-174;
@@ -111,8 +128,15 @@ module emergency_multi_overlay #(
 
     // Distinct vector pictograms at the left side of the information card.
     wire icon_box=(x2>=50&&x2<174&&y2>=132&&y2<286);
-    wire fire_icon=(type_s==0)&&(((x2>=92&&x2<132)&&(y2>=178&&y2<260))||
-      ((x2+y2>=270)&&(x2+y2<292)&&(x2>=72&&x2<142))||((x2+286-y2>=100)&&(x2+286-y2<120)&&(x2>=82&&x2<152)));
+    wire [11:0] fdx=(x2>112)?x2-112:112-x2;
+    wire [11:0] fdy=(y2>230)?y2-230:230-y2;
+    wire fire_outer=((y2>=176&&y2<278)&&(fdx+(fdy>>1)<52))||
+      ((y2>=140&&y2<226)&&fdx<((y2-140)>>1))||
+      ((y2>=180&&y2<250)&&(x2>=72&&x2<112)&&((112-x2)<((y2-180)>>1)));
+    wire fire_notch=(y2>=170&&y2<228&&x2>=112&&x2<154&&
+      (x2-112)>((y2-170)>>1));
+    wire fire_inner=(type_s==0)&&(y2>=214&&y2<274)&&fdx<((y2-202)>>2);
+    wire fire_icon=(type_s==0)&&fire_outer&&!fire_notch;
     wire quake_icon=(type_s==1)&&(((x2>=76&&x2<148)&&(y2>=180&&y2<252)&&((x2[3:0]<3)||(y2[3:0]<3)))||
       ((y2>=150&&y2<160)&&(x2>=58&&x2<166))||((y2>=270&&y2<278)&&(x2>=58&&x2<166)));
     wire [11:0] c1dx=(x2>90)?x2-90:90-x2, c1dy=(y2>194)?y2-194:194-y2;
@@ -121,10 +145,17 @@ module emergency_multi_overlay #(
       (x2>=70&&x2<150&&y2>=194&&y2<220));
     wire lightning=(type_s==2)&&(x2>=98&&x2<132&&y2>=218&&y2<274)&&
       ((x2<116&&y2<246)||(x2>=110&&y2>=240));
-    wire [11:0] hdx=(x2>102)?x2-102:102-x2, hdy=(y2>166)?y2-166:166-y2;
-    wire evac_icon=(type_s==3)&&(((hdx+hdy)<18)||
-      (x2>=96&&x2<110&&y2>=180&&y2<228)||((y2>=224&&y2<234)&&(x2>=76&&x2<132))||
-      ((x2>=128&&x2<158)&&(y2>=206&&y2<216))||((x2>=150&&x2<166)&&(y2>=198&&y2<224)));
+    wire [11:0] hdx=(x2>132)?x2-132:132-x2, hdy=(y2>170)?y2-170:170-y2;
+    wire exit_door=((x2>=58&&x2<68)||(x2>=106&&x2<116)||(y2>=144&&y2<154))&&
+      (x2>=58&&x2<116&&y2>=144&&y2<278);
+    wire [11:0] arrow_dy=(y2>223)?y2-223:223-y2;
+    wire exit_arrow=(x2>=116&&x2<170&&y2>=218&&y2<228)||
+      (x2>=154&&x2<175&&arrow_dy<=((174-x2)>>1));
+    wire runner=((hdx+hdy)<15)||(x2>=126&&x2<138&&y2>=184&&y2<226)||
+      (x2>=112&&x2<152&&y2>=196&&y2<204)||
+      (x2>=104&&x2<116&&y2>=220&&y2<258)||
+      (x2>=142&&x2<154&&y2>=220&&y2<258);
+    wire evac_icon=(type_s==3)&&(exit_door||exit_arrow||runner);
     wire icon_ink=icon_box&&(fire_icon||quake_icon||cloud||lightning||evac_icon);
 
     wire top_bar=(y2<56); wire type_band=(y2>=62&&y2<108);
@@ -146,8 +177,14 @@ module emergency_multi_overlay #(
         else if(type_band||info_panel||timer_panel||status_band) outpix=panel;
         else if(footer) outpix=24'h101010;
         if(icon_box) outpix=24'h161616;
-        if(icon_ink||digit_ink) outpix=24'hffd60a;
-        if(text_ink) outpix=(y2>=350&&y2<366)?24'hffd60a:24'hffffff;
+        if(icon_ink) outpix=(type_s==0)?24'hff7a00:24'hffd60a;
+        if(fire_inner) outpix=24'hffd60a;
+        if(digit_ink) outpix=24'hffd60a;
+        if(text_ink) begin
+          if(y2>=58&&y2<122) outpix=24'hff3b30;
+          else if(y2>=350&&y2<366) outpix=24'hffd60a;
+          else outpix=24'hffffff;
+        end
       end
     end
     assign hs_o=hs2;assign vs_o=vs2;assign de_o=de2;assign data_o=outpix;assign px_x_o=x2;assign px_y_o=y2;
