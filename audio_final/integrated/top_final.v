@@ -589,6 +589,16 @@ wire        err_show = (bmp_error != 4'd0);
 wire [6:0]  dec_err;
 seg_decoder u_dec_err (.bin_data(bmp_error), .seg_data(dec_err));
 
+// ---- TEMPORARY bring-up diagnostic (应急音频调试用, 定位后请删除) ----
+// 应急期间: 第 6 位=音频状态机 state(0=IDLE 1=BLIP 2=MELODY 3=ALARM),
+//           第 5 位=媒体 FIFO 溢出标志(1=曾丢样本, 会导致音色碎裂/毛刺)。
+// 非应急时这两位的原有"错误码/横线"行为保持不变。
+wire [2:0]  astate_dbg;
+wire        aovf_dbg;
+wire [6:0]  dec_astate, dec_aovf;
+seg_decoder u_dec_astate (.bin_data({5'b0, astate_dbg}), .seg_data(dec_astate));
+seg_decoder u_dec_aovf   (.bin_data({3'b0, aovf_dbg}),   .seg_data(dec_aovf));
+
 seg_scan seg_scan_m0(
 	.clk                        (clk                      ),
 	.rst_n                      (rst_n_clk                ),
@@ -599,8 +609,10 @@ seg_scan seg_scan_m0(
 	.seg_data_2                 (blank_t ? SEG_BLANK : {1'b1, dec_t}),
 	.seg_data_3                 ({1'b1, dec_o}            ),
 	.seg_data_4                 ({1'b1, dec_mode}         ),
-	.seg_data_5                 (err_show ? {1'b1, 7'b000_0110} : SEG_DASH), // "E"
-	.seg_data_6                 (err_show ? {1'b1, dec_err}      : SEG_DASH),
+	.seg_data_5                 (emergency ? {1'b1, dec_aovf} :
+	                             (err_show ? {1'b1, 7'b000_0110} : SEG_DASH)), // 应急时=FIFO溢出
+	.seg_data_6                 (emergency ? {1'b1, dec_astate} :
+	                             (err_show ? {1'b1, dec_err} : SEG_DASH)), // 应急时=音频state
 	.seg_data_7                 (pic_manual ? SEG_CH_H : SEG_CH_A)
 );
 wire hs_0;
@@ -865,9 +877,7 @@ assign welcome_en = (latch_sw == 3'd1) && ~emergency;
 // Final audio feature layer. Original modules/files remain unchanged.
 wire audio_rst_n_ser;
 reset_sync u_audio_serial_reset(.clk(hdmi_5x_clk),.rst_n_async(ext_rst_n),.rst_n_sync(audio_rst_n_ser));
-wire audio_timing_locked,audio_timing_error,audio_sequence_error,audio_contract_error;
-wire [31:0] audio_accepted_samples,audio_media_samples,audio_mux_pairs,audio_zero_samples;
-wire [6:0] audio_fifo_level;
+wire [31:0] audio_media_samples,audio_mux_pairs,audio_zero_samples;
 wire audio_menu_sync,audio_emergency_sync;wire [1:0] audio_scene_sync;
 wire feature_event_valid;wire [1:0] feature_event_kind,feature_event_media;
 wire zero_valid,zero_ready,media_valid,media_ready;
@@ -896,14 +906,133 @@ audio_src_mux u_audio_mux(
  .media_left(media_left),.media_right(media_right),.media_gain(media_gain),
  .sample_valid(audio_pcm_valid),.sample_ready(audio_pcm_ready),.sample_left(audio_left),.sample_right(audio_right),
  .accepted_pairs(audio_mux_pairs));
-audio_hdmi_output u_audio_hdmi(
- .pixel_clk(video_clk),.serial_clk(hdmi_5x_clk),.pixel_rst_n(rst_n_vid),.serial_rst_n(audio_rst_n_ser),
- .hs(fin_hs),.vs(fin_vs),.de(fin_de),.rgb(fin_data),
- .pcm_valid(audio_pcm_valid),.pcm_ready(audio_pcm_ready),.pcm_left(audio_left),.pcm_right(audio_right),
- .HDMI_CLK_P(HDMI_CLK_P),.HDMI_D0_P(HDMI_D0_P),.HDMI_D1_P(HDMI_D1_P),.HDMI_D2_P(HDMI_D2_P),
- .timing_locked(audio_timing_locked),.timing_error(audio_timing_error),
- .sequence_error(audio_sequence_error),.pcm_contract_error(audio_contract_error),
- .fifo_level(audio_fifo_level),.accepted_samples(audio_accepted_samples));
+//============================================================
+// HDMI 输出级: 官方 HDMI 1.4b 发送器 IP + 官方 10:1 LVDS PHY
+//   接法与小鹅通《第二讲第1课》top_tf_hdmi_audio.v 完全一致。
+//   数据岛的位置/前导/保护带/AVI+Audio InfoFrame 全部由 IP 内部
+//   按 HDMI 1.4b 规范产生(原手写核心把数据岛放在了 HSYNC 脉冲
+//   内部, 转换芯片解不出音频)。IP 参数与本工程视频时序一致:
+//   800x525 @25MHz, HSA96/HFP16/HBP48, VSA2/VFP10/VBP33, RGB, 48K。
+//   音频源仍是本工程 48 kHz DDS 场景音, 只把 16 bit 样本左对齐成
+//   24 bit LPCM, 并按 48 kHz 给出一拍 I_audio_valid。
+//============================================================
+// 48 kHz 取样节拍: 25 MHz/48000 不是整数, 用相位累加器产生平均
+// 恰好 48 kHz 的单拍脉冲(与 scene_audio_final 内部同一个算法)。
+localparam integer AUDIO_CLK_HZ    = 25000000;
+localparam integer AUDIO_SAMPLE_HZ = 48000;
+reg [31:0] audio_rate_acc;
+wire audio_rate_tick = (audio_rate_acc >= (AUDIO_CLK_HZ - AUDIO_SAMPLE_HZ));
+always @(posedge video_clk or negedge rst_n_vid)
+    if(!rst_n_vid) audio_rate_acc <= 32'd0;
+    else if(audio_rate_tick) audio_rate_acc <= audio_rate_acc - (AUDIO_CLK_HZ - AUDIO_SAMPLE_HZ);
+    else audio_rate_acc <= audio_rate_acc + AUDIO_SAMPLE_HZ;
+
+// 每拍只取一对样本: audio_src_mux 的输出在 ready 之前保持稳定
+assign audio_pcm_ready = audio_rate_tick;
+wire audio_hdmi_valid = audio_rate_tick && audio_pcm_valid;
+wire [23:0] audio_hdmi_left  = {audio_left , 8'h00};
+wire [23:0] audio_hdmi_right = {audio_right, 8'h00};
+
+// CTS 由 IP 侧实测的像素时钟数给出(每 48 个样本报一次), 因此
+// 25 MHz/48 kHz 这种非整数分频也能得到精确的 N/CTS。
+wire        audio_acr_valid;
+wire [19:0] audio_acr_cts,audio_acr_n;
+audio_arc_calculate #(
+    .ACR_N (6144)
+) u_audio_arc_calculate (
+    .I_clk         (video_clk),
+    .I_rst         (~rst_n_vid),
+    .I_audio_valid (audio_hdmi_valid),
+    .O_acr_valid   (audio_acr_valid),
+    .O_acr_cts     (audio_acr_cts),
+    .O_acr_n       (audio_acr_n)
+);
+
+// RGB/DE -> AXIS 视频流(IP 的视频输入口)
+wire        axis_s_user,axis_s_valid,axis_s_last,axis_s_ready;
+wire [23:0] axis_s_data;
+video_rgb_to_axis_640x480 u_video_rgb_to_axis_640x480 (
+    .I_clk         (video_clk),
+    .I_rst         (~rst_n_vid),
+    .I_vs          (fin_vs),
+    .I_de          (fin_de),
+    .I_rgb         (fin_data),
+    .O_video_user  (axis_s_user),
+    .O_video_valid (axis_s_valid),
+    .O_video_last  (axis_s_last),
+    .O_video_data  (axis_s_data)
+);
+
+wire [9:0] tmds_ch0_data,tmds_ch1_data,tmds_ch2_data,tmds_clk_data;
+wire       hdmi_edid_valid_unused,hdmi_video_locked_unused,hdmi_ddc_scl_unused,hdmi_ddc_sda_unused;
+wire [7:0] hdmi_edid_data_unused;
+
+// 板上 DDC 引脚未确认, 本版不做 EDID 读取: 触发恒 0, DDC 输出悬空。
+// 若发现 IP 因未读 EDID 不出图, 再接出 O_ddc_scl/IO_ddc_sda 并给一次触发。
+hdmi_1_4b_transmitter_core_wrapper #(
+    .DEVICE            ("EG"),
+    .HTOTAL            (800),
+    .HSA               (96),
+    .HFP               (16),
+    .HBP               (48),
+    .HACTIVE           (640),
+    .VTOTAL            (525),
+    .VSA               (2),
+    .VFP               (10),
+    .VBP               (33),
+    .VACTIVE           (480),
+    .VIDEO_VIC         (1),
+    .VIDEO_TPG         ("Disable"),
+    .VIDEO_FORMAT      ("RGB"),
+    .AUDIO_SAMPLE_RATE ("48K"),
+    .IIC_SCL_DIV       (250)
+) u_hdmi_1_4b_transmitter_core (
+    .I_pixel_clk        (video_clk),
+    .I_rst              (~rst_n_vid),
+    .I_edid_read_trig   (1'b0),
+    .O_edid_read_valid  (hdmi_edid_valid_unused),
+    .O_edid_read_data   (hdmi_edid_data_unused),
+    .I_axis_s_user      (axis_s_user),
+    .I_axis_s_valid     (axis_s_valid),
+    .I_axis_s_last      (axis_s_last),
+    .I_axis_s_data      (axis_s_data),
+    .O_axis_s_ready     (axis_s_ready),
+    .I_audio_valid      (audio_hdmi_valid),
+    .I_audio_left_data  (audio_hdmi_left),
+    .I_audio_right_data (audio_hdmi_right),
+    .I_acr_valid        (audio_acr_valid),
+    .I_acr_cts          (audio_acr_cts),
+    .I_acr_n            (audio_acr_n),
+    .O_video_locked     (hdmi_video_locked_unused),
+    .O_ddc_scl          (hdmi_ddc_scl_unused),
+    .IO_ddc_sda         (hdmi_ddc_sda_unused),
+    .O_ch0_tmds_data    (tmds_ch0_data),
+    .O_ch1_tmds_data    (tmds_ch1_data),
+    .O_ch2_tmds_data    (tmds_ch2_data),
+    .O_clk_tmds_data    (tmds_clk_data)
+);
+
+hdmi_phy_wrapper #(
+    .DEVICE ("EG")
+) u_hdmi_phy_wrapper (
+    .I_pixel_clk        (video_clk),
+    .I_serial_clk       (hdmi_5x_clk),
+    .I_rst              (~audio_rst_n_ser),
+    .I_tmds_channel_0   (tmds_ch0_data),
+    .I_tmds_channel_1   (tmds_ch1_data),
+    .I_tmds_channel_2   (tmds_ch2_data),
+    .I_tmds_channel_clk (tmds_clk_data),
+    .O_tmds_ch0_p       (HDMI_D0_P),
+    .O_tmds_ch1_p       (HDMI_D1_P),
+    .O_tmds_ch2_p       (HDMI_D2_P),
+    .O_tmds_clk_p       (HDMI_CLK_P)
+);
+
+// TEMPORARY bring-up diagnostic: digit 6 = emergency audio state machine state,
+// digit 5 = media-FIFO overflow flag (see seg_data_5/6 above). Delete this
+// assign together with the dec_astate/dec_aovf block when the alarm works.
+assign astate_dbg = media_state;
+assign aovf_dbg   = media_overflow;
 
 //video frame data read-write control
 frame_read_write frame_read_write_m0(

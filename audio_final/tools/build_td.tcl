@@ -24,6 +24,9 @@ export_db ${name}_gate.db
 load_run_param -run phy_1
 place
 route
+# 官方 DefaultFlow.tcl 的收尾步骤: route 之后跑一次 fix_hold 修保持时间,
+# 否则短路径(尤其 hdmi IP 内部 1 级逻辑的 EMB 写数据)会留下 hns 负值。
+fix_hold
 update_timing -mode final
 report_area -io_info -file ${name}_phy.area
 report_timing_summary -file ${name}_pr.timing

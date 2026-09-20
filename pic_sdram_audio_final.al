@@ -459,6 +459,46 @@
           <Attr Name="CompileOrder" Val="122" />
         </FileInfo>
       </File>
+      <File Path="audio_board/rtl/hdmi_1_4b_transmitter_core_wrapper.enc.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="123" />
+        </FileInfo>
+      </File>
+      <File Path="audio_board/rtl/lane_lvds_10_1.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="124" />
+        </FileInfo>
+      </File>
+      <File Path="audio_board/rtl/hdmi_phy_warpper.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="125" />
+        </FileInfo>
+      </File>
+      <File Path="audio_board/rtl/video_rgb_to_axis_640x480.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="126" />
+        </FileInfo>
+      </File>
+      <File Path="audio_board/rtl/audio_arc_calculate.v">
+        <FileInfo>
+          <Attr Name="UsedInSyn" Val="true" />
+          <Attr Name="UsedInP&R" Val="true" />
+          <Attr Name="BelongTo" Val="design_1" />
+          <Attr Name="CompileOrder" Val="127" />
+        </FileInfo>
+      </File>
     </Verilog>
     <VHDL>
       <File Path="src/hdmi/enc_file/DVITransmitter.enc.vhd">
