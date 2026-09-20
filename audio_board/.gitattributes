@@ -1,0 +1,4 @@
+# Preserve tutorial original bytes and downloadable FPGA bitstreams.
+*.v -text
+*.vh -text
+*.bit -text

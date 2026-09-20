@@ -1,0 +1,492 @@
+Created by          : Tang Dynasty v6.2.168116
+                    : Copyright (c) 2012-2025 Anlogic Inc.
+Generated           : Fri Sep 18 22:02:13 2026
+
+Top Model           : top
+Device              : EG4S20BG256
+Speed               : NA
+STA coverage        : 99.81%
+Constraint File     : D:/fpga_work/fpgapmzs/audio_board/integrated/audio.sdc;
+Confidence          : Routed
+Check Corner        : Both (Slow and Fast)
+CRPR Enabled        : Yes
+Report Scheme       : 10 end point(s) per path group, 1 path(s) per end point
+
+
+Check Status
+-------------
+
+Corner   | Max      Min     
+------------------------------------
+Slow     | yes      yes     
+Fast     | yes      yes     
+
+MCP/SMD Summary
+--------------------
+
+		Max Check
+		--------------------
+		     Total    Dominated     Shadowed      Ignored   Constraint
+		         8            8            0            0   set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+		         4            4            0            0   set_max_delay -from [get_regs -hier {u_audio_events/payload_hold[*]}] -to [get_regs -hier {u_audio_events/media_id[*] u_audio_events/event_kind[*]}] 40.000 -datapath_only
+
+		Min Check
+		--------------------
+		     Total    Dominated     Shadowed      Ignored   Constraint
+
+Status of timing exceptions
+--------------------------------------------------
+
+MCP/SMD Details
+--------------------
+
+
+Constraint     :   set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+Check Type     :   Max
+--------------------------------------------------------------------------------
+Total Paths    :            8
+Dominated      :            8,        100.0%
+
+
+Constraint     :   set_max_delay -from [get_regs -hier {u_audio_events/payload_hold[*]}] -to [get_regs -hier {u_audio_events/media_id[*] u_audio_events/event_kind[*]}] 40.000 -datapath_only
+Check Type     :   Max
+--------------------------------------------------------------------------------
+Total Paths    :            4
+Dominated      :            4,        100.0%
+
+
+Details on timing exceptions
+--------------------------------------------------
+
+Timing details for constraint:
+	set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+--------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+Path Group     :     
+set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D0_P HDMI_D1_P HDMI_D2_P}] 8.000 -datapath_only
+
+Type           :     SMD
+
+Statistics:
+Max            : SWNS      5.427ns, STNS      0.000ns,         0 Viol Endpoints,         4 Total Endpoints,         8 Paths Analyzed
+Min            : HWNS      0.000ns, HTNS      0.000ns,         0 Viol Endpoints,         0 Total Endpoints,         0 Paths Analyzed
+----------------------------------------------------------------------------------------------------
+
+Max Paths
+----------------------------------------------------------------------------------------------------
+Slack               : 5.427ns
+Begin Point         : HDMI_CLK_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_CLK_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=27)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_CLK_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y032            2.573    f     2.573          pin: HDMI_CLK_P_syn_2.opad
+net (fo=1)          K1                  0.000          2.573          net: HDMI_CLK_P,  audio_board/integrated/top_audio.v(45)
+                                                                      pin: HDMI_CLK_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              K1                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+Slack               : 5.427ns
+Begin Point         : HDMI_D0_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_D0_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=27)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_D0_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y008            2.573    f     2.573          pin: HDMI_D0_P_syn_2.opad
+net (fo=1)          F5                  0.000          2.573          net: HDMI_D0_P,  audio_board/integrated/top_audio.v(48)
+                                                                      pin: HDMI_D0_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              F5                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+Slack               : 5.427ns
+Begin Point         : HDMI_D1_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_D1_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=27)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_D1_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y005            2.573    f     2.573          pin: HDMI_D1_P_syn_2.opad
+net (fo=1)          E3                  0.000          2.573          net: HDMI_D1_P,  audio_board/integrated/top_audio.v(47)
+                                                                      pin: HDMI_D1_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              E3                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+Slack               : 5.427ns
+Begin Point         : HDMI_D2_P_syn_2.osclk (rising edge triggered by clock hdmi_5x_clk  { rise@0.000000ns  fall@4.000000ns  period=8.000000 })
+End Point           : HDMI_D2_P
+Check Type          : setup
+Process             : slow
+Budget              : 8.000ns
+Data Path Delay     : 2.573ns (cell 2.573ns (100%), net 0.000ns (0%))
+Clock Skew          : 0.000ns
+Logic Level         : 0
+Max Fanout          : 1
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.000ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[1]
+net (fo=27)                             0.000          0.000          net: u_audio_hdmi/u_phy/serial_clk,  audio_board/rtl/audio_eg4_phy.v(6)
+                                                                      pin: HDMI_D2_P_syn_2.osclk
+--------------------------------------------------------------------  ---------------
+PAD (clk2q)         x040y002            2.573    f     2.573          pin: HDMI_D2_P_syn_2.opad
+net (fo=1)          B3                  0.000          2.573          net: HDMI_D2_P,  audio_board/integrated/top_audio.v(46)
+                                                                      pin: HDMI_D2_P
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.573               
+
+constraint delay                        8.000          8.000               
+--------------------------------------------------------------------  ---------------
+output              B3                  0.000          8.000               
+clock uncertainty                       0.000          8.000               
+clock pessimism                         0.000          8.000               
+--------------------------------------------------------------------  ---------------
+Required                                               8.000               
+--------------------------------------------------------------------  ---------------
+Slack                                                  5.427               
+
+
+
+Min Paths
+----------------------------------------------------------------------------------------------------
+
+
+Timing details for constraint:
+	set_max_delay -from [get_regs -hier {u_audio_events/payload_hold[*]}] -to [get_regs -hier {u_audio_events/media_id[*] u_audio_events/event_kind[*]}] 40.000 -datapath_only
+--------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+Path Group     :     
+set_max_delay -from [get_regs -hier {u_audio_events/payload_hold[*]}] -to [get_regs -hier {u_audio_events/media_id[*] u_audio_events/event_kind[*]}] 40.000 -datapath_only
+
+Type           :     SMD
+
+Statistics:
+Max            : SWNS     37.849ns, STNS      0.000ns,         0 Viol Endpoints,         4 Total Endpoints,         4 Paths Analyzed
+Min            : HWNS      0.000ns, HTNS      0.000ns,         0 Viol Endpoints,         0 Total Endpoints,         0 Paths Analyzed
+----------------------------------------------------------------------------------------------------
+
+Max Paths
+----------------------------------------------------------------------------------------------------
+Slack               : 37.849ns
+Begin Point         : u_audio_events/payload_hold_reg[2]_syn_7.clk (rising edge triggered by clock sd_card_clk  { rise@0.000000ns  fall@5.000000ns  period=10.000000 })
+End Point           : u_audio_events/media_id_reg[0]_syn_7.c[1] (rising edge triggered by clock video_clk  { rise@0.000000ns  fall@20.000000ns  period=40.000000 })
+Check Type          : setup
+Process             : slow
+Budget              : 40.000ns { video_clk rising@0.000ns - sd_card_clk rising@0.000ns }
+Data Path Delay     : 2.035ns (cell 0.506ns (24%), net 1.529ns (76%))
+Clock Skew          : 0.000ns
+Logic Level         : 1 ( LUT3=1 )
+Max Fanout          : 2
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.100ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x000y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: sys_pll_m0/pll_inst.refclk
+PLL                 x000y071            0.000          0.000          pin: sys_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: sys_pll_m0/clk0_buf,  al_ip/sys_pll.v(40)
+                                                                      pin: sys_pll_m0/bufg_feedback.clki
+GCLK                x001y070z2          0.000          0.000          pin: sys_pll_m0/bufg_feedback.clko
+net (fo=1229)                           0.000          0.000          net: bmp_scale_m0/clk,  audio_board/integrated/../../src/bmp_scale.v(69)
+                                                                      pin: u_audio_events/payload_hold_reg[2]_syn_7.clk
+--------------------------------------------------------------------  ---------------
+clk2q               x025y052z2          0.146    r     0.146          pin: u_audio_events/payload_hold_reg[2]_syn_7.q[1]
+net (fo=2)                              1.529          1.675          net: u_audio_events/payload_hold[2],  audio_board/rtl/audio_event_cdc.v(24)
+                                                                      pin: u_audio_events/media_id_reg[0]_syn_7.c[1]
+LUT3 (reg)          x020y054z0          0.360    r     2.035       1  net: u_audio_events/media_id[0],  audio_board/rtl/audio_event_cdc.v(14)
+--------------------------------------------------------------------  ---------------
+Arrival                                                2.035               
+
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: video_pll_m0/clk0_buf,  al_ip/video_pll.v(37)
+                                                                      pin: video_pll_m0/bufg_feedback.clki
+GCLK                x039y070z2          0.000          0.000          pin: video_pll_m0/bufg_feedback.clko
+net (fo=1151)                           0.000          0.000          net: display_adjust_m0/video_clk,  audio_board/integrated/../../src/display_adjust.v(59)
+                                                                      pin: u_audio_events/media_id_reg[0]_syn_7.clk
+constraint delay                       40.000         40.000               
+--------------------------------------------------------------------  ---------------
+setup                                  -0.116         39.884               
+clock uncertainty                       0.000         39.884               
+clock pessimism                         0.000         39.884               
+--------------------------------------------------------------------  ---------------
+Required                                              39.884               
+--------------------------------------------------------------------  ---------------
+Slack                                                 37.849               
+
+Slack               : 38.518ns
+Begin Point         : u_audio_events/payload_hold_reg[2]_syn_7.clk (rising edge triggered by clock sd_card_clk  { rise@0.000000ns  fall@5.000000ns  period=10.000000 })
+End Point           : u_audio_events/media_id_reg[0]_syn_7.c[0] (rising edge triggered by clock video_clk  { rise@0.000000ns  fall@20.000000ns  period=40.000000 })
+Check Type          : setup
+Process             : slow
+Budget              : 40.000ns { video_clk rising@0.000ns - sd_card_clk rising@0.000ns }
+Data Path Delay     : 1.366ns (cell 0.506ns (37%), net 0.860ns (63%))
+Clock Skew          : 0.000ns
+Logic Level         : 1 ( LUT3=1 )
+Max Fanout          : 2
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.100ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x000y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: sys_pll_m0/pll_inst.refclk
+PLL                 x000y071            0.000          0.000          pin: sys_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: sys_pll_m0/clk0_buf,  al_ip/sys_pll.v(40)
+                                                                      pin: sys_pll_m0/bufg_feedback.clki
+GCLK                x001y070z2          0.000          0.000          pin: sys_pll_m0/bufg_feedback.clko
+net (fo=1229)                           0.000          0.000          net: bmp_scale_m0/clk,  audio_board/integrated/../../src/bmp_scale.v(69)
+                                                                      pin: u_audio_events/payload_hold_reg[2]_syn_7.clk
+--------------------------------------------------------------------  ---------------
+clk2q               x025y052z2          0.146    r     0.146          pin: u_audio_events/payload_hold_reg[2]_syn_7.q[0]
+net (fo=2)                              0.860          1.006          net: u_audio_events/payload_hold[3],  audio_board/rtl/audio_event_cdc.v(24)
+                                                                      pin: u_audio_events/media_id_reg[0]_syn_7.c[0]
+LUT3 (reg)          x020y054z0          0.360    r     1.366       1  net: u_audio_events/media_id[1],  audio_board/rtl/audio_event_cdc.v(14)
+--------------------------------------------------------------------  ---------------
+Arrival                                                1.366               
+
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: video_pll_m0/clk0_buf,  al_ip/video_pll.v(37)
+                                                                      pin: video_pll_m0/bufg_feedback.clki
+GCLK                x039y070z2          0.000          0.000          pin: video_pll_m0/bufg_feedback.clko
+net (fo=1151)                           0.000          0.000          net: display_adjust_m0/video_clk,  audio_board/integrated/../../src/display_adjust.v(59)
+                                                                      pin: u_audio_events/media_id_reg[0]_syn_7.clk
+constraint delay                       40.000         40.000               
+--------------------------------------------------------------------  ---------------
+setup                                  -0.116         39.884               
+clock uncertainty                       0.000         39.884               
+clock pessimism                         0.000         39.884               
+--------------------------------------------------------------------  ---------------
+Required                                              39.884               
+--------------------------------------------------------------------  ---------------
+Slack                                                 38.518               
+
+Slack               : 38.776ns
+Begin Point         : u_audio_events/payload_hold_reg[1]_syn_9.clk (rising edge triggered by clock sd_card_clk  { rise@0.000000ns  fall@5.000000ns  period=10.000000 })
+End Point           : u_audio_events/event_kind_reg[0]_syn_7.c[0] (rising edge triggered by clock video_clk  { rise@0.000000ns  fall@20.000000ns  period=40.000000 })
+Check Type          : setup
+Process             : slow
+Budget              : 40.000ns { video_clk rising@0.000ns - sd_card_clk rising@0.000ns }
+Data Path Delay     : 1.108ns (cell 0.506ns (45%), net 0.602ns (55%))
+Clock Skew          : 0.000ns
+Logic Level         : 1 ( LUT3=1 )
+Max Fanout          : 2
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.100ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x000y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: sys_pll_m0/pll_inst.refclk
+PLL                 x000y071            0.000          0.000          pin: sys_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: sys_pll_m0/clk0_buf,  al_ip/sys_pll.v(40)
+                                                                      pin: sys_pll_m0/bufg_feedback.clki
+GCLK                x001y070z2          0.000          0.000          pin: sys_pll_m0/bufg_feedback.clko
+net (fo=1229)                           0.000          0.000          net: bmp_scale_m0/clk,  audio_board/integrated/../../src/bmp_scale.v(69)
+                                                                      pin: u_audio_events/payload_hold_reg[1]_syn_9.clk
+--------------------------------------------------------------------  ---------------
+clk2q               x025y052z0          0.146    r     0.146          pin: u_audio_events/payload_hold_reg[1]_syn_9.q[1]
+net (fo=2)                              0.602          0.748          net: u_audio_events/payload_hold[1],  audio_board/rtl/audio_event_cdc.v(24)
+                                                                      pin: u_audio_events/event_kind_reg[0]_syn_7.c[0]
+LUT3 (reg)          x025y054z0          0.360    r     1.108       1  net: u_audio_media_source/event_kind[1],  audio_board/rtl/pcm_media_tone.v(10)
+--------------------------------------------------------------------  ---------------
+Arrival                                                1.108               
+
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: video_pll_m0/clk0_buf,  al_ip/video_pll.v(37)
+                                                                      pin: video_pll_m0/bufg_feedback.clki
+GCLK                x039y070z2          0.000          0.000          pin: video_pll_m0/bufg_feedback.clko
+net (fo=1151)                           0.000          0.000          net: display_adjust_m0/video_clk,  audio_board/integrated/../../src/display_adjust.v(59)
+                                                                      pin: u_audio_events/event_kind_reg[0]_syn_7.clk
+constraint delay                       40.000         40.000               
+--------------------------------------------------------------------  ---------------
+setup                                  -0.116         39.884               
+clock uncertainty                       0.000         39.884               
+clock pessimism                         0.000         39.884               
+--------------------------------------------------------------------  ---------------
+Required                                              39.884               
+--------------------------------------------------------------------  ---------------
+Slack                                                 38.776               
+
+Slack               : 38.902ns
+Begin Point         : u_audio_events/pending_payload_reg[0]_syn_12.clk (rising edge triggered by clock sd_card_clk  { rise@0.000000ns  fall@5.000000ns  period=10.000000 })
+End Point           : u_audio_events/event_kind_reg[0]_syn_7.c[1] (rising edge triggered by clock video_clk  { rise@0.000000ns  fall@20.000000ns  period=40.000000 })
+Check Type          : setup
+Process             : slow
+Budget              : 40.000ns { video_clk rising@0.000ns - sd_card_clk rising@0.000ns }
+Data Path Delay     : 0.982ns (cell 0.506ns (51%), net 0.476ns (49%))
+Clock Skew          : 0.000ns
+Logic Level         : 1 ( LUT3=1 )
+Max Fanout          : 2
+Clock Uncertainty   : 0.000ns (sdc uncertainty: 0.000ns, default uncertainty: 0.100ns)
+
+Delay Type          Location             Incr           Path   Level  Netlist Info
+--------------------------------------------------------------------  ---------------
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x000y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: sys_pll_m0/pll_inst.refclk
+PLL                 x000y071            0.000          0.000          pin: sys_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: sys_pll_m0/clk0_buf,  al_ip/sys_pll.v(40)
+                                                                      pin: sys_pll_m0/bufg_feedback.clki
+GCLK                x001y070z2          0.000          0.000          pin: sys_pll_m0/bufg_feedback.clko
+net (fo=1229)                           0.000          0.000          net: bmp_scale_m0/clk,  audio_board/integrated/../../src/bmp_scale.v(69)
+                                                                      pin: u_audio_events/pending_payload_reg[0]_syn_12.clk
+--------------------------------------------------------------------  ---------------
+clk2q               x025y051z0          0.146    r     0.146          pin: u_audio_events/pending_payload_reg[0]_syn_12.q[0]
+net (fo=2)                              0.476          0.622          net: u_audio_events/payload_hold[0],  audio_board/rtl/audio_event_cdc.v(24)
+                                                                      pin: u_audio_events/event_kind_reg[0]_syn_7.c[1]
+LUT3 (reg)          x025y054z0          0.360    r     0.982       1  net: u_audio_media_source/event_kind[0],  audio_board/rtl/pcm_media_tone.v(10)
+--------------------------------------------------------------------  ---------------
+Arrival                                                0.982               
+
+source latency                          0.000          0.000               
+port                R7                  0.000          0.000          pin: clk
+hierarchy                               0.000          0.000          pin: clk_syn_2.ipad
+PAD                 x020y071            0.000          0.000          pin: clk_syn_2.di
+net (fo=29)         x040y071            0.000          0.000          net: clk_dup_1,  audio_board/integrated/top_audio.v(23)
+                                                                      pin: video_pll_m0/pll_inst.refclk
+PLL                 x040y071            0.000          0.000          pin: video_pll_m0/pll_inst.clkc[0]
+net (fo=1)                              0.000          0.000          net: video_pll_m0/clk0_buf,  al_ip/video_pll.v(37)
+                                                                      pin: video_pll_m0/bufg_feedback.clki
+GCLK                x039y070z2          0.000          0.000          pin: video_pll_m0/bufg_feedback.clko
+net (fo=1151)                           0.000          0.000          net: display_adjust_m0/video_clk,  audio_board/integrated/../../src/display_adjust.v(59)
+                                                                      pin: u_audio_events/event_kind_reg[0]_syn_7.clk
+constraint delay                       40.000         40.000               
+--------------------------------------------------------------------  ---------------
+setup                                  -0.116         39.884               
+clock uncertainty                       0.000         39.884               
+clock pessimism                         0.000         39.884               
+--------------------------------------------------------------------  ---------------
+Required                                              39.884               
+--------------------------------------------------------------------  ---------------
+Slack                                                 38.902               
+
+
+
+Min Paths
+----------------------------------------------------------------------------------------------------
+
+
+
+

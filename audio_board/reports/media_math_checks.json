@@ -1,0 +1,51 @@
+{
+  "check_type": "host_math_only_not_RTL_simulation",
+  "fractional_ticks_per_second": 48000,
+  "interpolation_cases": 52685,
+  "compile_volume_cases": 1554,
+  "blip_samples": 4800,
+  "note_samples": 12000,
+  "melody_notes": 6,
+  "melody_repetitions": 2,
+  "blip_plus_melody_seconds": 3.1,
+  "alarm_half_samples": 24000,
+  "ramp_samples": 256,
+  "phase_constants": {
+    "PH_BLIP": 134217728,
+    "PH_A4": 39370534,
+    "PH_C5": 46819617,
+    "PH_D5": 52553399,
+    "PH_E5": 58988691,
+    "PH_G5": 70150238,
+    "PH_A5": 78741067,
+    "PH_C6": 93639235,
+    "PH_ALM_LO": 71582788,
+    "PH_ALM_HI": 107374182
+  },
+  "sequences": [
+    [
+      "PH_C5",
+      "PH_E5",
+      "PH_G5",
+      "PH_C6",
+      "PH_G5",
+      "PH_E5"
+    ],
+    [
+      "PH_A4",
+      "PH_C5",
+      "PH_E5",
+      "PH_A5",
+      "PH_E5",
+      "PH_C5"
+    ],
+    [
+      "PH_C5",
+      "PH_D5",
+      "PH_E5",
+      "PH_G5",
+      "PH_A5",
+      "PH_C6"
+    ]
+  ]
+}
