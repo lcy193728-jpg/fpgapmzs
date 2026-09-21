@@ -18,9 +18,15 @@ nativelink*
 
 # ===== ModelSim 仿真产物 =====
 sim/work/
+sim/_work_em/
+sim/_work_mosd/
+audio_final/tb/_work/
 sim/modelsim.ini
 sim/transcript
 *.wlf
+
+# ===== 临时验证目录 =====
+_fontcheck/
 
 # ===== Python 缓存 =====
 __pycache__/

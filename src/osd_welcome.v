@@ -128,7 +128,7 @@ module osd_welcome #(
         else begin
             vsd <= vs_i;
             if (vs_rise) begin
-                if (phase >= (F_PER - 10'd1))
+                if (phase >= 10'd319)      // = F_PER-1(常量折叠, 免 10bit 减法器)
                     phase <= 10'd0;
                 else
                     phase <= phase + 10'd1;
@@ -164,14 +164,17 @@ module osd_welcome #(
 
     //--------------------------------------------------------------
     // 文字带分类(id): 1=标题2×  2=信息卡1×(左右共用行窗)  3=流程滚动1×
-    //   A 级按 py2 分类(发 ROM 读请求), B 级按 py3 分类(判墨点颜色)
+    //   ★2026-09-21 面积优化: 只在 A 级按 py2 分类; B 级改为把本结果打一拍
+    //     (py3 ≡ py2 延迟 1 拍, 见第 160-161 行 px3<=px2; py3<=py2), 原先
+    //     B 级把这套行窗比较重算了一遍, 等于 6 个 12bit 比较器白做两次。
+    //   行窗上界写成常量(46/416/468), 不再现算 T_TY+32 / P_TY+16 / F_TY+16。
     //--------------------------------------------------------------
     reg [1:0] rid2;
     always @* begin
         rid2 = 2'd0;
-        if      ((py2 >= T_TY) && (py2 < T_TY + 12'd32)) rid2 = 2'd1;      // 欢迎语
-        else if ((py2 >= P_TY) && (py2 < P_TY + 12'd16)) rid2 = 2'd2;      // 信息卡行
-        else if ((py2 >= F_TY) && (py2 < F_TY + 12'd16)) rid2 = 2'd3;      // 流程滚动
+        if      ((py2 >= T_TY) && (py2 < 12'd46))  rid2 = 2'd1;      // 欢迎语
+        else if ((py2 >= P_TY) && (py2 < 12'd416)) rid2 = 2'd2;      // 信息卡行
+        else if ((py2 >= F_TY) && (py2 < 12'd468)) rid2 = 2'd3;      // 流程滚动
     end
 
     // A 级: 滚动窗口取模(px+phase 对 320 取模)
@@ -179,7 +182,20 @@ module osd_welcome #(
     wire [11:0] wx_1  = (wxx >= 12'd640) ? (wxx - 12'd640) : wxx;
     wire [11:0] wx_m  = (wx_1 >= F_PER)  ? (wx_1 - F_PER)  : wx_1;
 
+    // A 级: 行内偏移收窄 —— rid2 已保证 py2 落在本带行窗内(带宽 ≤32),
+    //   模 2^k 减法逐位精确, 却把 12bit 减法器与 12bit×常量的乘法器一起收窄:
+    //     欢迎语 dy∈[0,31]→5bit; 信息卡/流程 dy∈[0,15]→4bit。
+    //   变量×小常量改用移位加(T_N=7 / L_N=10 / R_N=15 / F_N=20), 免乘法器。
+    wire [4:0] dy_t = py2[4:0] - T_TY[4:0];
+    wire [3:0] dy_p = py2[3:0] - P_TY[3:0];
+    wire [3:0] dy_f = py2[3:0] - F_TY[3:0];
+    wire [7:0] row_t = ({3'b0, dy_t} << 3) - {3'b0, dy_t};         // dy*7
+    wire [7:0] row_l = ({4'b0, dy_p} << 3) + ({4'b0, dy_p} << 1);  // dy*10
+    wire [7:0] row_r = ({4'b0, dy_p} << 4) - {4'b0, dy_p};         // dy*15
+    wire [8:0] row_f = ({5'b0, dy_f} << 4) + ({5'b0, dy_f} << 2);  // dy*20
+
     // A 级: ROM 读请求(仅在字形窗内发, 省功耗)
+    //   窗口右沿改用常量(432/245/595 = gx + N*格宽)。
     reg rom_en;
     reg [12:0] rom_addr;
     always @* begin
@@ -188,27 +204,24 @@ module osd_welcome #(
         if (w_ok && de2 && (rid2 != 2'd0)) begin
             case (rid2)
                 2'd1: begin  // 欢迎语 2×(32×32 真字模 1:1, 不再 >>1 折叠)
-                    if ((px2 >= T_GX) && (px2 < T_GX + ({1'b0, T_N} << 5))) begin
+                    if ((px2 >= T_GX) && (px2 < 12'd432)) begin
                         rom_en   = 1'b1;
-                        rom_addr = T_BASE + ((py2 - T_TY) * {1'b0, T_N})
-                                 + ((px2 - T_GX) >> 5);
+                        rom_addr = T_BASE + row_t + ((px2 - T_GX) >> 5);
                     end
                 end
                 2'd2: begin  // 信息卡 1×: 报到地点(左) / 联系方式(右)
-                    if ((px2 >= L_GX) && (px2 < L_GX + ({1'b0, L_N} << 4))) begin
+                    if ((px2 >= L_GX) && (px2 < 12'd245)) begin
                         rom_en   = 1'b1;
-                        rom_addr = L_BASE + ((py2 - P_TY) * {1'b0, L_N})
-                                 + ((px2 - L_GX) >> 4);
+                        rom_addr = L_BASE + row_l + ((px2 - L_GX) >> 4);
                     end
-                    else if ((px2 >= R_GX) && (px2 < R_GX + ({1'b0, R_N} << 4))) begin
+                    else if ((px2 >= R_GX) && (px2 < 12'd595)) begin
                         rom_en   = 1'b1;
-                        rom_addr = R_BASE + ((py2 - P_TY) * {1'b0, R_N})
-                                 + ((px2 - R_GX) >> 4);
+                        rom_addr = R_BASE + row_r + ((px2 - R_GX) >> 4);
                     end
                 end
                 default: begin  // 流程滚动 1×
                     rom_en   = 1'b1;
-                    rom_addr = F_BASE + ((py2 - F_TY) * {1'b0, F_N}) + (wx_m >> 4);
+                    rom_addr = F_BASE + row_f + (wx_m >> 4);
                 end
             endcase
         end
@@ -221,19 +234,25 @@ module osd_welcome #(
     assign rom_addr_o = rom_addr;
 
     //--------------------------------------------------------------
-    // B 级: 文字带分类(按 py3) + 墨点判定
+    // B 级: 文字带 id / 滚动相位 —— 全部改为 A 级结果打一拍
+    //   ★2026-09-21 面积优化: py3 ≡ py2 延迟 1 拍, 故 f(py3) 恒等于 f(py2)
+    //     延迟 1 拍。原先 B 级把"按 py3 分类 3 个文字带"和"px3+phase 取模"
+    //     整套重算了一遍(6 个 12bit 比较器 + 12bit 加法/减法/取模比较器链),
+    //     是本模块进位链的主要来源。改为纯打拍后画面逐像素完全不变。
+    //     (phase 只在 vsync 期间跳变, 此时 de3=0/带区不命中, 不影响可见像素)
     //--------------------------------------------------------------
-    reg [1:0] rid3;
-    always @* begin
-        rid3 = 2'd0;
-        if      ((py3 >= T_TY) && (py3 < T_TY + 12'd32)) rid3 = 2'd1;
-        else if ((py3 >= P_TY) && (py3 < P_TY + 12'd16)) rid3 = 2'd2;
-        else if ((py3 >= F_TY) && (py3 < F_TY + 12'd16)) rid3 = 2'd3;
+    reg [1:0]  rid3;
+    reg [11:0] wx3_m;
+    always @(posedge video_clk or posedge rst) begin
+        if (rst) begin
+            rid3  <= 2'd0;
+            wx3_m <= 12'd0;
+        end
+        else begin
+            rid3  <= rid2;
+            wx3_m <= wx_m;
+        end
     end
-
-    wire [11:0] wxx3  = px3 + {2'b00, phase};
-    wire [11:0] wx3_1 = (wxx3 >= 12'd640) ? (wxx3 - 12'd640) : wxx3;
-    wire [11:0] wx3_m = (wx3_1 >= F_PER)  ? (wx3_1 - F_PER)  : wx3_1;
 
     reg ink;
     always @* begin
@@ -241,13 +260,13 @@ module osd_welcome #(
         if (w_ok && de3 && (rid3 != 2'd0)) begin
             case (rid3)
                 2'd1: begin  // 欢迎语 2×: 32×32 真字模 1:1
-                    if ((px3 >= T_GX) && (px3 < T_GX + ({1'b0, T_N} << 5)))
+                    if ((px3 >= T_GX) && (px3 < 12'd432))
                         ink = rom_q[31 - ((px3 - T_GX) & 12'd31)];
                 end
                 2'd2: begin  // 信息卡 1×: 左(报到地点)/右(联系方式)
-                    if ((px3 >= L_GX) && (px3 < L_GX + ({1'b0, L_N} << 4)))
+                    if ((px3 >= L_GX) && (px3 < 12'd245))
                         ink = rom_q[15 - ((px3 - L_GX) & 12'd15)];
-                    else if ((px3 >= R_GX) && (px3 < R_GX + ({1'b0, R_N} << 4)))
+                    else if ((px3 >= R_GX) && (px3 < 12'd595))
                         ink = rom_q[15 - ((px3 - R_GX) & 12'd15)];
                 end
                 default: begin  // 流程滚动: 取模后格内列 = 低 4 位

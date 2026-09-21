@@ -2,8 +2,8 @@
 // 模块名 : ui_key_ctrl.v —— 全局统一人机交互控制器(2026-09-16 改版)
 //
 // 设计目标(全局统一样式, 与场景完全解耦: 四个场景下按键含义一致):
-//   KEY1(A2) : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→0
-//   KEY2(B2) : 当前模式参数 减
+//   KEY1(A2) : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→4会议计时→0
+//   KEY2(B2) : 当前模式参数 减;  模式4 = 会议计时 开始/暂停/继续
 //   KEY3(B1) : 当前模式参数 加
 //   KEY4(C1) : **已释放(不使用)** —— 原"自动↔手动"改由模式0统一承担
 //
@@ -28,6 +28,13 @@
 //                 与亮度/缩放的"边界钳位"不同(档位是离散枚举, 环绕更顺手)。
 //                 输出 period_cycles(周期数) 送 bmp_read_auto 的运行时
 //                 轮播间隔输入。进入本档同样回自动轮播(否则计时器不跑)。
+//   模式4 会议  : 参数 = **无**(本模式不调任何显示参数; 进入本档自动回自动轮播)
+//                 KEY2 = 会议计时 开始/暂停/继续, KEY3 = 当前项**重新计时**。
+//                 仅导出消抖脉冲 key2_pl/key3_pl, 由顶层在"会议场景(latch=2)"
+//                 下接到 meeting_ctrl.press[0] / press[3]; 其它场景/其它模式
+//                 无副作用(会议计时器 en 由场景使能控制, 见 top.v)。
+//                 ※ 这是把 dev_sim 会议场景三的 KEY1/KEY4 控制适配到本板
+//                 "统一按键样式"的落地方式(原按键功能全部保留, 仅新增本模式)。
 //
 // 数码管"参数强显保持"(小鹅通第三讲 seg7_panel 的 HOLD 机制):
 //   · 任何一次参数动作(亮度/缩放/周期 ±) → 输出 disp_hold 拉高 2 秒,
@@ -55,10 +62,11 @@ module ui_key_ctrl #(
     parameter [3:0] BRI_MAX  = 4'd15,      // 亮度上限
     parameter [3:0] RES_INIT = 4'd4,       // 缩放默认档(4=100% 原始比例, 与原画一致)
     parameter [3:0] RES_MAX  = 4'd7,       // 缩放上限
-    parameter [1:0] MODE_PIC = 2'd0,       // 功能模式: 图片
-    parameter [1:0] MODE_BRI = 2'd1,       // 功能模式: 亮度
-    parameter [1:0] MODE_RES = 2'd2,       // 功能模式: 缩放
-    parameter [1:0] MODE_PERIOD = 2'd3,    // 功能模式: 轮播周期(批次4 新增)
+    parameter [2:0] MODE_PIC = 3'd0,       // 功能模式: 图片
+    parameter [2:0] MODE_BRI = 3'd1,       // 功能模式: 亮度
+    parameter [2:0] MODE_RES = 3'd2,       // 功能模式: 缩放
+    parameter [2:0] MODE_PERIOD = 3'd3,    // 功能模式: 轮播周期(批次4 新增)
+    parameter [2:0] MODE_MEET = 3'd4,      // 功能模式: 会议计时(会议场景, 2026-09-19 新增)
     // ---- 批次4 轮播周期档 ----
     parameter [2:0] PERIOD_NUM = 3'd5,     // 档位数(2/3/5/10/30 s)
     parameter [2:0] PERIOD_DEF = 3'd1,     // 默认档 = 3s(与原 SLIDE_INTERVAL 一致)
@@ -75,18 +83,21 @@ module ui_key_ctrl #(
     input       [7:0]   img_no,            // bmp_read_auto 当前图序号(1..N; 0=空闲)
     input               scene_chg,         // 场景切换脉冲(清手动→自动)
     // ---- 输出 ----
-    output reg  [1:0]   mode,              // 功能模式 0图片/1亮度/2缩放/3周期
+    output reg  [2:0]   mode,              // 功能模式 0图片/1亮度/2缩放/3周期/4会议计时
     output reg  [3:0]   bri_level,         // 亮度档 0..15(模式1可调)
     output reg  [3:0]   res_level,         // 缩放档 0..7(模式2可调)
     output wire [7:0]   period_sec,        // 轮播间隔档(秒: 2/3/5/10/30, 模式3可调)
     output wire [31:0]  period_cycles,     // 轮播间隔(时钟周期) → bmp_read_auto
     output wire         disp_hold,         // 1=参数强显保持期(2 秒)
-    output reg  [1:0]   disp_sel,          // 保持期显示的模式(产生动作时的 mode)
+    output reg  [2:0]   disp_sel,          // 保持期显示的模式(产生动作时的 mode)
     output reg          pic_manual,        // 1=手动单张(冻结自动轮播) / 0=自动轮播
     output      [7:0]   pic_param,         // 显示用图片参数: 0=轮播, >0=手动第N张
     output              key_next_pl,       // 手动"下一张"单周期脉冲
     output              key_prev_pl,       // 手动"上一张"单周期脉冲
-    output              res_chg_pl         // 缩放档变化脉冲(1 拍) → 重载当前图
+    output              res_chg_pl,        // 缩放档变化脉冲(1 拍) → 重载当前图
+    // ---- 会议计时(模式4)按键脉冲导出(顶层 → meeting_ctrl) ----
+    output              key2_pl,           // KEY2 消抖"按下"脉冲(模式4=开始/暂停/继续)
+    output              key3_pl            // KEY3 消抖"按下"脉冲(模式4=当前项重新计时)
 );
 
     //--------------------------------------------------------------
@@ -98,6 +109,12 @@ module ui_key_ctrl #(
     ui_key_dbnc u_k1 (.clk(clk), .rst(rst), .key_raw(key1), .press_pl(k1_p));  // 模式循环
     ui_key_dbnc u_k2 (.clk(clk), .rst(rst), .key_raw(key2), .press_pl(k2_p));  // 参数 减
     ui_key_dbnc u_k3 (.clk(clk), .rst(rst), .key_raw(key3), .press_pl(k3_p));  // 参数 加
+
+    // 消抖后按键脉冲导出: 顶层在"会议计时"(模式4)下把它们接到 meeting_ctrl
+    // 的 press[0](开始/暂停/继续) 与 press[3](当前项重新计时); 其它模式下
+    // 顶层不采用(会议按键功能只在模式4 生效)。
+    assign key2_pl = k2_p;
+    assign key3_pl = k3_p;
 
     //--------------------------------------------------------------
     // 图片模式脉冲判定(模式0 内始终有效, 无需先"进手动"):
@@ -215,9 +232,9 @@ module ui_key_ctrl #(
             img_no_l   <= 8'd0;
         end
         else begin
-            // ---- KEY1: 功能模式循环 0→1→2→3→0 ----
+            // ---- KEY1: 功能模式循环 0→1→2→3→4→0 ----
             if (k1_p)
-                mode <= (mode == MODE_PERIOD) ? MODE_PIC : (mode + 2'd1);
+                mode <= (mode == MODE_MEET) ? MODE_PIC : (mode + 3'd1);
 
             // ---- 模式1: 亮度 ± ----
             if (bri_up_c)
@@ -288,27 +305,36 @@ module ui_key_dbnc #(
     output reg          press_pl         // 稳定后按下下降沿脉冲(1 拍)
 );
 
+    // 2026-09-21 布线拥塞专项修复(与 scene_control.v 的 key_debounce 同法):
+    //   把"已到 DEB_MAX"的全等比较结果**单独打一拍** term_q, 断开
+    //   "21bit 比较树 → 20 路清零/自增多路器"这条长组合路径(实测 18.7ns,
+    //   87% 是线延迟, 曾是 sd_card_clk 最差路径)。代价是采纳时刻 +1 拍。
     reg [1:0]   key_sync;   // 两级同步器
     reg [19:0]  cnt;        // 稳定计时
+    reg         term_q;     // 上一拍"已到 DEB_MAX"
     reg         level;      // 消抖后电平(1=高/释放)
     reg         level_d;    // 电平打拍(边沿检测)
+
+    wire        term = (cnt == DEB_MAX);        // 终点比较(单点负载)
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             key_sync <= 2'b11;
             cnt      <= 20'd0;
+            term_q   <= 1'b0;
             level    <= 1'b1;
             level_d  <= 1'b1;
             press_pl <= 1'b0;
         end
         else begin
             key_sync <= {key_sync[0], key_raw};      // 两级同步
+            term_q   <= term;
 
             if (key_sync[1] == level) begin
                 cnt <= 20'd0;                        // 与消抖电平一致 → 计时清零
             end
-            else if (cnt == DEB_MAX) begin
-                level <= key_sync[1];                // 连续 10ms 偏离 → 采纳新电平
+            else if (term_q) begin                   // 上一拍已到终点 → 采纳
+                level <= key_sync[1];                // 连续 10ms 偏离
                 cnt   <= 20'd0;
             end
             else

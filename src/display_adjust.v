@@ -39,7 +39,12 @@ module display_adjust #(
     parameter H_ACT          = 640,
     parameter V_ACT          = 480,
     // ---- 淡入淡出 ----
+    // ★FADE_STEP 必须为 64: stage2 的 alpha 混合已按"alpha 只取
+    //   {0,63,64,127,128,191,192,255}"做了移位退化解码(见 stage2 处),
+    //   改 FADE_STEP 会使该式不再等价, 必须同时恢复 8×8 乘法写法。
     parameter [7:0] FADE_STEP = 8'd64,   // 半程 4 帧(255→0 用 64/帧步进)
+    // ★下列 4 个帧计数参数必须 ≤ 62: 内部 blk_fr/bar_cnt/res_cnt/man_cnt
+    //   只保留 6 位(最大值 63)。若任一参数改到 ≥64, 必须同步加宽这 4 个 reg。
     parameter [15:0] TIMEOUT_FRAMES = 16'd45, // 黑场最长等待(帧); 超时兜底防呆黑
     // ---- 亮度条 ----
     parameter [15:0] BAR_HOLD_FRAMES = 16'd30, // 亮度档变化后条保持帧数
@@ -51,10 +56,11 @@ module display_adjust #(
     // ---- 缩放(分辨率)条 + 轮播/手动状态卡 ----
     parameter [15:0] RES_HOLD_FRAMES = 16'd30, // 缩放档变化后条保持帧数
     parameter [15:0] MAN_HOLD_FRAMES = 16'd30, // 轮播/手动状态卡保持帧数
-    parameter [1:0]  MODE_PIC = 2'd0,    // 与 ui_key_ctrl 一致的模式编码
-    parameter [1:0]  MODE_BRI = 2'd1,
-    parameter [1:0]  MODE_RES = 2'd2,
-    parameter [1:0]  MODE_PERIOD = 2'd3  // 批次4: 轮播周期档(不弹 HUD)
+    parameter [2:0]  MODE_PIC = 3'd0,    // 与 ui_key_ctrl 一致的模式编码
+    parameter [2:0]  MODE_BRI = 3'd1,
+    parameter [2:0]  MODE_RES = 3'd2,
+    parameter [2:0]  MODE_PERIOD = 3'd3, // 批次4: 轮播周期档(不弹 HUD)
+    parameter [2:0]  MODE_MEET = 3'd4    // 会议计时档(2026-09-19: 不弹 HUD)
 )(
     input                video_clk,      // 像素时钟(≈25.175MHz)
     input                rst,            // 高有效复位
@@ -70,7 +76,7 @@ module display_adjust #(
     input        [3:0]   bri_level,      // 亮度档 0..15(默认 8)
     input        [3:0]   res_level,      // 缩放档 0..7(默认 4=100%)
     input                pic_manual,     // 1=手动单张 / 0=自动轮播
-    input        [1:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放
+    input        [2:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放/3周期/4会议
     // ---- 输出: 送 hdmi_tx ----
     output               hs_o, vs_o, de_o,
     output [DATA_W-1:0]  data_o
@@ -94,14 +100,14 @@ module display_adjust #(
     reg  [3:0] l_s0, l_s1;
     reg  [3:0] r_s0, r_s1;      // 缩放(分辨率)档 0..7
     reg        p_s0, p_s1;      // 轮播(0)/手动(1)
-    reg  [1:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放
+    reg  [2:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放/3周期/4会议
     wire menu_s  = m_s1;
     wire emerg_s = e_s1;
     wire busy_s  = b_s1;
     wire [3:0] lvl_s  = l_s1;
     wire [3:0] res_s  = r_s1;
     wire       man_s  = p_s1;
-    wire [1:0] mode_s = u_s1;
+    wire [2:0] mode_s = u_s1;
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
@@ -148,30 +154,32 @@ module display_adjust #(
 
     reg [1:0]  fsm;
     reg [7:0]  alpha;
-    reg [15:0] blk_fr;         // 黑场已等待帧数(超时计数)
+    // 帧计数只用 6 位: 上界分别由 TIMEOUT_FRAMES(45) / *_HOLD_FRAMES(30) 决定,
+    // 均 ≤ 62 → 不会回绕, 与 16 位计数逐位等价(参数前提见模块头注释)。
+    reg [5:0]  blk_fr;         // 黑场已等待帧数(超时计数)
     reg        menu_past;      // 上一拍 menu_active(同步域, 边沿检测)
     reg        menu_evt;       // 粘性翻转事件(帧边界消费)
     reg [3:0]  lvl_past;     // 上一拍亮度档(变化 → 显示亮度条)
-    reg [15:0] bar_cnt;        // 亮度条剩余显示帧数(0=隐藏)
+    reg [5:0]  bar_cnt;        // 亮度条剩余显示帧数(0=隐藏)
     reg [3:0]  res_past;     // 上一拍缩放档(变化 → 显示缩放条)
-    reg [15:0] res_cnt;        // 缩放条剩余显示帧数(0=隐藏)
+    reg [5:0]  res_cnt;        // 缩放条剩余显示帧数(0=隐藏)
     reg        man_past;      // 上一拍轮播/手动标志(变化 → 显示状态卡)
-    reg [15:0] man_cnt;        // 状态卡剩余显示帧数(0=隐藏)
-    reg [1:0]  mode_past;     // 上一拍功能模式(切换 → 弹该模式的提示)
+    reg [5:0]  man_cnt;        // 状态卡剩余显示帧数(0=隐藏)
+    reg [2:0]  mode_past;     // 上一拍功能模式(切换 → 弹该模式的提示)
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
             fsm        <= FIDLE;
             alpha      <= 8'd255;
-            blk_fr     <= 16'd0;
+            blk_fr     <= 6'd0;
             menu_past  <= 1'b1;       // 复位默认菜单态(与 scene_control 一致), 防上电假淡出
             menu_evt   <= 1'b0;
             lvl_past   <= 4'd8;
-            bar_cnt    <= 16'd0;
+            bar_cnt    <= 6'd0;
             res_past   <= 4'd4;
-            res_cnt    <= 16'd0;
+            res_cnt    <= 6'd0;
             man_past   <= 1'b0;
-            man_cnt    <= 16'd0;
+            man_cnt    <= 6'd0;
             mode_past  <= MODE_PIC;
         end
         else begin
@@ -181,49 +189,51 @@ module display_adjust #(
             menu_past <= menu_s;
 
             if (lvl_s != lvl_past)
-                bar_cnt <= BAR_HOLD_FRAMES;        // 亮度档变化 → 显示亮度条
+                bar_cnt <= BAR_HOLD_FRAMES[5:0];   // 亮度档变化 → 显示亮度条
             lvl_past  <= lvl_s;
 
             if (res_s != res_past)
-                res_cnt <= RES_HOLD_FRAMES;        // 缩放档变化 → 显示缩放条
+                res_cnt <= RES_HOLD_FRAMES[5:0];   // 缩放档变化 → 显示缩放条
             res_past  <= res_s;
 
             if (man_s != man_past)
-                man_cnt <= MAN_HOLD_FRAMES;        // 轮播↔手动 → 显示状态卡
+                man_cnt <= MAN_HOLD_FRAMES[5:0];   // 轮播↔手动 → 显示状态卡
             man_past  <= man_s;
 
             // ---- 功能模式切换: 弹出"当前在调什么"的提示(便于现场确认) ----
             if (mode_s != mode_past) begin
                 case (mode_s)
-                    MODE_BRI: bar_cnt <= BAR_HOLD_FRAMES;   // 切到亮度模式 → 亮度条
-                    MODE_RES: res_cnt <= RES_HOLD_FRAMES;   // 切到分辨率模式 → 缩放条
+                    MODE_BRI: bar_cnt <= BAR_HOLD_FRAMES[5:0];  // 切到亮度模式 → 亮度条
+                    MODE_RES: res_cnt <= RES_HOLD_FRAMES[5:0];  // 切到分辨率模式 → 缩放条
                     MODE_PERIOD: ;                          // 周期档(批次4): 弹窗沿用
                                                             // 上一条提示, 不额外弹卡
-                    default : man_cnt <= MAN_HOLD_FRAMES;   // 切到图片模式 → 轮播/手动卡
+                    MODE_MEET:   ;                          // 会议计时档: 不弹 HUD
+                                                            // (会议画面自带完整面板)
+                    default : man_cnt <= MAN_HOLD_FRAMES[5:0];  // 切到图片模式 → 轮播/手动卡
                 endcase
             end
             mode_past <= mode_s;
 
             if (vs_rise) begin
                 // 提示条倒计时(每帧 -1)
-                if (bar_cnt != 16'd0)
-                    bar_cnt <= bar_cnt - 16'd1;
-                if (res_cnt != 16'd0)
-                    res_cnt <= res_cnt - 16'd1;
-                if (man_cnt != 16'd0)
-                    man_cnt <= man_cnt - 16'd1;
+                if (bar_cnt != 6'd0)
+                    bar_cnt <= bar_cnt - 6'd1;
+                if (res_cnt != 6'd0)
+                    res_cnt <= res_cnt - 6'd1;
+                if (man_cnt != 6'd0)
+                    man_cnt <= man_cnt - 6'd1;
 
                 if (emerg_s) begin
                     // 应急: 最高优先级即刻响应, 禁止淡出, 并丢弃待处理事件
                     fsm      <= FIDLE;
                     alpha    <= 8'd255;
-                    blk_fr   <= 16'd0;
+                    blk_fr   <= 6'd0;
                     menu_evt <= 1'b0;
                 end
                 else begin
                     case (fsm)
                     FIDLE: begin
-                        blk_fr <= 16'd0;
+                        blk_fr <= 6'd0;
                         if (menu_evt) begin
                             menu_evt <= 1'b0;
                             fsm      <= FOUT;       // 场景切换事件 → 开始淡出
@@ -233,18 +243,18 @@ module display_adjust #(
                         if (alpha <= FADE_STEP) begin
                             alpha <= 8'd0;       // 降到全黑
                             fsm   <= FBLCK;
-                            blk_fr<= 16'd0;
+                            blk_fr<= 6'd0;
                         end
                         else
                             alpha <= alpha - FADE_STEP;
                     end
                     FBLCK: begin
                         // 等底层新分区图写完(忙释放)或超时, 防呆黑
-                        if (~busy_s || (blk_fr >= TIMEOUT_FRAMES)) begin
+                        if (~busy_s || (blk_fr >= TIMEOUT_FRAMES[5:0])) begin
                             fsm <= FIN;
                         end
                         else
-                            blk_fr <= blk_fr + 16'd1;
+                            blk_fr <= blk_fr + 6'd1;
                     end
                     FIN: begin
                         if (alpha >= (8'd255 - FADE_STEP)) begin
@@ -281,6 +291,20 @@ module display_adjust #(
     end
 
     //--------------------------------------------------------------
+    // 区域命中比较用的窄化坐标(面积优化 2026-09-21)
+    //   px_x/px_y 源头是 osd_engine 的像素计数器: de=1 时 x∈[0,639]、y∈[0,479];
+    //   之后整条链(osd_menu/osd_welcome/osd_scene → meeting_osd →
+    //   emergency_multi_overlay → audio_viz_overlay → diag_overlay)只把
+    //   x/y/de 一起按时钟平移, 从不改写坐标值。故本模块 de1=1 时恒有
+    //   px1[11:10]=0、py1[11:9]=0 → 用窄位比较与 12 位比较逐位等价,
+    //   且比较器高位被综合按常量剪掉, 省 LUT/进位链。
+    //   全部三块 HUD 的区域判断都含 de1 门控, 消隐期坐标被截也不参与命中。
+    //   ★px1 绝不可只取 8 位: HUD 盒在 x<150, 而 x=400 截 8 位=144 会误命中。
+    //--------------------------------------------------------------
+    wire [9:0] px1n = px1[9:0];
+    wire [8:0] py1n = py1[8:0];
+
+    //--------------------------------------------------------------
     // 亮度增益 g = 64 + L*8  (L:0..15 → 0.5×..1.44×)
     //--------------------------------------------------------------
     wire [8:0] gain = 9'd64 + ({4'b0, lvl_s} << 3);
@@ -302,12 +326,36 @@ module display_adjust #(
     // stage2: 淡入淡出 alpha 混合(乘加取整)
     //   alpha==255 时直通(此时 FIDLE 稳态/淡入完成), 避免 (x*255+128)>>8
     //   对高亮像素产生 -1 量化误差, 保证平时显示与原像素完全一致
-    wire [15:0] r_f = r_b * alpha;
-    wire [15:0] g_f = g_b * alpha;
-    wire [15:0] b_f = b_b * alpha;
-    wire [7:0]  r_o = (alpha == 8'd255) ? r_b : ((r_f + 16'd128) >> 8);
-    wire [7:0]  g_o = (alpha == 8'd255) ? g_b : ((g_f + 16'd128) >> 8);
-    wire [7:0]  b_o = (alpha == 8'd255) ? b_b : ((b_f + 16'd128) >> 8);
+    //
+    //   面积优化(2026-09-21): FADE_STEP=64 时 alpha 每帧按 64 步进, 实际取值
+    //   只有 8 个: {0,63,64,127,128,191,192,255}。对这 8 个值有恒等式
+    //       alpha = 64*am - aodd,   am = alpha[7:6] + alpha[0] (0..4),
+    //                               aodd = alpha[0]            (α=0 时 am 自动为 0)
+    //   逐个核对: 0→0*64-0, 63→1*64-1, 64→1*64-0, 127→2*64-1,
+    //             128→2*64-0, 191→3*64-1, 192→3*64-0, 255→4*64-1  ✓
+    //   于是 b*alpha = ((b*am)<<6) - aodd*b, 3bit×8bit 只需 1 个移位 + 1 个条件
+    //   减法, 3 个通道共省下 3 个 8×8 乘法器。α=255 仍走原直通旁路(未变)。
+    //   ★前提: FADE_STEP 必须为 64(见模块头注释)。
+    wire [2:0]  am   = {1'b0, alpha[7:6]} + {2'b0, alpha[0]};   // 0..4
+    wire        aodd = alpha[0];
+    // x_m = x_b * am (am≤4 → ≤1020, 10 位足够)
+    wire [9:0]  r_m = am[2] ? {r_b, 2'b00} :
+                      am[1] ? (am[0] ? ({r_b,1'b0} + {1'b0,r_b}) : {r_b,1'b0})
+                            : (am[0] ? {1'b0,r_b} : 10'd0);
+    wire [9:0]  g_m = am[2] ? {g_b, 2'b00} :
+                      am[1] ? (am[0] ? ({g_b,1'b0} + {1'b0,g_b}) : {g_b,1'b0})
+                            : (am[0] ? {1'b0,g_b} : 10'd0);
+    wire [9:0]  b_m = am[2] ? {b_b, 2'b00} :
+                      am[1] ? (am[0] ? ({b_b,1'b0} + {1'b0,b_b}) : {b_b,1'b0})
+                            : (am[0] ? {1'b0,b_b} : 10'd0);
+    // (x_m<<6) ≤ 1020*64 = 65280, 减 aodd*x_b 后再 +128 ≤ 65408 < 65536
+    // → 16 位中间量不溢出, 与 (x_b*alpha + 128)>>8 逐位相同
+    wire [15:0] r_f = (({6'b0,r_m} << 6) - (aodd ? {8'b0,r_b} : 16'd0) + 16'd128) >> 8;
+    wire [15:0] g_f = (({6'b0,g_m} << 6) - (aodd ? {8'b0,g_b} : 16'd0) + 16'd128) >> 8;
+    wire [15:0] b_f = (({6'b0,b_m} << 6) - (aodd ? {8'b0,b_b} : 16'd0) + 16'd128) >> 8;
+    wire [7:0]  r_o = (alpha == 8'd255) ? r_b : r_f[7:0];
+    wire [7:0]  g_o = (alpha == 8'd255) ? g_b : g_f[7:0];
+    wire [7:0]  b_o = (alpha == 8'd255) ? b_b : b_f[7:0];
 
     //--------------------------------------------------------------
     // 亮度条区域命中(左上角)
@@ -316,20 +364,26 @@ module display_adjust #(
     //   (档 0..15, L=15 恰好填满整条; L=0 全空)。
     //   生效档位填充 [inner_l, inner_l + L*UNIT)。
     //--------------------------------------------------------------
-    wire bar_show = (bar_cnt != 16'd0);
+    wire bar_show = (bar_cnt != 6'd0);
     localparam [11:0] BAR_INNER_W = 12'd135;   // (16-1)*9, 满档=15 格
     localparam [11:0] BAR_R = BAR_X0 + 12'd2 + BAR_INNER_W;  // 盒右(不含)
     localparam [11:0] inner_l = BAR_X0 + 12'd1;              // 内区左
-    wire [11:0] fill_r = inner_l + (lvl_s * BAR_UNIT);       // 生效档右(不含)
+    // 生效档右(不含): 原式 inner_l + lvl_s*BAR_UNIT。★前提: BAR_X0=8(→inner_l=9)
+    // 且 BAR_UNIT=9(二者均为本模块参数默认值, 全工程例化未改写), 于是
+    //   inner_l + lvl_s*9 = 9*(lvl_s+1) = 8*(lvl_s+1) + (lvl_s+1)
+    // → 4bit×常量乘法退化为"移位+加", 且内区左偏移并入 +1, 少一级加法器。
+    // 数值域: lvl_s∈[0,15] → fill_r∈[9,144], 9 位足够, 无溢出/截断。
+    wire [4:0]  lvl_p1 = {1'b0, lvl_s} + 5'd1;              // 1..16
+    wire [8:0]  fill_r = {lvl_p1, 3'b000} + {4'b0, lvl_p1}; // = 9*(lvl_s+1)
 
     wire bar_region = bar_show && de1 &&
-                      (py1 >= BAR_Y0) && (py1 < BAR_Y0 + BAR_H) &&
-                      (px1 >= BAR_X0) && (px1 < BAR_R);
+                      (py1n >= BAR_Y0) && (py1n < BAR_Y0 + BAR_H) &&
+                      (px1n >= BAR_X0) && (px1n < BAR_R);
     wire bar_border = bar_region &&
-                      ((py1 == BAR_Y0) || (py1 == BAR_Y0 + BAR_H - 12'd1) ||
-                       (px1 == BAR_X0) || (px1 == BAR_R - 12'd1));
+                      ((py1n == BAR_Y0) || (py1n == BAR_Y0 + BAR_H - 12'd1) ||
+                       (px1n == BAR_X0) || (px1n == BAR_R - 12'd1));
     wire bar_active = bar_region && ~bar_border &&
-                      (px1 < fill_r) && (px1 >= inner_l);
+                      (px1n < fill_r) && (px1n >= inner_l);
 
     //--------------------------------------------------------------
     // 缩放(分辨率)条区域命中(左上第 2 行 y16..23; 8 档)
@@ -344,17 +398,22 @@ module display_adjust #(
     localparam [11:0] RES_R       = RES_X0 + 12'd2 + RES_INNER_W;  // 82
     localparam [11:0] res_inner_l = RES_X0 + 12'd1;                // 9
 
-    wire [12:0] res_fill_r = res_inner_l +
-                             (({9'd0, res_s} + 13'd1) * RES_UNIT);  // 9 .. 81
+    // 生效档右(不含): 原式 res_inner_l + (res_s+1)*RES_UNIT。★前提: RES_X0=8
+    // (→res_inner_l=9) 且 RES_UNIT=9(均为本模块 localparam 默认值), 于是
+    //   res_inner_l + (res_s+1)*9 = 9*(res_s+2) = 8*(res_s+2) + (res_s+2)
+    // → 级联乘法退化为"移位+加"。数值域: res_s∈[0,7] → 9*(res_s+2)∈[18,81],
+    // 9 位足够, 无溢出(原 [12:0] 取值亦 ≤81, 截取 [11:0] 无损失)。
+    wire [4:0]  res_p2 = {1'b0, res_s} + 5'd2;                 // 2..9
+    wire [8:0]  res_fill_r = {res_p2, 3'b000} + {4'b0, res_p2}; // = 9*(res_s+2)
 
-    wire res_region = (res_cnt != 16'd0) && de1 &&
-                      (py1 >= RES_Y0) && (py1 < RES_Y0 + RES_H) &&
-                      (px1 >= RES_X0) && (px1 < RES_R);
+    wire res_region = (res_cnt != 6'd0) && de1 &&
+                      (py1n >= RES_Y0) && (py1n < RES_Y0 + RES_H) &&
+                      (px1n >= RES_X0) && (px1n < RES_R);
     wire res_border = res_region &&
-                      ((py1 == RES_Y0) || (py1 == RES_Y0 + RES_H - 12'd1) ||
-                       (px1 == RES_X0) || (px1 == RES_R - 12'd1));
+                      ((py1n == RES_Y0) || (py1n == RES_Y0 + RES_H - 12'd1) ||
+                       (px1n == RES_X0) || (px1n == RES_R - 12'd1));
     wire res_active = res_region && ~res_border &&
-                      (px1 >= res_inner_l) && (px1 < res_fill_r[11:0]);
+                      (px1n >= res_inner_l) && (px1n < res_fill_r);
 
     //--------------------------------------------------------------
     // 轮播/手动 状态卡区域命中(左上第 3 行 y28..51; 40×24)
@@ -368,25 +427,26 @@ module display_adjust #(
     localparam [11:0] CARD_R  = CARD_X0 + CARD_W;   // 48
     localparam [11:0] CARD_B  = CARD_Y0 + CARD_H;   // 52
 
-    wire card_region = (man_cnt != 16'd0) && de1 &&
-                       (py1 >= CARD_Y0) && (py1 < CARD_B) &&
-                       (px1 >= CARD_X0) && (px1 < CARD_R);
+    wire card_region = (man_cnt != 6'd0) && de1 &&
+                       (py1n >= CARD_Y0) && (py1n < CARD_B) &&
+                       (px1n >= CARD_X0) && (px1n < CARD_R);
     wire card_border = card_region &&
-                       ((py1 == CARD_Y0) || (py1 == CARD_B - 12'd1) ||
-                        (px1 == CARD_X0) || (px1 == CARD_R - 12'd1));
+                       ((py1n == CARD_Y0) || (py1n == CARD_B - 12'd1) ||
+                        (px1n == CARD_X0) || (px1n == CARD_R - 12'd1));
 
     // 播放三角: 行 y33..46 (14 行, 卡内垂直居中); 每行宽度 1+min(dr,13-dr)
     //   dr = 行内偏移 0..13; 宽度 1,2,...,7,7,...,2,1 → 右向三角
-    wire        tri_row = (py1 >= 12'd33) && (py1 <= 12'd46);
+    //   (tri_pix/man_pix 只在 card_region 内被采用, 故同样可用窄化坐标)
+    wire        tri_row = (py1n >= 9'd33) && (py1n <= 9'd46);
     wire [4:0]  tri_dr  = py1[4:0] - 5'd33;                    // 仅 tri_row 内有效
     wire [4:0]  tri_rem = 5'd13 - tri_dr;
     wire [4:0]  tri_w   = 5'd1 + ((tri_dr < tri_rem) ? tri_dr : tri_rem);
-    wire        tri_pix = tri_row && (px1 >= 12'd24) && (px1 < (12'd24 + tri_w));
+    wire        tri_pix = tri_row && (px1n >= 10'd24) && (px1n < (10'd24 + tri_w));
 
     // 暂停双竖条: 行 y34..45, 两根 4px 宽竖条(卡内水平居中)
-    wire        man_pix = (py1 >= 12'd34) && (py1 <= 12'd45) &&
-                          (((px1 >= 12'd22) && (px1 <= 12'd25)) ||
-                           ((px1 >= 12'd30) && (px1 <= 12'd33)));
+    wire        man_pix = (py1n >= 9'd34) && (py1n <= 9'd45) &&
+                          (((px1n >= 10'd22) && (px1n <= 10'd25)) ||
+                           ((px1n >= 10'd30) && (px1n <= 10'd33)));
 
     wire        card_mark = man_s ? man_pix : tri_pix;
     wire [DATA_W-1:0] card_col = man_s ? C_MAN : C_AUTO;

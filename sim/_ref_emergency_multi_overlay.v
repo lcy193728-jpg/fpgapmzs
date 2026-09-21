@@ -1,8 +1,8 @@
+// 临时等价性参考件: 改前 emergency_multi_overlay.v 的逐字副本(仅改模块名)。
+// 仅供 sim/_tb_em_equiv.v 做 A/B 逐像素对照, 不参与综合工程(pic_sdram_audio_final.al)。
 `timescale 1ns/1ps
 
-// Four-type emergency information page. The overlay is generated entirely in
-// logic/BRAM, so switching is immediate and never waits for a TF-card read.
-module emergency_multi_overlay #(
+module emergency_multi_overlay_ref #(
     parameter DATA_W = 24,
     parameter [21:0] BLINK_DIV = 22'd3_146_875
 )(
@@ -14,9 +14,6 @@ module emergency_multi_overlay #(
     output wire hs_o,output wire vs_o,output wire de_o,output wire [DATA_W-1:0] data_o,
     output wire [11:0] px_x_o,output wire [11:0] px_y_o
 );
-    // 本文件是被 top_final.v 以 "../../src/emergency_multi_overlay.v" 引入的,
-    // TD 会拿那个字面路径当基准做嵌套包含, 这里只能写裸文件名, 否则会拼成
-    // <root>/../src/emergency_text_map.vh 而报 HDL-8007。
     `include "emergency_text_map.vh"
 
     reg alarm_m,alarm_s; reg [1:0] type_m,type_s;
@@ -41,7 +38,7 @@ module emergency_multi_overlay #(
       if(rst||!alarm_s) begin vs_d<=0;scroll_phase<=0; end
       else begin
         vs_d<=vs_i;
-        if(vs_rise) scroll_phase<=scroll_phase+1'b1; // 512px 周期，每帧左移 1px
+        if(vs_rise) scroll_phase<=scroll_phase+1'b1;
       end
     end
 
@@ -53,62 +50,39 @@ module emergency_multi_overlay #(
         hs2<=hs1;vs2<=vs1;de2<=de1;d2<=d1;x2<=x1;y2<=y1; end
     end
 
-    // Text rows: large heading/type plus seven compact information rows.
     reg [4:0] text_id; reg [4:0] char_pos; reg [3:0] glyph_row; reg [3:0] glyph_col;
-    reg text_hit; reg [11:0] text_x0; reg [11:0] text_x1; reg large_text,type_large,scroll_text;
+    reg text_hit; reg [11:0] text_x0; reg large_text,type_large,scroll_text;
     reg [6:0] gid; reg font_en; reg [10:0] font_addr; wire [15:0] font_q;
     reg text_hit_q; reg [3:0] glyph_col_q; reg large_q;
-    // ★2026-09-21 面积优化(逐像素等价, 已由 sim/_tb_em_equiv.v 全栅格 A/B 验证):
-    //   原版用 `integer len` + emergency_text_len(text_id) 再算 text_x0+len*16 /
-    //   text_x0+len*32 —— integer 是 32bit 有符号, 于是每次窗口判定都生成
-    //   "32bit 乘加 + 32bit 比较器"。改为**逐行直接给出窗口右沿常量 text_x1**
-    //   (= text_x0 + 该行字数×每字宽度, 逐行静态可得), 判定退化为两个 12bit
-    //   比较器, 并整块删掉 emergency_text_len 的多路 case 调用。
-    //   各行的 (text_x0, 每字宽度, 字数) → text_x1:
-    //     标题 (id0)      256 + 32×4  = 384
-    //     应急类型大字     192 → 448(固定 8 字 × 64px, 原版即写死)
-    //     行3   id5/6/7   200 + 16×7  = 312
-    //     行4   id8/9/10  200 + 16×10/9/10 → type2=344, 其余 360
-    //     行5   id11/13/15/17 → 392 / 344 / 408 / 392
-    //     行6   id12/14/16/18 → 296 / 296 / 344 / 344
-    //     行7   id19      240 + 16×5  = 320
-    //     行8   id20      272 + 16×6  = 368
-    //     行9   id21      248 + 16×9  = 392
-    //   ※ text_id 在所有命中分支里都非 0 且 ≤25 → emergency_text_len 永不返回 0,
-    //     故原式里的 `len!=0` 恒真, 已一并去掉。
-    //   ※ 未命中任何行窗时原版 text_id=0 → len=4 → 判定 x1∈[0,64); 这里用初值
-    //     text_x0=0/text_x1=64 精确复刻该(意外但既有的)行为, 保证逐像素等价。
+    integer len;
     always @(*) begin
-      text_id=0;char_pos=0;glyph_row=0;glyph_col=0;text_hit=0;text_x0=0;text_x1=64;
-      large_text=0;type_large=0;scroll_text=0;
+      text_id=0;char_pos=0;glyph_row=0;glyph_col=0;text_hit=0;text_x0=0;large_text=0;type_large=0;scroll_text=0;len=0;
       if(alarm_s && de1) begin
-        if(y1>=12'd16 && y1<12'd48) begin text_id=0;text_x0=256;text_x1=384;large_text=1; end
-        else if(y1>=12'd58 && y1<12'd122) begin text_id={3'd0,type_s}+1'b1;text_x0=192;text_x1=448;type_large=1; end
-        else if(y1>=12'd142 && y1<12'd158) begin text_id=(type_s<2)?5:((type_s==2)?6:7);text_x0=200;text_x1=312; end
-        else if(y1>=12'd174 && y1<12'd190) begin text_id=(type_s<2)?8:((type_s==2)?9:10);text_x0=200;
-                                              text_x1=(type_s==2)?344:360; end
-        else if(y1>=12'd222 && y1<12'd238) begin text_id=11+({3'd0,type_s}<<1);text_x0=200;
-                                              text_x1=(type_s==1)?344:((type_s==2)?408:392); end
-        else if(y1>=12'd254 && y1<12'd270) begin text_id=12+({3'd0,type_s}<<1);text_x0=200;
-                                              text_x1=(type_s<2)?296:344; end
-        else if(y1>=12'd310 && y1<12'd326) begin text_id=19;text_x0=240;text_x1=320; end
-        else if(y1>=12'd350 && y1<12'd366) begin text_id=20;text_x0=272;text_x1=368; end
-        else if(y1>=12'd390 && y1<12'd406) begin text_id=21;text_x0=248;text_x1=392; end
+        if(y1>=12'd16 && y1<12'd48) begin text_id=0;text_x0=256;large_text=1; end
+        else if(y1>=12'd58 && y1<12'd122) begin text_id={3'd0,type_s}+1'b1;text_x0=192;type_large=1; end
+        else if(y1>=12'd142 && y1<12'd158) begin text_id=(type_s<2)?5:((type_s==2)?6:7);text_x0=200; end
+        else if(y1>=12'd174 && y1<12'd190) begin text_id=(type_s<2)?8:((type_s==2)?9:10);text_x0=200; end
+        else if(y1>=12'd222 && y1<12'd238) begin text_id=11+({3'd0,type_s}<<1);text_x0=200; end
+        else if(y1>=12'd254 && y1<12'd270) begin text_id=12+({3'd0,type_s}<<1);text_x0=200; end
+        else if(y1>=12'd310 && y1<12'd326) begin text_id=19;text_x0=240; end
+        else if(y1>=12'd350 && y1<12'd366) begin text_id=20;text_x0=272; end
+        else if(y1>=12'd390 && y1<12'd406) begin text_id=21;text_x0=248; end
         else if(y1>=12'd448 && y1<12'd464) begin text_id=22+{3'd0,type_s};scroll_text=1; end
+        len=emergency_text_len(text_id);
         if(type_large) begin
           if(x1>=12'd192 && x1<12'd448) begin
             text_hit=1;char_pos=(x1-12'd192)>>6;glyph_col=((x1-12'd192)&63)>>2;
             glyph_row=(y1-12'd58)>>2;
           end
         end else if(large_text) begin
-          if(x1>=text_x0 && x1<text_x1) begin
+          if(x1>=text_x0 && x1<text_x0+len*32) begin
             text_hit=1;char_pos=(x1-text_x0)>>5;glyph_col=((x1-text_x0)&31)>>1;
             glyph_row=((y1-(text_id==0?16:68))&31)>>1;
           end
         end else if(scroll_text) begin
           text_hit=1;char_pos=(x1+scroll_phase)>>4;glyph_col=(x1+scroll_phase)&15;
           glyph_row=y1-448;
-        end else if(x1>=text_x0 && x1<text_x1) begin
+        end else if(len!=0 && x1>=text_x0 && x1<text_x0+len*16) begin
           text_hit=1;char_pos=(x1-text_x0)>>4;glyph_col=(x1-text_x0)&15;
           case(text_id) 5,6,7:glyph_row=y1-142;8,9,10:glyph_row=y1-174;
             11,13,15,17:glyph_row=y1-222;12,14,16,18:glyph_row=y1-254;
@@ -123,8 +97,6 @@ module emergency_multi_overlay #(
     always @(posedge clk) begin text_hit_q<=text_hit;glyph_col_q<=glyph_col;large_q<=large_text; end
     wire text_ink=text_hit_q && font_q[15-glyph_col_q];
 
-    // Duration digits are drawn from the same glyph ROM using a second read-free
-    // seven-segment renderer, keeping the font ROM single-port.
     function seg_on; input [3:0] d;input [2:0] s;begin case(d)
       0:seg_on=(s!=6);1:seg_on=(s==1||s==2);2:seg_on=(s==0||s==1||s==6||s==4||s==3);
       3:seg_on=(s==0||s==1||s==2||s==3||s==6);4:seg_on=(s==5||s==6||s==1||s==2);
@@ -151,7 +123,6 @@ module emergency_multi_overlay #(
       if(alarm_s&&x2>=390&&x2<394&&((y2>=309&&y2<313)||(y2>=321&&y2<325))) digit_ink=1;
     end
 
-    // Distinct vector pictograms at the left side of the information card.
     wire icon_box=(x2>=50&&x2<174&&y2>=132&&y2<286);
     wire [11:0] fdx=(x2>112)?x2-112:112-x2;
     wire [11:0] fdy=(y2>230)?y2-230:230-y2;

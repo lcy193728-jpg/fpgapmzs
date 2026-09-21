@@ -21,6 +21,13 @@
 `include "../../src/emergency_alarm_ctrl.v"
 `include "../../src/emergency_font_rom.v"
 `include "../../src/emergency_multi_overlay.v"
+// 会议议程控制与计时链(2026-09-21 从 fpgapmzs main ee717b2 移植):
+//   meeting_osd 自带 meeting_fmt(串行 BCD 格式化)与 meeting_glyph_rom
+//   (4096×16 会议专用字库)并以裸文件名 include; meeting_sd_rd 由
+//   sd_card_bmp.v 内部 include 并入(定义与例化同一编译单元)。
+`include "../../src/meeting_cfg.v"
+`include "../../src/meeting_ctrl.v"
+`include "../../src/meeting_osd.v"
 `include "../rtl/audio_feature_events.v"
 `include "../rtl/scene_audio_final.v"
 `include "../rtl/audio_viz_overlay.v"
@@ -237,7 +244,7 @@ wire signed [15:0] audio_left,audio_right;
 wire                            meeting_en;    // 1=会议场景(latch=2 且非应急)
 wire                            quiz_en;       // 1=抢答场景(latch=3 且非应急)
 wire                            alarm_en;      // 1=应急(最高优先级)
-wire [1:0]                      alarm_type;    // KEY4 循环: 火灾/地震/恶劣天气/临时疏散
+wire [1:0]                      alarm_type;    // KEY1选/KEY2减/KEY3加: 火灾/地震/恶劣天气/临时疏散
 wire [3:0]                      alarm_mt, alarm_mo, alarm_st, alarm_so;
 wire [1:0]                      q_state;       // 抢答状态 0等待 1抢答中 2锁定 3超时
 wire [1:0]                      q_winner;      // 胜者 0..3(屏显 +1)
@@ -261,18 +268,56 @@ wire [7:0]                      img_no;        // 当前图序号(sd_card_bmp �
 wire [3:0]                      bmp_error;     // BMP 加载错误码(批次3: 0无/1头校验/2超时/3截断)
 
 //人机交互(ui_key_ctrl)输出
-wire [1:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率/3轮播周期
+wire [2:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率/3轮播周期/4会议计时
 wire [3:0]  res_level;      // 分辨率档 0..7
 wire [7:0]  pic_param;      // 图片参数(0=轮播 / N=手动第N张)
 wire [7:0]  ui_period_sec;  // 批次4 轮播间隔档(秒: 2/3/5/10/30)
 wire [31:0] ui_period_cyc;  // 批次4 轮播间隔(时钟周期) → sd_card_bmp
 wire        ui_disp_hold;   // 批次4 参数强显保持中(2 秒)
-wire [1:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时的 ui_mode)
+wire [2:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时的 ui_mode)
 wire        pic_manual;     // 1=手动单张(冻结自动轮播)
 wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
 wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
 wire        res_chg_pl;     // 缩放档变化脉冲(1拍) → bmp 缩放引擎重载当前图
+wire        key2_pl;        // KEY2 消抖"按下"脉冲(模式4=会议计时 开始/暂停/继续)
+wire        key3_pl;        // KEY3 消抖"按下"脉冲(模式4=当前议程项 重新计时)
 wire        bmp_slide_en;   // bmp 轮播使能 = 场景轮播使能 且 非手动单张
+
+//------------------------------------------------------------
+// 会议议程配置链(2026-09-21 从 fpgapmzs main 移植):
+//   TF 卡固定扇区 →(sd_card_bmp 内 meeting_sd_rd, sd 域解析写 BRAM)
+//   → meeting_cfg(双口 BRAM + video 域快照) → meeting_ctrl(七状态计时)
+//   ⇄ meeting_osd(会议画面, 串在 osd_scene 与应急叠层之间)
+//   会议逻辑全部在 video_clk(25MHz) 域, 与 OSD 同域, 仅使能/告警跨域同步。
+//------------------------------------------------------------
+wire        mtg_ram_we;         // 配置 RAM 写使能(→ meeting_cfg 写口)
+wire [10:0] mtg_ram_addr;       // 配置 RAM 写地址(0..1271)
+wire [7:0]  mtg_ram_data;       // 配置 RAM 写数据
+wire        mtg_ready;          // 配置有效(MTG1 解析通过)
+wire        mtg_error;          // 配置无效(坏/截断/超时)
+wire [4:0]  mtg_total;          // 议程项数 1..16
+wire        mtg_done;           // 配置读取收尾(此信号后 BMP 通路放行)
+
+wire        mtg_cfg_ready_v;    // 以下均由 meeting_cfg 在 video 域输出
+wire        mtg_cfg_error_v;
+wire [4:0]  mtg_total_v;
+wire [15:0] mtg_duration_v, mtg_next_duration_v;
+wire [10:0] mo_cfg_addr;        // meeting_osd → 配置 BRAM 取字地址(2026-09-21 新增)
+wire [7:0]  mo_cfg_byte;        // 配置 BRAM → meeting_osd 字形字节(晚地址一拍)
+
+wire [2:0]  mtg_state;          // meeting_ctrl: 七状态
+wire [3:0]  mtg_current;        // 当前议程项(0 起)
+wire [15:0] mtg_remaining, mtg_overtime;
+wire        mtg_alarm_paused;
+wire [31:0] mtg_uptime;
+wire [1:0]  mtg_notice_sel;     // meeting_osd 输出(注意事项页选择)
+wire [3:0]  mtg_ov_index;       // meeting_osd 输出(议程总览行号)
+wire        meeting_en_v;       // meeting_en 同步到 video 域
+wire        alarm_v;            // emergency 同步到 video 域
+// 会议 OSD 输出像素流(插在 osd_scene 与 emergency_multi_overlay 之间)
+wire        mo_hs, mo_vs, mo_de;
+wire [23:0] mo_data;
+wire [11:0] mo_px_x, mo_px_y;
 
 
 wire									  write_clk;
@@ -398,14 +443,27 @@ sync_2ff u_sync_wr_ack (
 //   ※ 按键只调参数, 与场景切换无关(场景由拨码决定, 见 scene_control)
 //   ※ 所有场景共用同一套按键语义(全局统一样式)
 //============================================================
+// NOTE(2026-09-21): ui_key1~3 MUST be declared BEFORE the ui_key_ctrl
+//   instantiation below. Declared after it, TD treats them as implicit nets
+//   and ties them to 0 (HDL-7225 + SYN-5013 Undriven net), which silently
+//   disables the alarm key gating (keys look permanently pressed).
+// 2026-09-21 按键归口(用户要求, 场景四不再用 KEY4):
+//   应急场景(alarm_en)期间 KEY1~KEY3 属于"四类告警选择":
+//       KEY1 = 选择(顺序循环) / KEY2 = 减 / KEY3 = 加
+//   此时把三键从 ui_key_ctrl 的输入上"截走"(恒接高=未按下), 避免同一次
+//   按键既切告警类型、又去调亮度/缩放/周期。非应急时三键含义完全不变。
+wire ui_key1 = alarm_en ? 1'b1 : key1;
+wire ui_key2 = alarm_en ? 1'b1 : key2;
+wire ui_key3 = alarm_en ? 1'b1 : key3;
+
 ui_key_ctrl #(
     .BRI_INIT            (4'd8)
 ) ui_key_ctrl_m0(
     .clk                 (sd_card_clk          ),
     .rst                 (~rst_n_sd            ),
-    .key1                (key1                 ),
-    .key2                (key2                 ),
-    .key3                (key3                 ),
+    .key1                (ui_key1             ),
+    .key2                (ui_key2             ),
+    .key3                (ui_key3             ),
     .img_no              (img_no               ),
     .scene_chg           (scene_change_pulse   ),
     .mode                (ui_mode              ),
@@ -419,7 +477,9 @@ ui_key_ctrl #(
     .pic_param           (pic_param            ),
     .key_next_pl         (key_next_pl          ),
     .key_prev_pl         (key_prev_pl          ),
-    .res_chg_pl          (res_chg_pl           )
+    .res_chg_pl          (res_chg_pl           ),
+    .key2_pl             (key2_pl             ),  // 模式4: 会议计时 开始/暂停/继续
+    .key3_pl             (key3_pl             )   // 模式4: 当前议程项 重新计时
 );
 
 //============================================================
@@ -458,9 +518,10 @@ assign meeting_en = (latch_sw == 3'd2) & ~emergency;
 assign quiz_en    = (latch_sw == 3'd3) & ~emergency;
 assign alarm_en   = emergency;
 
-// KEY4 原为预留键，仅在应急场景中用于四类告警循环选择；进入应急默认火灾。
+// 四类应急告警选择(KEY1 选 / KEY2 减 / KEY3 加), 进入应急默认火灾并清零计时。
 emergency_alarm_ctrl #(.CLK_HZ(100_000_000)) u_alarm_type_ctrl(
-    .clk(sd_card_clk), .rst(~rst_n_sd), .alarm_en(alarm_en), .key4_raw(key4),
+    .clk(sd_card_clk), .rst(~rst_n_sd), .alarm_en(alarm_en),
+    .key1_raw(ui_key1), .key2_raw(ui_key2), .key3_raw(ui_key3),
     .alarm_type(alarm_type), .elapsed_m_tens(alarm_mt), .elapsed_m_ones(alarm_mo),
     .elapsed_s_tens(alarm_st), .elapsed_s_ones(alarm_so)
 );
@@ -506,6 +567,15 @@ sd_card_bmp  sd_card_bmp_m0(
 	.zone_max_img               (zone_max_l               ),
 	.zone_load                  (zone_load_l              ),
 	.reload_req                 (res_chg_pl               ),
+	// ---- 会议议程配置(TF 卡固定扇区 200000, MTG1 字节流; 开机独占读 3 扇区) ----
+	.mtg_start_sector           (32'd200000                ),
+	.mtg_ram_we                 (mtg_ram_we               ),
+	.mtg_ram_addr               (mtg_ram_addr             ),
+	.mtg_ram_data               (mtg_ram_data             ),
+	.mtg_ready                  (mtg_ready                ),
+	.mtg_error                  (mtg_error                ),
+	.mtg_total                  (mtg_total                ),
+	.mtg_done                   (mtg_done                 ),
 	.write_req                  (sd_card_write_req        ),
 	.write_req_ack              (write_req_ack_sd         ),  // ext_mem_clk→sd_card_clk 已两级同步(见 u_sync_wr_ack)
 	.write_en                   (sd_card_write_en         ),
@@ -589,7 +659,7 @@ seg_decoder u_dec_scene (.bin_data({2'b0, scene_id}), .seg_data(dec_scene));
 seg_decoder u_dec_h     (.bin_data(p_h              ), .seg_data(dec_h    ));
 seg_decoder u_dec_t     (.bin_data(p_t              ), .seg_data(dec_t    ));
 seg_decoder u_dec_o     (.bin_data(p_o              ), .seg_data(dec_o    ));
-seg_decoder u_dec_mode  (.bin_data({2'b0, ui_mode }), .seg_data(dec_mode ));
+seg_decoder u_dec_mode  (.bin_data({1'b0, ui_mode }), .seg_data(dec_mode ));
 
 localparam [7:0] SEG_BLANK = 8'hFF;   // 全灭(含小数点)
 localparam [7:0] SEG_DASH  = 8'hBF;   // 仅 g 段亮 = "-"
@@ -601,16 +671,6 @@ wire        err_show = (bmp_error != 4'd0);
 wire [6:0]  dec_err;
 seg_decoder u_dec_err (.bin_data(bmp_error), .seg_data(dec_err));
 
-// ---- TEMPORARY bring-up diagnostic (应急音频调试用, 定位后请删除) ----
-// 应急期间: 第 6 位=音频状态机 state(0=IDLE 1=BLIP 2=MELODY 3=ALARM),
-//           第 5 位=媒体 FIFO 溢出标志(1=曾丢样本, 会导致音色碎裂/毛刺)。
-// 非应急时这两位的原有"错误码/横线"行为保持不变。
-wire [2:0]  astate_dbg;
-wire        aovf_dbg;
-wire [6:0]  dec_astate, dec_aovf;
-seg_decoder u_dec_astate (.bin_data({5'b0, astate_dbg}), .seg_data(dec_astate));
-seg_decoder u_dec_aovf   (.bin_data({3'b0, aovf_dbg}),   .seg_data(dec_aovf));
-
 seg_scan seg_scan_m0(
 	.clk                        (clk                      ),
 	.rst_n                      (rst_n_clk                ),
@@ -621,10 +681,8 @@ seg_scan seg_scan_m0(
 	.seg_data_2                 (blank_t ? SEG_BLANK : {1'b1, dec_t}),
 	.seg_data_3                 ({1'b1, dec_o}            ),
 	.seg_data_4                 ({1'b1, dec_mode}         ),
-	.seg_data_5                 (emergency ? {1'b1, dec_aovf} :
-	                             (err_show ? {1'b1, 7'b000_0110} : SEG_DASH)), // 应急时=FIFO溢出
-	.seg_data_6                 (emergency ? {1'b1, dec_astate} :
-	                             (err_show ? {1'b1, dec_err} : SEG_DASH)), // 应急时=音频state
+	.seg_data_5                 (err_show ? {1'b1, 7'b000_0110} : SEG_DASH), // 出错=字母E, 正常=横线
+	.seg_data_6                 (err_show ? {1'b1, dec_err}      : SEG_DASH), // 出错=错误码, 正常=横线
 	.seg_data_7                 (pic_manual ? SEG_CH_H : SEG_CH_A)
 );
 wire hs_0;
@@ -710,7 +768,7 @@ wire [12:0] osd_rom_addr = m_rom_en  ? m_rom_addr :
 
 osd_font_rom #(
     .ADDR_W (13),
-    .DEPTH  (5856)
+    .DEPTH  (6992)      // 2026-09-21: 字库换成 fpgapmzs 最新版(新增 AG* 议程字模, 5856→6992)
 ) u_osd_font_rom (
     .clk    (video_clk),
     .rst    (~rst_n_vid),
@@ -832,9 +890,135 @@ osd_scene #(
 wire em_hs, em_vs, em_de;
 wire [23:0] em_data;
 wire [11:0] em_px_x, em_px_y;
+
+//============================================================
+// 会议议程控制链(2026-09-21 从 fpgapmzs main ee717b2 移植上板)
+//   数据流: TF 卡固定扇区 200000 →(sd_card_bmp 内 meeting_sd_rd, sd 域)
+//           → meeting_cfg(BRAM + video 域快照) → meeting_ctrl(七状态计时)
+//           ⇄ meeting_osd(会议画面, 串在 osd_scene 与应急叠层之间)
+//   按键  : 只在"会议场景(latch=2) + 功能模式4"下, 把 KEY2/KEY3 的消抖脉冲
+//           跨到 video 域接 meeting_ctrl 的 press[0](开始/暂停/继续)与
+//           press[3](当前项重新计时); 其它场景/模式完全不采用 → 原有按键
+//           功能(亮度/缩放/周期/切图)一字未改。
+//   ※ 会议逻辑全部在 video_clk(25MHz) 域, 故 SEC_CYCLES=25_000_000。
+//   ※ 与应急的关系: meeting_en 已含 ~emergency, 应急时 meeting_osd 使能=0
+//     纯透传, 四类应急画面仍由下级 emergency_multi_overlay 全屏绘制。
+//============================================================
+// ---- 使能/告警 电平跨域(sd_card_clk → video_clk, 两级同步) ----
+sync_2ff u_sync_meet_en (.clk(video_clk), .async_in(meeting_en), .sync_out(meeting_en_v));
+sync_2ff u_sync_alarm   (.clk(video_clk), .async_in(emergency ), .sync_out(alarm_v     ));
+
+// ---- 会议按键脉冲跨域: sd 域单拍(10ns) vs video 拍(40ns), 直接两级同步会漏采,
+//      故先转"翻转电平", 同步后再做边沿检测还原单拍脉冲 ----
+wire k2_meet = key2_pl & meeting_en & (ui_mode == 3'd4);
+wire k3_meet = key3_pl & meeting_en & (ui_mode == 3'd4);
+
+reg k2_tog, k3_tog;
+always @(posedge sd_card_clk) begin
+    if (!rst_n_sd) begin k2_tog <= 1'b0; k3_tog <= 1'b0; end
+    else begin
+        if (k2_meet) k2_tog <= ~k2_tog;
+        if (k3_meet) k3_tog <= ~k3_tog;
+    end
+end
+
+reg k2_s0, k2_s1, k2_s2, k3_s0, k3_s1, k3_s2;
+always @(posedge video_clk) begin
+    if (!rst_n_vid) begin
+        k2_s0 <= 1'b0; k2_s1 <= 1'b0; k2_s2 <= 1'b0;
+        k3_s0 <= 1'b0; k3_s1 <= 1'b0; k3_s2 <= 1'b0;
+    end
+    else begin
+        k2_s0 <= k2_tog; k2_s1 <= k2_s0; k2_s2 <= k2_s1;
+        k3_s0 <= k3_tog; k3_s1 <= k3_s0; k3_s2 <= k3_s1;
+    end
+end
+
+wire meet_press_start  = k2_s1 ^ k2_s2;   // 1 拍: 开始/暂停/继续
+wire meet_press_retime = k3_s1 ^ k3_s2;   // 1 拍: 当前议程项重新计时
+
+// ---- 配置存储 + 视频域快照(写口在 sd 域, 读口在 video 域) ----
+meeting_cfg meeting_cfg_m0(
+    .wr_clk         (sd_card_clk        ),
+    .wr_en          (mtg_ram_we         ),
+    .wr_addr        (mtg_ram_addr       ),
+    .wr_data        (mtg_ram_data       ),
+    .cfg_ready      (mtg_ready          ),
+    .cfg_error      (mtg_error          ),
+    .cfg_total      (mtg_total          ),
+    .cfg_current    (mtg_current        ),
+    .clk            (video_clk          ),
+    .rst            (~rst_n_vid         ),
+    .rd_addr        (mo_cfg_addr        ),  // meeting_osd 取字地址
+    .rd_data        (mo_cfg_byte        ),  // 配置 BRAM 取字数据(晚地址一拍)
+    .ready          (mtg_cfg_ready_v    ),
+    .error          (mtg_cfg_error_v    ),
+    .total          (mtg_total_v        ),
+    .duration       (mtg_duration_v     ),
+    .next_duration  (mtg_next_duration_v)
+);
+
+// ---- 七状态议程计时(会议场景内使能; 配置有效才走计时) ----
+meeting_ctrl #(
+    .SEC_CYCLES     (25_000_000         )   // video_clk = 25.000MHz
+) meeting_ctrl_m0(
+    .clk            (video_clk          ),
+    .rst            (~rst_n_vid         ),
+    .en             (meeting_en_v       ),
+    .config_ready   (mtg_cfg_ready_v    ),
+    .alarm          (alarm_v            ),
+    .press          ({meet_press_retime, 1'b0, 1'b0, meet_press_start}),
+    .end_long       (1'b0               ),  // 本板只用 KEY2/KEY3 两个功能, 不设长按
+    .home_long      (1'b0               ),
+    .total          (mtg_total_v        ),
+    .duration       (mtg_duration_v     ),
+    .state          (mtg_state          ),
+    .current        (mtg_current        ),
+    .remaining      (mtg_remaining      ),
+    .overtime       (mtg_overtime       ),
+    .alarm_paused   (mtg_alarm_paused   ),
+    .warn_event     (                   ),
+    .timeout_event  (                   ),
+    .uptime         (mtg_uptime         )
+);
+
+// ---- 会议场景画面(插在 osd_scene 与应急叠层之间) ----
+//   使能 = 会议场景 且 配置已就绪: 配置缺失(TF 卡没写 MTG1 扇区)时本层不画,
+//   自动退回 osd_scene 原有的"会议公告"画面(优雅降级; osd_scene 一字未改)。
+meeting_osd meeting_osd_m0(
+    .clk            (video_clk          ),
+    .rst            (~rst_n_vid         ),
+    .en             (meeting_en_v & mtg_cfg_ready_v),
+    .alarm          (alarm_v            ),
+    .hs_i           (sc_hs              ),
+    .vs_i           (sc_vs              ),
+    .de_i           (sc_de              ),
+    .data_i         (sc_data            ),
+    .px_x           (sc_px_x            ),
+    .px_y           (sc_px_y            ),
+    .state          (mtg_state          ),
+    .current        (mtg_current        ),
+    .total          (mtg_total_v        ),
+    .remaining      (mtg_remaining      ),
+    .overtime       (mtg_overtime       ),
+    .next_duration  (mtg_next_duration_v),
+    .uptime         (mtg_uptime         ),
+    .alarm_paused   (mtg_alarm_paused   ),
+    .cfg_addr       (mo_cfg_addr        ),  // 取字地址 → 配置 BRAM
+    .cfg_byte       (mo_cfg_byte        ),  // 取字数据(晚地址一拍)
+    .hs_o           (mo_hs              ),
+    .vs_o           (mo_vs              ),
+    .de_o           (mo_de              ),
+    .data_o         (mo_data            ),
+    .px_x_o         (mo_px_x            ),
+    .px_y_o         (mo_px_y            ),
+    .notice_sel     (mtg_notice_sel     ),
+    .overview_index (mtg_ov_index       )
+);
+
 emergency_multi_overlay u_emergency_multi(
-    .clk(video_clk),.rst(~rst_n_vid),.hs_i(sc_hs),.vs_i(sc_vs),.de_i(sc_de),
-    .data_i(sc_data),.px_x(sc_px_x),.px_y(sc_px_y),.alarm_en(alarm_en),
+    .clk(video_clk),.rst(~rst_n_vid),.hs_i(mo_hs),.vs_i(mo_vs),.de_i(mo_de),
+    .data_i(mo_data),.px_x(mo_px_x),.px_y(mo_px_y),.alarm_en(alarm_en),
     .alarm_type(alarm_type),.min_tens(alarm_mt),.min_ones(alarm_mo),
     .sec_tens(alarm_st),.sec_ones(alarm_so),.hs_o(em_hs),.vs_o(em_vs),
     .de_o(em_de),.data_o(em_data),.px_x_o(em_px_x),.px_y_o(em_px_y)
@@ -1050,12 +1234,6 @@ hdmi_phy_wrapper #(
     .O_tmds_ch2_p       (HDMI_D2_P),
     .O_tmds_clk_p       (HDMI_CLK_P)
 );
-
-// TEMPORARY bring-up diagnostic: digit 6 = emergency audio state machine state,
-// digit 5 = media-FIFO overflow flag (see seg_data_5/6 above). Delete this
-// assign together with the dec_astate/dec_aovf block when the alarm works.
-assign astate_dbg = media_state;
-assign aovf_dbg   = media_overflow;
 
 //video frame data read-write control
 frame_read_write frame_read_write_m0(

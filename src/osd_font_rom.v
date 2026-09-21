@@ -38,12 +38,17 @@
 //     AT_TITLE base= 4992 N=10 cell=32 scale=2 ty= 82 gx=160  "紧急情况 请立即疏散"
 //     A_FOOT   base= 5312 N=24 cell=16 scale=1 ty=452 gx=  0  "紧急告警 请全体人员沿疏散通道迅速撤离 注意安全"
 //     NUM      base= 5696 N=10 cell=16 scale=1 ty=  0 gx=  0  "0123456789"
+//   ※ 2026-09-21: 原 5856..6991 的 AG0..AG_HINT(开幕式/议程/状态文案)分区
+//     已被新版会议场景(meeting_osd + meeting_glyph_rom)取代, 全工程无任何
+//     模块引用(已核 osd_menu/osd_welcome/osd_scene 的 base 表), 故整段删除,
+//     DEPTH 6992 → 5856, 释放约 4 个 BRAM。当前实际最大地址 = 5855
+//     (osd_scene 的 NUM 分区末字)。
 //==============================================================================
 
 `timescale 1ns/1ps
 
 module osd_font_rom #(
-    parameter ADDR_W = 13,          // 地址位宽(深度 5856)
+    parameter ADDR_W = 13,          // 地址位宽(深度 5856; 上限 5855 见 osd_scene 的 NUM 分区)
     parameter DEPTH  = 5856           // 深度(words)
 )(
     input  wire              clk,    // 读时钟(video_clk)
