@@ -392,6 +392,8 @@ ui_key_ctrl #(
     .key1                (key1                 ),
     .key2                (key2                 ),
     .key3                (key3                 ),
+    .key4                (key4                 ),
+    .control_lock        (1'b0                 ),
     .img_no              (img_no               ),
     .scene_chg           (scene_change_pulse   ),
     .mode                (ui_mode              ),
@@ -932,4 +934,4 @@ sdram U3
 .Sdr_rd_en			(Sdr_rd_en),//data_valid
 .Sdr_rd_dout		(Sdr_rd_dout)
 );
-endmodule 
+endmodule

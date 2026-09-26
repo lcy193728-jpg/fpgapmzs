@@ -73,6 +73,7 @@ module meeting_osd(input clk,rst,en,alarm,input hs_i,vs_i,de_i,
  input [15:0] remaining,overtime,next_duration,input [31:0] uptime,
  input alarm_paused,
  output [10:0] cfg_addr,input [7:0] cfg_byte,
+ output [15:0] time_bcd_o,
  output reg hs_o,vs_o,de_o,output reg [23:0] data_o,
  output reg [11:0] px_x_o,px_y_o,
  output reg [1:0] notice_sel,output wire [3:0] overview_index);
@@ -136,6 +137,7 @@ meeting_fmt u_fmt(
 
 // 倒计时显示值: 剩余归零且已开始 → 改显超时正计时(与原版 `t` 等价)
 wire [15:0] t_bcd = (remaining==0 && state!=0) ? ot_bcd[15:0] : rem_bcd[15:0];
+assign time_bcd_o = t_bcd;
 wire [3:0]  ss_o = t_bcd[3:0],  ss_t = t_bcd[7:4];
 wire [3:0]  mm_o = t_bcd[11:8], mm_t = t_bcd[15:12];
 

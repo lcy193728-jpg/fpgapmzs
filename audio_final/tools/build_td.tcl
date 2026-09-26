@@ -22,6 +22,12 @@ update_timing
 report_timing_summary -file ${name}_gate.timing
 export_db ${name}_gate.db
 load_run_param -run phy_1
+set audio_place_seed 11
+if {[info exists ::env(AUDIO_PLACE_SEED)]} {
+    set audio_place_seed $::env(AUDIO_PLACE_SEED)
+}
+set_param place seed $audio_place_seed
+puts "AUDIO_PLACE_SEED=$audio_place_seed"
 place
 route
 # 官方 DefaultFlow.tcl 的收尾步骤: route 之后跑一次 fix_hold 修保持时间,

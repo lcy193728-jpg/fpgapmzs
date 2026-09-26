@@ -279,8 +279,10 @@ wire        pic_manual;     // 1=手动单张(冻结自动轮播)
 wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
 wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
 wire        res_chg_pl;     // 缩放档变化脉冲(1拍) → bmp 缩放引擎重载当前图
+wire        key1_pl;
 wire        key2_pl;        // KEY2 消抖"按下"脉冲(模式4=会议计时 开始/暂停/继续)
 wire        key3_pl;        // KEY3 消抖"按下"脉冲(模式4=当前议程项 重新计时)
+wire        key4_pl;
 wire        bmp_slide_en;   // bmp 轮播使能 = 场景轮播使能 且 非手动单张
 
 //------------------------------------------------------------
@@ -308,7 +310,9 @@ wire [7:0]  mo_cfg_byte;        // 配置 BRAM → meeting_osd 字形字节(晚�
 wire [2:0]  mtg_state;          // meeting_ctrl: 七状态
 wire [3:0]  mtg_current;        // 当前议程项(0 起)
 wire [15:0] mtg_remaining, mtg_overtime;
+wire [15:0] mtg_time_bcd_v;
 wire        mtg_alarm_paused;
+wire        mtg_warn_event, mtg_timeout_event;
 wire [31:0] mtg_uptime;
 wire [1:0]  mtg_notice_sel;     // meeting_osd 输出(注意事项页选择)
 wire [3:0]  mtg_ov_index;       // meeting_osd 输出(议程总览行号)
@@ -452,9 +456,11 @@ sync_2ff u_sync_wr_ack (
 //       KEY1 = 选择(顺序循环) / KEY2 = 减 / KEY3 = 加
 //   此时把三键从 ui_key_ctrl 的输入上"截走"(恒接高=未按下), 避免同一次
 //   按键既切告警类型、又去调亮度/缩放/周期。非应急时三键含义完全不变。
-wire ui_key1 = alarm_en ? 1'b1 : key1;
-wire ui_key2 = alarm_en ? 1'b1 : key2;
-wire ui_key3 = alarm_en ? 1'b1 : key3;
+// 会议场景直接按文档接管四键；KEY1~KEY3 不再同时改变全局显示参数。
+wire meeting_key_owner = (latch_sw == 3'd2);
+wire ui_key1 = key1;
+wire ui_key2 = key2;
+wire ui_key3 = key3;
 
 ui_key_ctrl #(
     .BRI_INIT            (4'd8)
@@ -464,6 +470,8 @@ ui_key_ctrl #(
     .key1                (ui_key1             ),
     .key2                (ui_key2             ),
     .key3                (ui_key3             ),
+    .key4                (key4                ),
+    .control_lock        (alarm_en | meeting_key_owner),
     .img_no              (img_no               ),
     .scene_chg           (scene_change_pulse   ),
     .mode                (ui_mode              ),
@@ -478,8 +486,10 @@ ui_key_ctrl #(
     .key_next_pl         (key_next_pl          ),
     .key_prev_pl         (key_prev_pl          ),
     .res_chg_pl          (res_chg_pl           ),
+    .key1_pl             (key1_pl              ),
     .key2_pl             (key2_pl             ),  // 模式4: 会议计时 开始/暂停/继续
-    .key3_pl             (key3_pl             )   // 模式4: 当前议程项 重新计时
+    .key3_pl             (key3_pl             ),
+    .key4_pl             (key4_pl             )
 );
 
 //============================================================
@@ -661,6 +671,32 @@ seg_decoder u_dec_t     (.bin_data(p_t              ), .seg_data(dec_t    ));
 seg_decoder u_dec_o     (.bin_data(p_o              ), .seg_data(dec_o    ));
 seg_decoder u_dec_mode  (.bin_data({1'b0, ui_mode }), .seg_data(dec_mode ));
 
+// meeting_osd 已由 meeting_fmt 算好 MMSS BCD；这里只做稳定快照跨时钟域，
+// 避免在数码管域重复综合除法/BCD逻辑。
+reg [15:0] mtg_bcd_s0, mtg_bcd_s1, mtg_bcd_s2, mtg_bcd_disp;
+reg [1:0]  mtg_sel_sync;
+wire meeting_seg_active = mtg_sel_sync[1];
+
+always @(posedge clk or negedge rst_n_clk) begin
+    if (!rst_n_clk) begin
+        mtg_sel_sync <= 2'b00;
+        mtg_bcd_s0 <= 16'd0; mtg_bcd_s1 <= 16'd0; mtg_bcd_s2 <= 16'd0;
+        mtg_bcd_disp <= 16'd0;
+    end else begin
+        mtg_sel_sync <= {mtg_sel_sync[0], meeting_key_owner};
+        mtg_bcd_s0 <= mtg_time_bcd_v;
+        mtg_bcd_s1 <= mtg_bcd_s0;
+        mtg_bcd_s2 <= mtg_bcd_s1;
+        if (mtg_bcd_s1 == mtg_bcd_s2) mtg_bcd_disp <= mtg_bcd_s2;
+    end
+end
+
+wire [6:0] dec_mtg_mt, dec_mtg_mo, dec_mtg_st, dec_mtg_so;
+seg_decoder u_dec_mtg_mt (.bin_data(mtg_bcd_disp[15:12]), .seg_data(dec_mtg_mt));
+seg_decoder u_dec_mtg_mo (.bin_data(mtg_bcd_disp[11:8] ), .seg_data(dec_mtg_mo));
+seg_decoder u_dec_mtg_st (.bin_data(mtg_bcd_disp[7:4]  ), .seg_data(dec_mtg_st));
+seg_decoder u_dec_mtg_so (.bin_data(mtg_bcd_disp[3:0]  ), .seg_data(dec_mtg_so));
+
 localparam [7:0] SEG_BLANK = 8'hFF;   // 全灭(含小数点)
 localparam [7:0] SEG_DASH  = 8'hBF;   // 仅 g 段亮 = "-"
 localparam [7:0] SEG_CH_A  = 8'h88;   // 字母 "A" = 自动轮播
@@ -676,14 +712,14 @@ seg_scan seg_scan_m0(
 	.rst_n                      (rst_n_clk                ),
 	.seg_sel                    (seg_sel                  ),
 	.seg_data                   (seg_data                 ),
-	.seg_data_0                 ({1'b1, dec_scene}        ),
-	.seg_data_1                 (blank_h ? SEG_BLANK : {1'b1, dec_h}),
-	.seg_data_2                 (blank_t ? SEG_BLANK : {1'b1, dec_t}),
-	.seg_data_3                 ({1'b1, dec_o}            ),
-	.seg_data_4                 ({1'b1, dec_mode}         ),
-	.seg_data_5                 (err_show ? {1'b1, 7'b000_0110} : SEG_DASH), // 出错=字母E, 正常=横线
-	.seg_data_6                 (err_show ? {1'b1, dec_err}      : SEG_DASH), // 出错=错误码, 正常=横线
-	.seg_data_7                 (pic_manual ? SEG_CH_H : SEG_CH_A)
+	.seg_data_0                 (meeting_seg_active ? SEG_BLANK : {1'b1, dec_scene}),
+	.seg_data_1                 (meeting_seg_active ? {1'b1, dec_mtg_mt} : (blank_h ? SEG_BLANK : {1'b1, dec_h})),
+	.seg_data_2                 (meeting_seg_active ? {1'b0, dec_mtg_mo} : (blank_t ? SEG_BLANK : {1'b1, dec_t})),
+	.seg_data_3                 (meeting_seg_active ? {1'b1, dec_mtg_st} : {1'b1, dec_o}),
+	.seg_data_4                 (meeting_seg_active ? {1'b1, dec_mtg_so} : {1'b1, dec_mode}),
+	.seg_data_5                 (meeting_seg_active ? SEG_BLANK : (err_show ? {1'b1, 7'b000_0110} : SEG_DASH)),
+	.seg_data_6                 (meeting_seg_active ? SEG_BLANK : (err_show ? {1'b1, dec_err} : SEG_DASH)),
+	.seg_data_7                 (meeting_seg_active ? SEG_BLANK : (pic_manual ? SEG_CH_H : SEG_CH_A))
 );
 wire hs_0;
 wire vs_0;
@@ -896,10 +932,8 @@ wire [11:0] em_px_x, em_px_y;
 //   数据流: TF 卡固定扇区 200000 →(sd_card_bmp 内 meeting_sd_rd, sd 域)
 //           → meeting_cfg(BRAM + video 域快照) → meeting_ctrl(七状态计时)
 //           ⇄ meeting_osd(会议画面, 串在 osd_scene 与应急叠层之间)
-//   按键  : 只在"会议场景(latch=2) + 功能模式4"下, 把 KEY2/KEY3 的消抖脉冲
-//           跨到 video 域接 meeting_ctrl 的 press[0](开始/暂停/继续)与
-//           press[3](当前项重新计时); 其它场景/模式完全不采用 → 原有按键
-//           功能(亮度/缩放/周期/切图)一字未改。
+//   按键  : 会议场景直接接管四键：KEY1 开始/暂停/继续，KEY2 下一项，
+//           KEY3 上一项，KEY4 当前项重新计时。其它场景仍使用原UI语义。
 //   ※ 会议逻辑全部在 video_clk(25MHz) 域, 故 SEC_CYCLES=25_000_000。
 //   ※ 与应急的关系: meeting_en 已含 ~emergency, 应急时 meeting_osd 使能=0
 //     纯透传, 四类应急画面仍由下级 emergency_multi_overlay 全屏绘制。
@@ -908,34 +942,27 @@ wire [11:0] em_px_x, em_px_y;
 sync_2ff u_sync_meet_en (.clk(video_clk), .async_in(meeting_en), .sync_out(meeting_en_v));
 sync_2ff u_sync_alarm   (.clk(video_clk), .async_in(emergency ), .sync_out(alarm_v     ));
 
-// ---- 会议按键脉冲跨域: sd 域单拍(10ns) vs video 拍(40ns), 直接两级同步会漏采,
-//      故先转"翻转电平", 同步后再做边沿检测还原单拍脉冲 ----
-wire k2_meet = key2_pl & meeting_en & (ui_mode == 3'd4);
-wire k3_meet = key3_pl & meeting_en & (ui_mode == 3'd4);
+// ---- 复用 ui_key_ctrl 的四键消抖结果；单拍转翻转电平后同步到视频域 ----
+wire [3:0] meet_key_evt_sd = {key4_pl,key3_pl,key2_pl,key1_pl} & {4{meeting_en}};
 
-reg k2_tog, k3_tog;
+reg [3:0] meet_key_tog;
 always @(posedge sd_card_clk) begin
-    if (!rst_n_sd) begin k2_tog <= 1'b0; k3_tog <= 1'b0; end
-    else begin
-        if (k2_meet) k2_tog <= ~k2_tog;
-        if (k3_meet) k3_tog <= ~k3_tog;
-    end
+    if (!rst_n_sd) meet_key_tog <= 4'b0000;
+    else meet_key_tog <= meet_key_tog ^ meet_key_evt_sd;
 end
 
-reg k2_s0, k2_s1, k2_s2, k3_s0, k3_s1, k3_s2;
+reg [3:0] meet_key_s0, meet_key_s1, meet_key_s2;
 always @(posedge video_clk) begin
     if (!rst_n_vid) begin
-        k2_s0 <= 1'b0; k2_s1 <= 1'b0; k2_s2 <= 1'b0;
-        k3_s0 <= 1'b0; k3_s1 <= 1'b0; k3_s2 <= 1'b0;
+        meet_key_s0 <= 4'b0000; meet_key_s1 <= 4'b0000; meet_key_s2 <= 4'b0000;
     end
     else begin
-        k2_s0 <= k2_tog; k2_s1 <= k2_s0; k2_s2 <= k2_s1;
-        k3_s0 <= k3_tog; k3_s1 <= k3_s0; k3_s2 <= k3_s1;
+        meet_key_s0 <= meet_key_tog;
+        meet_key_s1 <= meet_key_s0;
+        meet_key_s2 <= meet_key_s1;
     end
 end
-
-wire meet_press_start  = k2_s1 ^ k2_s2;   // 1 拍: 开始/暂停/继续
-wire meet_press_retime = k3_s1 ^ k3_s2;   // 1 拍: 当前议程项重新计时
+wire [3:0] meet_press = meet_key_s1 ^ meet_key_s2;
 
 // ---- 配置存储 + 视频域快照(写口在 sd 域, 读口在 video 域) ----
 meeting_cfg meeting_cfg_m0(
@@ -967,8 +994,8 @@ meeting_ctrl #(
     .en             (meeting_en_v       ),
     .config_ready   (mtg_cfg_ready_v    ),
     .alarm          (alarm_v            ),
-    .press          ({meet_press_retime, 1'b0, 1'b0, meet_press_start}),
-    .end_long       (1'b0               ),  // 本板只用 KEY2/KEY3 两个功能, 不设长按
+    .press          (meet_press           ),
+    .end_long       (1'b0               ),  // 文档长按为可选扩展，本次只接四个短按
     .home_long      (1'b0               ),
     .total          (mtg_total_v        ),
     .duration       (mtg_duration_v     ),
@@ -977,8 +1004,8 @@ meeting_ctrl #(
     .remaining      (mtg_remaining      ),
     .overtime       (mtg_overtime       ),
     .alarm_paused   (mtg_alarm_paused   ),
-    .warn_event     (                   ),
-    .timeout_event  (                   ),
+    .warn_event     (mtg_warn_event     ),
+    .timeout_event  (mtg_timeout_event  ),
     .uptime         (mtg_uptime         )
 );
 
@@ -1006,6 +1033,7 @@ meeting_osd meeting_osd_m0(
     .alarm_paused   (mtg_alarm_paused   ),
     .cfg_addr       (mo_cfg_addr        ),  // 取字地址 → 配置 BRAM
     .cfg_byte       (mo_cfg_byte        ),  // 取字数据(晚地址一拍)
+    .time_bcd_o     (mtg_time_bcd_v     ),
     .hs_o           (mo_hs              ),
     .vs_o           (mo_vs              ),
     .de_o           (mo_de              ),
@@ -1097,6 +1125,7 @@ sync_2ff u_audio_scene1_sync(.clk(video_clk),.async_in(scene_id[1]),.sync_out(au
 audio_feature_events u_feature_events(
  .clk(video_clk),.rst_n(rst_n_vid),.menu_active(audio_menu_sync),.emergency(audio_emergency_sync),
  .scene_id(audio_scene_sync),.q_state(q_state),.q_t_tens(q_t_tens),.q_t_ones(q_t_ones),
+ .meeting_warn_event(mtg_warn_event),.meeting_timeout_event(mtg_timeout_event),
  .event_valid(feature_event_valid),.event_kind(feature_event_kind),.event_media(feature_event_media));
 audio_pcm_tone #(.PROFILE(0)) u_zero_source(
  .clk(video_clk),.rst_n(rst_n_vid),.enable(1'b0),.sample_valid(zero_valid),.sample_ready(zero_ready),

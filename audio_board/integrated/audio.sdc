@@ -98,6 +98,12 @@ set_false_path -from [get_regs -hier {*/fifo_aclr}]
 # 与课程模板 set_false_path -from {pixel_clk} -to {sys_clk} 同类处理。
 set_false_path -from [get_clocks {sd_card_clk}] -to [get_clocks {clk}]
 
+#---- video_clk → clk: 会议 MM.SS 数码管稳定快照 ----
+# mtg_bcd_s0 是目前唯一的 video_clk→clk 通路：video 域倒计时 BCD 进入
+# 50MHz 数码管域的首级采样寄存器；后续 s1/s2 连续相等后才更新显示。
+# 两个 PLL 间无固定相位关系，因此整组方向按 CDC 通路免除同步时序检查。
+set_false_path -from [get_clocks {video_clk}] -to [get_clocks {clk}]
+
 #---- 复位源 ----
 # 本工程无物理复位引脚: POR 计数器 por_cnt[19] 与两个 PLL 的 locked 相与
 # 得到 ext_rst_n, 异步复位、同步释放(见 src/reset_sync.v)。复位释放沿刻意

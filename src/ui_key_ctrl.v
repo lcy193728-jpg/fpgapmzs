@@ -79,6 +79,8 @@ module ui_key_ctrl #(
     input               key1,              // 功能模式循环 0图片/切图→1亮度→2缩放→3周期→0
     input               key2,              // 当前模式参数 减
     input               key3,              // 当前模式参数 加
+    input               key4,              // 会议场景当前议题重新计时
+    input               control_lock,       // 1=按键由会议/应急场景接管，不改全局UI参数
     // ---- 上下文 ----
     input       [7:0]   img_no,            // bmp_read_auto 当前图序号(1..N; 0=空闲)
     input               scene_chg,         // 场景切换脉冲(清手动→自动)
@@ -95,26 +97,28 @@ module ui_key_ctrl #(
     output              key_next_pl,       // 手动"下一张"单周期脉冲
     output              key_prev_pl,       // 手动"上一张"单周期脉冲
     output              res_chg_pl,        // 缩放档变化脉冲(1 拍) → 重载当前图
-    // ---- 会议计时(模式4)按键脉冲导出(顶层 → meeting_ctrl) ----
-    output              key2_pl,           // KEY2 消抖"按下"脉冲(模式4=开始/暂停/继续)
-    output              key3_pl            // KEY3 消抖"按下"脉冲(模式4=当前项重新计时)
+    // ---- 四键消抖脉冲导出(最终顶层在会议场景送入 meeting_ctrl) ----
+    output              key1_pl,
+    output              key2_pl,
+    output              key3_pl,
+    output              key4_pl
 );
 
     //--------------------------------------------------------------
     // 按键消抖(两级同步 + 10ms 计数, 输出按下单周期脉冲)
-    //   ※ KEY4 已释放: 不再例化对应消抖器(该键暂不参与逻辑)
     //--------------------------------------------------------------
-    wire k1_p, k2_p, k3_p;
+    wire k1_p, k2_p, k3_p, k4_p;
 
     ui_key_dbnc u_k1 (.clk(clk), .rst(rst), .key_raw(key1), .press_pl(k1_p));  // 模式循环
     ui_key_dbnc u_k2 (.clk(clk), .rst(rst), .key_raw(key2), .press_pl(k2_p));  // 参数 减
     ui_key_dbnc u_k3 (.clk(clk), .rst(rst), .key_raw(key3), .press_pl(k3_p));  // 参数 加
+    ui_key_dbnc u_k4 (.clk(clk), .rst(rst), .key_raw(key4), .press_pl(k4_p));  // 会议重新计时
 
-    // 消抖后按键脉冲导出: 顶层在"会议计时"(模式4)下把它们接到 meeting_ctrl
-    // 的 press[0](开始/暂停/继续) 与 press[3](当前项重新计时); 其它模式下
-    // 顶层不采用(会议按键功能只在模式4 生效)。
+    // 消抖后按键脉冲导出；是否由会议逻辑接管由最终顶层按场景决定。
+    assign key1_pl = k1_p;
     assign key2_pl = k2_p;
     assign key3_pl = k3_p;
+    assign key4_pl = k4_p;
 
     //--------------------------------------------------------------
     // 图片模式脉冲判定(模式0 内始终有效, 无需先"进手动"):
@@ -125,14 +129,14 @@ module ui_key_ctrl #(
     //--------------------------------------------------------------
     reg  [7:0] img_no_l;                   // 图序号锁存(仅非 0 时更新, 防扫描期抖动)
 
-    assign key_next_pl = k3_p & (mode == MODE_PIC);
-    assign key_prev_pl = k2_p & (mode == MODE_PIC) & (img_no_l > 8'd1);
+    assign key_next_pl = k3_p & ~control_lock & (mode == MODE_PIC);
+    assign key_prev_pl = k2_p & ~control_lock & (mode == MODE_PIC) & (img_no_l > 8'd1);
 
     //--------------------------------------------------------------
     // 缩放档变化脉冲(模式2 且未到边界才真正变化 → 产生 1 拍脉冲)
     //--------------------------------------------------------------
-    wire res_up_c = k3_p & (mode == MODE_RES) & (res_level < RES_MAX);
-    wire res_dn_c = k2_p & (mode == MODE_RES) & (res_level > 4'd0);
+    wire res_up_c = k3_p & ~control_lock & (mode == MODE_RES) & (res_level < RES_MAX);
+    wire res_dn_c = k2_p & ~control_lock & (mode == MODE_RES) & (res_level > 4'd0);
 
     reg  res_chg_f;
     always @(posedge clk or posedge rst) begin
@@ -191,16 +195,16 @@ module ui_key_ctrl #(
     end
     assign period_cycles = period_cycles_r;
 
-    wire per_up_c = k3_p & (mode == MODE_PERIOD);
-    wire per_dn_c = k2_p & (mode == MODE_PERIOD);
+    wire per_up_c = k3_p & ~control_lock & (mode == MODE_PERIOD);
+    wire per_dn_c = k2_p & ~control_lock & (mode == MODE_PERIOD);
 
     //--------------------------------------------------------------
     // 参数强显保持(2 秒): 任一参数动作 → 重置保持计时并锁存"动作时的模式"
     //   · disp_hold 供顶层把数码管第2~4位临时改显该参数, 2 秒后自动返回
     //   · 计时器由参数动作重装(连按不断刷新), 归零后 disp_hold 落低
     //--------------------------------------------------------------
-    wire bri_up_c  = k3_p & (mode == MODE_BRI) & (bri_level < BRI_MAX);
-    wire bri_dn_c  = k2_p & (mode == MODE_BRI) & (bri_level > 4'd0);
+    wire bri_up_c  = k3_p & ~control_lock & (mode == MODE_BRI) & (bri_level < BRI_MAX);
+    wire bri_dn_c  = k2_p & ~control_lock & (mode == MODE_BRI) & (bri_level > 4'd0);
     wire param_evt_all = res_up_c | res_dn_c | bri_up_c | bri_dn_c | per_up_c | per_dn_c;
 
     reg [31:0] hold_cnt;
@@ -233,7 +237,7 @@ module ui_key_ctrl #(
         end
         else begin
             // ---- KEY1: 功能模式循环 0→1→2→3→4→0 ----
-            if (k1_p)
+            if (k1_p && !control_lock)
                 mode <= (mode == MODE_MEET) ? MODE_PIC : (mode + 3'd1);
 
             // ---- 模式1: 亮度 ± ----
@@ -265,9 +269,9 @@ module ui_key_ctrl #(
                 pic_manual <= 1'b0;
             else if (mode != MODE_PIC)
                 pic_manual <= 1'b0;
-            else if (k3_p)
+            else if (k3_p && !control_lock)
                 pic_manual <= 1'b1;
-            else if (k2_p && (img_no_l <= 8'd1))
+            else if (k2_p && !control_lock && (img_no_l <= 8'd1))
                 pic_manual <= 1'b0;
 
             // ---- 图序号锁存 ----
