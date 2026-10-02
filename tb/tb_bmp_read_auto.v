@@ -76,6 +76,8 @@ module tb_bmp_read_auto;
     wire [23:0] bmp_data;
     wire [7:0]  img_no;
     wire [3:0]  bmp_error;    // 加载错误码(0无/1头校验/2超时/3截断)
+    wire [1:0]  img_res;      // 源分辨率码 0=320x240 1=640x480 2=1024x768 3=1280x960
+    wire        img_v2x;      // 1=源高 240(只出 240 行, 交 bmp_scale 纵向 2×)
 
     reg  [31:0] rd_base;      // 本次读图的入口地址(捕获 S_READ 入口的地址)
     reg  [3:0]  sc_d;         // state_code 上一拍
@@ -133,7 +135,9 @@ module tb_bmp_read_auto;
         .bmp_data               (bmp_data),
         .img_no                 (img_no),
         .img_busy               (),
-        .bmp_error              (bmp_error)
+        .bmp_error              (bmp_error),
+        .img_res                (img_res),
+        .img_v2x                (img_v2x)
     );
 
     initial clk = 1'b0;

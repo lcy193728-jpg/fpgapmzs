@@ -245,6 +245,9 @@ wire [3:0]                      bri_level;     // 亮度档 0..15(ui_key_ctrl �
 wire                            img_busy;      // 底层 BMP 加载忙(sd_card_bmp 导出)
 wire [7:0]                      img_no;        // 当前图序号(sd_card_bmp 导出, ui_key_ctrl 用)
 wire [3:0]                      bmp_error;     // BMP 加载错误码(批次3: 0无/1头校验/2超时/3截断)
+wire [1:0]                      img_res;       // 当前图源分辨率码(0=320x240 1=640x480
+                                               //  2=1024x768 3=1280x960; 2026-10-02 分辨率字幕)
+wire                            img_v2x;       // 当前图源高=240(只出 240 行, 交 bmp_scale 纵向 2×)
 
 //人机交互(ui_key_ctrl)输出
 wire [1:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率/3轮播周期
@@ -394,6 +397,7 @@ ui_key_ctrl #(
     .key3                (key3                 ),
     .key4                (key4                 ),
     .control_lock        (1'b0                 ),
+    .alarm_scene         (alarm_en             ),  // 应急场景: 模式0=告警类型环绕切换
     .img_no              (img_no               ),
     .scene_chg           (scene_change_pulse   ),
     .mode                (ui_mode              ),
@@ -494,6 +498,8 @@ sd_card_bmp  sd_card_bmp_m0(
 	.img_no                     (img_no                   ),
 	.img_busy                   (img_busy                 ),
 	.bmp_error                  (bmp_error                ),
+	.img_res                    (img_res                  ),  //源分辨率码四档(2026-10-02)
+	.img_v2x                    (img_v2x                  ),  //源高=240 → bmp_scale 纵向 2×
 	.SD_nCS                     (sd_ncs                   ),
 	.SD_DCLK                    (sd_dclk                  ),
 	.SD_MOSI                    (sd_mosi                  ),
@@ -520,6 +526,7 @@ bmp_scale bmp_scale_m0(
 	.rst                        (~rst_n_sd_rdy                   ),
 	.scale_sel                  (res_level                ),
 	.frame_start                (sd_card_write_req_ack    ),
+	.src_v2x                    (img_v2x                  ),  //源高=240 → 纵向 2× 补满 640x480
 	.in_en                      (sd_card_write_en         ),
 	.in_data                    (sd_card_write_data       ),
 	.out_en                     (bmp_scale_wr_en          ),
@@ -832,6 +839,7 @@ osd_scene #(
 	    .bmp_busy     (img_busy),
 	    .bri_level    (bri_level),
 	    .res_level    (res_level),
+	    .img_res      (img_res),      //源分辨率码 → 右上角字幕(2026-10-02)
 	    .pic_manual   (pic_manual),
 	    .ui_mode      (ui_mode),
 	    .hs_o         (fin_hs),

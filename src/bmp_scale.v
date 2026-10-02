@@ -56,6 +56,15 @@
 //       SDRAM 带宽峰值, 也不会因行缓存周转产生延迟;
 //     · 面积: 旁路态下乘法器/行缓存的输出侧逻辑静态, 综合可按需裁剪。
 //   其它档位仍走双线性插值(赛题扩展项要求"双线性插值优化质量")。
+//
+// ★ src_v2x = 纵向 2× 源(2026-10-02, 多分辨率自适应, 小鹅通第十三讲):
+//   bmp_read_auto 对 320x240 源在写通路里做**横向** 320→640, 但纵向放大需要行
+//   缓存(该模块无行缓存, bram9k 也已 63/64 满) → 把纵向 2× 交给本模块(自带 3
+//   行缓存, 零新增 BRAM)。此时本模块看到的"源帧"是 640x240, src_v2x=1 告知,
+//   纵向映射在第一级再 >>1: sy = (v*K)>>1 → 100% 档恰好把 640x240 铺满 640x480。
+//   末行钳位按有效源高 SRC_H/2-1(不能按 SRC_H-1: 输入的 240 行之后行缓存里
+//   没有数据)。旁路(O_BYP)在 src_v2x=1 时**必须禁用**, 否则只写 240 行, 整帧
+//   少一半 → 下半屏残留上一张图。
 //====================================================================
 
 `timescale 1ns/1ps
@@ -70,6 +79,8 @@ module bmp_scale #(
     input               rst,               // 高电平有效复位
     input      [3:0]    scale_sel,         // 缩放档 0..7
     input               frame_start,       // 写通路应答(帧起点, sd_card_clk 域)
+    input               src_v2x,           // 1=源帧只有 SRC_H/2 行(如 320x240 经横向放大后
+                                           //   的 640x240), 本模块负责纵向 2× 补满画布
     input               in_en,             // 源像素写使能(bmp_data_wr_en)
     input      [31:0]   in_data,           // 源像素 {R,G,B,8'b0}
     output reg          out_en,            // 输出像素写使能(接 frame_read_write.write_en)
@@ -267,6 +278,7 @@ module bmp_scale #(
     reg  [18:0] k_r;
     reg  [11:0] dstw_r, dsth_r;
     reg  signed [12:0] x0_r, y0_r;
+    reg         src_v2x_r;               // 本帧纵向 2× 使能(帧起点锁存)
 
     reg  signed [12:0] yy_r;             // v(输出行相对图像顶)
     reg  [31:0] sy_prod;                 // v * K
@@ -297,6 +309,20 @@ module bmp_scale #(
     // 读数据按缓存号选择(三块并行读同一地址 → 每块各占一个读口)
     wire [31:0] mxA0 = (ia_r == 2'd0) ? d0 : (ia_r == 2'd1) ? d1 : d2;
     wire [31:0] mxB0 = (ib_r == 2'd0) ? d0 : (ib_r == 2'd1) ? d1 : d2;
+
+    //--------------------------------------------------------------
+    // ★纵向 2× 源(2026-10-02, 多分辨率适配):
+    //   src_v2x_r=1 时写通路里的"源帧"只有 SRC_H/2 行(320x240 源经 bmp_read_auto
+    //   横向放大成 640x240)。纵向映射在原有档位基础上再乘 2:
+    //     sy = (v * K) >> 1        (K 仍是 SRC_H/dsth 的 Q16 定点)
+    //   等价于把"有效源高"当作 SRC_H/2, 于是 100% 档恰好把 640x240 铺满 640x480。
+    //   末行钳位必须按**有效源高**(SRC_H/2-1)而非 SRC_H-1 —— 否则会去取行缓存里
+    //   从未写过的行(输入只送到第 239 行) → 取到旧帧残留像素。
+    //   行缓存死锁判定不变: sy0/sy1 = floor(v/2), floor(v/2)+1, 输出前沿最多落后
+    //   输入前沿 1 行(输出 12 拍/像素, 输入 ≈54 拍/像素, 输出仍快 4 倍)。
+    //--------------------------------------------------------------
+    wire [11:0] src_h_eff = src_v2x_r ? (SRC_H[11:0] >> 1) : SRC_H[11:0];
+    wire [31:0] sy_eff    = src_v2x_r ? {1'b0, sy_prod[31:1]} : sy_prod;
 
     //--------------------------------------------------------------
     // 双线性插值 —— ★4 级流水(2026-09-16 时序修复)
@@ -381,7 +407,7 @@ module bmp_scale #(
             out_row  <= 10'd0;
             out_col  <= 10'd0;
             k_r <= 19'd65536; dstw_r <= 12'd640; dsth_r <= 12'd480;
-            x0_r <= 13'sd0;   y0_r <= 13'sd0;
+            x0_r <= 13'sd0;   y0_r <= 13'sd0;   src_v2x_r <= 1'b0;
             yy_r <= 13'sd0;   sy_prod <= 32'd0;
             sy0_r <= 12'd0;   sy1_r <= 12'd0;  fy_r <= 8'd0;
             xx_r <= 13'sd0;   sx_prod <= 32'd0;
@@ -406,12 +432,15 @@ module bmp_scale #(
                     dsth_r  <= cfg_dsth;
                     x0_r    <= cfg_x0;
                     y0_r    <= cfg_y0;
+                    src_v2x_r <= src_v2x;      // 本帧是否要纵向 2×(源只有 240 行)
                     out_row <= 10'd0;
                     out_col <= 10'd0;
                     // 100% 档判据: 定点映射恰好 1:1 且图像区=画布(无裁边/留黑)
+                    //   ※ 纵向 2× 帧(320x240 源)必须走插值: 源只 240 行, 直通会
+                    //     只写 240 行 → 整帧少一半(下半屏残留旧图)。
                     if ((cfg_k == 19'd65536) &&
                         (cfg_dstw == SRC_W[11:0]) && (cfg_dsth == SRC_H[11:0]) &&
-                        (SRC_W == CANV_W) && (SRC_H == CANV_H))
+                        (SRC_W == CANV_W) && (SRC_H == CANV_H) && !src_v2x)
                         state <= O_BYP;
                     else
                         state <= O_ROW;
@@ -433,14 +462,15 @@ module bmp_scale #(
                     dsth_r  <= cfg_dsth;
                     x0_r    <= cfg_x0;
                     y0_r    <= cfg_y0;
+                    src_v2x_r <= src_v2x;
                     out_row <= 10'd0;
                     out_col <= 10'd0;
                     if ((cfg_k == 19'd65536) &&
                         (cfg_dstw == SRC_W[11:0]) && (cfg_dsth == SRC_H[11:0]) &&
-                        (SRC_W == CANV_W) && (SRC_H == CANV_H))
+                        (SRC_W == CANV_W) && (SRC_H == CANV_H) && !src_v2x)
                         state <= O_BYP;                    // 仍是 100% → 继续旁路
                     else
-                        state <= O_ROW;                    // 已换档 → 转双线性插值
+                        state <= O_ROW;                    // 已换档/纵向 2× → 转双线性插值
                 end
                 else if (in_pix) begin
                     out_en   <= 1'b1;
@@ -471,11 +501,12 @@ module bmp_scale #(
             //---------------------------------------------
             O_YMAP: begin
                 // 整数部分统一取 [31:16](Q16 定点); 越界钳到末行, 避免读到缓存外
-                sy0_r <= (sy_prod[31:16] >= SRC_H[11:0] - 12'd1) ? (SRC_H[11:0] - 12'd1)
-                                                                : sy_prod[31:16];
-                sy1_r <= (sy_prod[31:16] >= SRC_H[11:0] - 12'd1) ? (SRC_H[11:0] - 12'd1)
-                                                                : (sy_prod[31:16] + 12'd1);
-                fy_r  <= sy_prod[15:8];                        // Q8 小数权重
+                //   src_v2x 档: sy/sy_prod 走 sy_eff(>>1), 末行按有效源高 src_h_eff 钳
+                sy0_r <= (sy_eff[31:16] >= src_h_eff - 12'd1) ? (src_h_eff - 12'd1)
+                                                             : sy_eff[31:16];
+                sy1_r <= (sy_eff[31:16] >= src_h_eff - 12'd1) ? (src_h_eff - 12'd1)
+                                                             : (sy_eff[31:16] + 12'd1);
+                fy_r  <= sy_eff[15:8];                         // Q8 小数权重
                 state <= O_WAIT;
             end
             //---------------------------------------------

@@ -18,8 +18,9 @@ nativelink*
 
 # ===== ModelSim 仿真产物 =====
 sim/work/
-sim/_work_em/
-sim/_work_mosd/
+sim/work*/
+sim/_work*/
+sim/_chk*/
 audio_final/tb/_work/
 sim/modelsim.ini
 sim/transcript
@@ -36,6 +37,14 @@ __pycache__/
 download.tcl
 *.bak
 *~
+
+# ===== 音频素材（体积大 / 第三方版权，不入库）=====
+# 原始歌曲与派生的裸 PCM/WAV 仅存本地，卡内容用
+# audio_final/tools/make_audio_corpus.py 从原始 WAV 重新生成
+audio_final/assets/wel_music_src.mp3
+audio_final/assets/wel_music_src.wav
+audio_final/assets/wel_music_48k_mono.raw
+audio_final/assets/wel_music_48k_mono.wav
 
 # ===== 系统文件 =====
 Thumbs.db

@@ -1,0 +1,17 @@
+{
+  "source": "E:\\FPGA\\ALST\\_dev_sim_0b18789\\audio_final\\assets\\wel_music_src.wav",
+  "source_sha256": "ee861a3a17c1cebc9167e840f71b21d9300cb36d23aab7661958ae4909502867",
+  "source_rate": 48000,
+  "source_type": "mono->resample 48000 Hz",
+  "format": "signed 16-bit PCM, little-endian, mono, 48 kHz, headerless",
+  "samples": 9846701,
+  "bytes": 19693568,
+  "tail_pad_bytes": 166,
+  "sectors": 38464,
+  "start_lba": 300000,
+  "end_lba_exclusive": 338464,
+  "byte_offset": 153600000,
+  "peak_norm": 0.9,
+  "fade_ms": 30,
+  "sha256": "0d463ec052a46c5d16e125d348aa64301ec9c394b8b5810b75ef02712d1d5222"
+}

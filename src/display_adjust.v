@@ -18,8 +18,25 @@
 //                   (盒 x8..47, y28..51)
 //                     ‣ 自动轮播 = 绿框 + 绿"播放三角 ▶"(8×16, 位于 x16..23)
 //                     ‣ 手动单张 = 橙框 + 橙"暂停双竖条 ▮▮"(x18..21/x26..29)
-//      三个提示区在 y 方向互不重叠, 可同时出现; 优先级 亮度>缩放>状态卡。
+//      · 音量条   : 2026-09-28 新增。档位变化 / 切到音量模式 → 左上 16 档图形条
+//                   (盒 x8..144, y56..63; 与亮度条完全同构, 仅行位不同,
+//                    已生效档位填充色为绿, 与亮度(金)/缩放(青)区分)
+//      四个提示区在 y 方向互不重叠, 可同时出现;
+//      优先级 亮度 > 缩放 > 音量 > 状态卡。
 //      提示色固定, 不随本帧亮度增益变化, 保证可读。
+//
+//   4. ★分辨率字幕(2026-10-02 新增, 配合 bmp_read_auto 多分辨率支持):
+//      当前显示图的**源**分辨率(320x240 / 640x480 / 1024x768 / 1280x960)
+//      发生变化时, 在**右上角**弹出一块小字幕牌(内嵌 5×7 点阵, 显示"宽x高"),
+//      默认 1 秒后自动消失(RESW_HOLD_FRAMES=60 帧 @60fps), 行为与左上角亮度条
+//      一致(变化即弹)。四档字符串长度 6 或 8 字符, 由 resw_len 选择。
+//      · 分辨率码 img_res[1:0] 来自 sd 域(bmp_read_auto 在整帧读完时锁存),
+//        模块内两级同步后做边沿检测;
+//        (注: sd 域 2bit 总线过域理论上可能采到中间态, 后果仅是 1 帧的字幕牌
+//         文字为相邻档位 → 下一拍即自纠正, 且 resw_cnt 会重装; 源值每次跳变
+//         间隔 ≥ 一个轮播周期(秒级), 实际不可见。原 1bit img_2x 亦同此结构。)
+//      · 字幕牌与其余 HUD 在 x/y 上互不重叠(右上 x≈564..631, y=6..17),
+//        凌驾于淡入淡出之上(与亮度条同层), 固定色不受亮度增益影响。
 //
 // 混合公式 :
 //   stage1 亮度:  b1 = clamp((pix * g + 64) >> 7)
@@ -27,7 +44,7 @@
 //   提示 HUD 在 stage2 之后叠加(固定色)。
 // 数据管线 : 输入寄存 1 拍(da1/px1/sync1)后组合仲裁直接输出 →
 //            整体恒定延迟 1 clk, 与 hs/vs/de 严格同拍。
-// 控制输入 : menu_active/bmp_busy/bri_level/res_level/pic_manual/ui_mode
+// 控制输入 : menu_active/bmp_busy/bri_level/vol_level/res_level/pic_manual/ui_mode
 //            均来自 sd_card_clk(100MHz)域电平, 模块内两级同步器过域。
 // 语言     : 纯 Verilog-2001(兼容 TD EDA 与 ModelSim)。
 //====================================================================
@@ -56,11 +73,17 @@ module display_adjust #(
     // ---- 缩放(分辨率)条 + 轮播/手动状态卡 ----
     parameter [15:0] RES_HOLD_FRAMES = 16'd30, // 缩放档变化后条保持帧数
     parameter [15:0] MAN_HOLD_FRAMES = 16'd30, // 轮播/手动状态卡保持帧数
+    // ---- 音量条(2026-09-28 新增) ----
+    parameter [15:0] VOL_HOLD_FRAMES = 16'd30, // 音量档变化后条保持帧数
     parameter [2:0]  MODE_PIC = 3'd0,    // 与 ui_key_ctrl 一致的模式编码
     parameter [2:0]  MODE_BRI = 3'd1,
     parameter [2:0]  MODE_RES = 3'd2,
     parameter [2:0]  MODE_PERIOD = 3'd3, // 批次4: 轮播周期档(不弹 HUD)
-    parameter [2:0]  MODE_MEET = 3'd4    // 会议计时档(2026-09-19: 不弹 HUD)
+    parameter [2:0]  MODE_MEET = 3'd4,   // 会议计时档(2026-09-19: 不弹 HUD)
+    parameter [2:0]  MODE_VOL  = 3'd5,   // 音量档(2026-09-28: 音量条 HUD)
+    // ---- 分辨率字幕(2026-10-02, 配合 bmp_read_auto 多分辨率支持) ----
+    // ★须 ≤62: 内部 resw_cnt 只保留 6 位(同其余 *_HOLD_FRAMES 前提)
+    parameter [15:0] RESW_HOLD_FRAMES = 16'd60  // 分辨率变化后字幕保持帧数(≈1s @60fps)
 )(
     input                video_clk,      // 像素时钟(≈25.175MHz)
     input                rst,            // 高有效复位
@@ -74,9 +97,13 @@ module display_adjust #(
     input                emerg,          // 应急中(强制不淡出)
     input                bmp_busy,       // 底层 BMP 加载忙(1=扫描/读图中)
     input        [3:0]   bri_level,      // 亮度档 0..15(默认 8)
+    input        [3:0]   vol_level,      // 音量档 0..15(默认 8, 模式5 调; 仅用于音量条 HUD)
     input        [3:0]   res_level,      // 缩放档 0..7(默认 4=100%)
+    input        [1:0]   img_res,        // 当前显示图源分辨率码 0=320x240 1=640x480
+                                         //                    2=1024x768 3=1280x960
+                                         // (2026-10-02 由 1bit img_2x 扩为 2bit 四档)
     input                pic_manual,     // 1=手动单张 / 0=自动轮播
-    input        [2:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放/3周期/4会议
+    input        [2:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放/3周期/4会议/5音量
     // ---- 输出: 送 hdmi_tx ----
     output               hs_o, vs_o, de_o,
     output [DATA_W-1:0]  data_o
@@ -89,9 +116,11 @@ module display_adjust #(
     localparam [DATA_W-1:0] C_BAR_FG = 24'hFF_C9_3C;  // 亮度已生效档位(金)
     localparam [DATA_W-1:0] C_BAR_BG = 24'h10_14_18;  // 未生效档位(深灰) 两条共用
     localparam [DATA_W-1:0] C_RES_FG = 24'h22_D3_EE;  // 缩放已生效档位(青)
+    localparam [DATA_W-1:0] C_VOL_FG = 24'h35_D6_7A;  // 音量已生效档位(绿, 2026-09-28)
     localparam [DATA_W-1:0] C_CARD_BG= 24'h0A_10_18;  // 状态卡底(更深的蓝黑)
     localparam [DATA_W-1:0] C_AUTO   = 24'h22_C5_5E;  // 自动轮播: 卡边 + 播放三角(绿)
     localparam [DATA_W-1:0] C_MAN    = 24'hFF_A0_28;  // 手动单张: 卡边 + 暂停双条(橙)
+    localparam [DATA_W-1:0] C_RESW_TX= 24'hE4_F0_FF;  // 分辨率字幕文字(近白, 2026-10-02)
 
     //--------------------------------------------------------------
     // 控制电平过域(两级同步; bri_level 4bit)
@@ -99,15 +128,19 @@ module display_adjust #(
     reg  m_s0, m_s1, e_s0, e_s1, b_s0, b_s1;
     reg  [3:0] l_s0, l_s1;
     reg  [3:0] r_s0, r_s1;      // 缩放(分辨率)档 0..7
+    reg  [3:0] v_s0, v_s1;      // 音量档 0..15(2026-09-28)
     reg        p_s0, p_s1;      // 轮播(0)/手动(1)
-    reg  [2:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放/3周期/4会议
+    reg  [2:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放/3周期/4会议/5音量
+    reg  [1:0] x_s0, x_s1;      // 源分辨率码(2026-10-02; 原 1bit img_2x 扩为四档)
     wire menu_s  = m_s1;
     wire emerg_s = e_s1;
     wire busy_s  = b_s1;
     wire [3:0] lvl_s  = l_s1;
     wire [3:0] res_s  = r_s1;
+    wire [3:0] vol_s  = v_s1;
     wire       man_s  = p_s1;
     wire [2:0] mode_s = u_s1;
+    wire [1:0] imgres_s = x_s1;   // 过域后的源分辨率码(0..3)
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
@@ -117,8 +150,10 @@ module display_adjust #(
             m_s0<=1'b1; m_s1<=1'b1; e_s0<=1'b0; e_s1<=1'b0;
             b_s0<=1'b0; b_s1<=1'b0; l_s0<=4'd8; l_s1<=4'd8;
             r_s0<=4'd4; r_s1<=4'd4;
+            v_s0<=4'd8; v_s1<=4'd8;
             p_s0<=1'b0; p_s1<=1'b0;
             u_s0<=MODE_PIC; u_s1<=MODE_PIC;
+            x_s0<=2'd1; x_s1<=2'd1;   // 复位默认 640×480(码1), 防上电假字幕
         end
         else begin
             m_s0<=menu_active; m_s1<=m_s0;
@@ -126,8 +161,10 @@ module display_adjust #(
             b_s0<=bmp_busy;    b_s1<=b_s0;
             l_s0<=bri_level;   l_s1<=l_s0;
             r_s0<=res_level;   r_s1<=r_s0;
+            v_s0<=vol_level;   v_s1<=v_s0;
             p_s0<=pic_manual;  p_s1<=p_s0;
             u_s0<=ui_mode;     u_s1<=u_s0;
+            x_s0<=img_res;     x_s1<=x_s0;
         end
     end
 
@@ -163,9 +200,13 @@ module display_adjust #(
     reg [5:0]  bar_cnt;        // 亮度条剩余显示帧数(0=隐藏)
     reg [3:0]  res_past;     // 上一拍缩放档(变化 → 显示缩放条)
     reg [5:0]  res_cnt;        // 缩放条剩余显示帧数(0=隐藏)
+    reg [3:0]  vol_past;     // 上一拍音量档(变化 → 显示音量条, 2026-09-28)
+    reg [5:0]  vol_cnt;        // 音量条剩余显示帧数(0=隐藏)
     reg        man_past;      // 上一拍轮播/手动标志(变化 → 显示状态卡)
     reg [5:0]  man_cnt;        // 状态卡剩余显示帧数(0=隐藏)
     reg [2:0]  mode_past;     // 上一拍功能模式(切换 → 弹该模式的提示)
+    reg [1:0]  x_past;        // 上一拍分辨率码(变化 → 弹分辨率字幕, 2026-10-02)
+    reg [5:0]  resw_cnt;       // 分辨率字幕剩余显示帧数(0=隐藏; ★只用 6 位 ≤62)
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
@@ -178,9 +219,13 @@ module display_adjust #(
             bar_cnt    <= 6'd0;
             res_past   <= 4'd4;
             res_cnt    <= 6'd0;
+            vol_past   <= 4'd8;
+            vol_cnt    <= 6'd0;
             man_past   <= 1'b0;
             man_cnt    <= 6'd0;
             mode_past  <= MODE_PIC;
+            x_past     <= 2'd1;      // 默认 640x480(码1), 防上电假字幕
+            resw_cnt   <= 6'd0;
         end
         else begin
             // ---- 事件锁存(逐拍检测, 与帧边界无关) ----
@@ -196,9 +241,19 @@ module display_adjust #(
                 res_cnt <= RES_HOLD_FRAMES[5:0];   // 缩放档变化 → 显示缩放条
             res_past  <= res_s;
 
+            if (vol_s != vol_past)
+                vol_cnt <= VOL_HOLD_FRAMES[5:0];   // 音量档变化 → 显示音量条
+            vol_past  <= vol_s;
+
             if (man_s != man_past)
                 man_cnt <= MAN_HOLD_FRAMES[5:0];   // 轮播↔手动 → 显示状态卡
             man_past  <= man_s;
+
+            // 源分辨率变化(320x240 / 640x480 / 1024x768 / 1280x960 四档)
+            //   → 右上角字幕弹 1s(码变化即弹; 2026-10-02 由 1bit 扩为 2bit 四档)
+            if (imgres_s != x_past)
+                resw_cnt <= RESW_HOLD_FRAMES[5:0];
+            x_past   <= imgres_s;
 
             // ---- 功能模式切换: 弹出"当前在调什么"的提示(便于现场确认) ----
             if (mode_s != mode_past) begin
@@ -209,6 +264,7 @@ module display_adjust #(
                                                             // 上一条提示, 不额外弹卡
                     MODE_MEET:   ;                          // 会议计时档: 不弹 HUD
                                                             // (会议画面自带完整面板)
+                    MODE_VOL:  vol_cnt <= VOL_HOLD_FRAMES[5:0]; // 切到音量模式 → 音量条
                     default : man_cnt <= MAN_HOLD_FRAMES[5:0];  // 切到图片模式 → 轮播/手动卡
                 endcase
             end
@@ -220,8 +276,12 @@ module display_adjust #(
                     bar_cnt <= bar_cnt - 6'd1;
                 if (res_cnt != 6'd0)
                     res_cnt <= res_cnt - 6'd1;
+                if (vol_cnt != 6'd0)
+                    vol_cnt <= vol_cnt - 6'd1;
                 if (man_cnt != 6'd0)
                     man_cnt <= man_cnt - 6'd1;
+                if (resw_cnt != 6'd0)
+                    resw_cnt <= resw_cnt - 6'd1;
 
                 if (emerg_s) begin
                     // 应急: 最高优先级即刻响应, 禁止淡出, 并丢弃待处理事件
@@ -416,6 +476,32 @@ module display_adjust #(
                       (px1n >= res_inner_l) && (px1n < res_fill_r);
 
     //--------------------------------------------------------------
+    // 音量条区域命中(左上第 4 行 y56..63; 与亮度条完全同构, 2026-09-28)
+    //   盒 [VOL_X0, VOL_R) × [VOL_Y0, VOL_Y0+VOL_H); 内宽 = 15*9 = 135px
+    //   生效档右(不含) = 9*(vol_s+1) (同亮度条, 乘法退化为移位+加)
+    //   行位取 y56..63: 在状态卡(y28..51)下方, 四块 HUD 互不重叠。
+    //--------------------------------------------------------------
+    localparam [11:0] VOL_X0      = 12'd8;
+    localparam [11:0] VOL_Y0      = 12'd56;
+    localparam [11:0] VOL_H       = 12'd8;
+    localparam [11:0] VOL_INNER_W = 12'd135;                        // (16-1)*9
+    localparam [11:0] VOL_R       = VOL_X0 + 12'd2 + VOL_INNER_W;   // 145
+    localparam [11:0] vol_inner_l = VOL_X0 + 12'd1;                 // 9
+
+    wire [4:0]  vol_p1 = {1'b0, vol_s} + 5'd1;                  // 1..16
+    wire [8:0]  vol_fill_r = {vol_p1, 3'b000} + {4'b0, vol_p1}; // = 9*(vol_s+1)
+
+    wire vol_show = (vol_cnt != 6'd0);
+    wire vol_region = vol_show && de1 &&
+                      (py1n >= VOL_Y0) && (py1n < VOL_Y0 + VOL_H) &&
+                      (px1n >= VOL_X0) && (px1n < VOL_R);
+    wire vol_border = vol_region &&
+                      ((py1n == VOL_Y0) || (py1n == VOL_Y0 + VOL_H - 12'd1) ||
+                       (px1n == VOL_X0) || (px1n == VOL_R - 12'd1));
+    wire vol_active = vol_region && ~vol_border &&
+                      (px1n >= vol_inner_l) && (px1n < vol_fill_r);
+
+    //--------------------------------------------------------------
     // 轮播/手动 状态卡区域命中(左上第 3 行 y28..51; 40×24)
     //   自动轮播 = 绿框 + 绿"播放三角 ▶"(左底边 x24 固定, 最宽 7px, 14 行)
     //   手动单张 = 橙框 + 橙"暂停双竖条 ▮▮"(x22..25 / x30..33, 12 行)
@@ -452,8 +538,211 @@ module display_adjust #(
     wire [DATA_W-1:0] card_col = man_s ? C_MAN : C_AUTO;
 
     //--------------------------------------------------------------
-    // 输出仲裁: 亮度条 > 缩放条 > 状态卡 > 淡入淡出×亮度像素
-    //   (三块 HUD 在 y 方向互不重叠, 但用 if-else 链明确优先级, 顺序稳定)
+    // 分辨率字幕内嵌 5×7 点阵(2026-10-02; 不占用共享 osd_font_rom/BRAM)
+    //   字符码 ch: 0..9 = '0'..'9', 10 = 'x'; row 0..6(上→下)
+    //   返回 5 位 = 该行 5 个像素, bit4 为最左像素
+    //--------------------------------------------------------------
+    function [4:0] resw_glyph;
+        input [3:0] ch;
+        input [2:0] row;
+        begin
+            case (ch)
+                4'd0: case (row)                        // '0'
+                    3'd0: resw_glyph = 5'b01110;
+                    3'd1: resw_glyph = 5'b10001;
+                    3'd2: resw_glyph = 5'b10011;
+                    3'd3: resw_glyph = 5'b10101;
+                    3'd4: resw_glyph = 5'b11001;
+                    3'd5: resw_glyph = 5'b10001;
+                    default: resw_glyph = 5'b01110;
+                endcase
+                4'd1: case (row)                        // '1'
+                    3'd0: resw_glyph = 5'b00100;
+                    3'd1: resw_glyph = 5'b01100;
+                    3'd2: resw_glyph = 5'b00100;
+                    3'd3: resw_glyph = 5'b00100;
+                    3'd4: resw_glyph = 5'b00100;
+                    3'd5: resw_glyph = 5'b00100;
+                    default: resw_glyph = 5'b01110;
+                endcase
+                4'd2: case (row)                        // '2'
+                    3'd0: resw_glyph = 5'b01110;
+                    3'd1: resw_glyph = 5'b10001;
+                    3'd2: resw_glyph = 5'b00001;
+                    3'd3: resw_glyph = 5'b00010;
+                    3'd4: resw_glyph = 5'b00100;
+                    3'd5: resw_glyph = 5'b01000;
+                    default: resw_glyph = 5'b11111;
+                endcase
+                4'd3: case (row)                        // '3'
+                    3'd0: resw_glyph = 5'b11111;
+                    3'd1: resw_glyph = 5'b00010;
+                    3'd2: resw_glyph = 5'b00100;
+                    3'd3: resw_glyph = 5'b00010;
+                    3'd4: resw_glyph = 5'b00001;
+                    3'd5: resw_glyph = 5'b10001;
+                    default: resw_glyph = 5'b01110;
+                endcase
+                4'd4: case (row)                        // '4'
+                    3'd0: resw_glyph = 5'b00010;
+                    3'd1: resw_glyph = 5'b00110;
+                    3'd2: resw_glyph = 5'b01010;
+                    3'd3: resw_glyph = 5'b10010;
+                    3'd4: resw_glyph = 5'b11111;
+                    3'd5: resw_glyph = 5'b00010;
+                    default: resw_glyph = 5'b00010;
+                endcase
+                4'd5: case (row)                        // '5'
+                    3'd0: resw_glyph = 5'b11111;
+                    3'd1: resw_glyph = 5'b10000;
+                    3'd2: resw_glyph = 5'b11110;
+                    3'd3: resw_glyph = 5'b00001;
+                    3'd4: resw_glyph = 5'b00001;
+                    3'd5: resw_glyph = 5'b10001;
+                    default: resw_glyph = 5'b01110;
+                endcase
+                4'd6: case (row)                        // '6'
+                    3'd0: resw_glyph = 5'b00110;
+                    3'd1: resw_glyph = 5'b01000;
+                    3'd2: resw_glyph = 5'b10000;
+                    3'd3: resw_glyph = 5'b11110;
+                    3'd4: resw_glyph = 5'b10001;
+                    3'd5: resw_glyph = 5'b10001;
+                    default: resw_glyph = 5'b01110;
+                endcase
+                4'd7: case (row)                        // '7'
+                    3'd0: resw_glyph = 5'b11111;
+                    3'd1: resw_glyph = 5'b00001;
+                    3'd2: resw_glyph = 5'b00010;
+                    3'd3: resw_glyph = 5'b00100;
+                    3'd4: resw_glyph = 5'b01000;
+                    3'd5: resw_glyph = 5'b01000;
+                    default: resw_glyph = 5'b01000;
+                endcase
+                4'd8: case (row)                        // '8'
+                    3'd0: resw_glyph = 5'b01110;
+                    3'd1: resw_glyph = 5'b10001;
+                    3'd2: resw_glyph = 5'b10001;
+                    3'd3: resw_glyph = 5'b01110;
+                    3'd4: resw_glyph = 5'b10001;
+                    3'd5: resw_glyph = 5'b10001;
+                    default: resw_glyph = 5'b01110;
+                endcase
+                4'd9: case (row)                        // '9'
+                    3'd0: resw_glyph = 5'b01110;
+                    3'd1: resw_glyph = 5'b10001;
+                    3'd2: resw_glyph = 5'b10001;
+                    3'd3: resw_glyph = 5'b01111;
+                    3'd4: resw_glyph = 5'b00001;
+                    3'd5: resw_glyph = 5'b00010;
+                    default: resw_glyph = 5'b01100;
+                endcase
+                4'd10: case (row)                       // 'x'
+                    3'd0: resw_glyph = 5'b00000;
+                    3'd1: resw_glyph = 5'b00000;
+                    3'd2: resw_glyph = 5'b10001;
+                    3'd3: resw_glyph = 5'b01010;
+                    3'd4: resw_glyph = 5'b00100;
+                    3'd5: resw_glyph = 5'b01010;
+                    default: resw_glyph = 5'b10001;
+                endcase
+                default: resw_glyph = 5'b00000;
+            endcase
+        end
+    endfunction
+
+    //--------------------------------------------------------------
+    // 分辨率字幕区域命中(右上角; 2026-10-02)
+    //   盒 [RESW_X0, RESW_R) × [RESW_Y0, RESW_B); 1px 描边;
+    //   内区用 5×7 点阵拼 "640x480"(1× 源) 或 "1280x960"(2× 源),
+    //   字符步距 6px(5px 字宽 + 1px 间隔), 与亮度条同层(后叠于淡入淡出)。
+    //--------------------------------------------------------------
+    localparam [11:0] RESW_X0 = 12'd564;
+    localparam [11:0] RESW_Y0 = 12'd6;
+    localparam [11:0] RESW_W  = 12'd68;
+    localparam [11:0] RESW_H  = 12'd12;
+    localparam [11:0] RESW_R  = RESW_X0 + RESW_W;   // 632
+    localparam [11:0] RESW_B  = RESW_Y0 + RESW_H;   // 18
+    localparam [11:0] RESW_IL = RESW_X0 + 12'd2;    // 566 内区左
+    localparam [11:0] RESW_IT = RESW_Y0 + 12'd2;    // 8   内区上
+
+    wire resw_show = (resw_cnt != 6'd0);
+    wire resw_region = resw_show && de1 &&
+                       (py1n >= RESW_Y0) && (py1n < RESW_B) &&
+                       (px1n >= RESW_X0) && (px1n < RESW_R);
+    wire resw_border = resw_region &&
+                       ((py1n == RESW_Y0) || (py1n == RESW_B - 12'd1) ||
+                        (px1n == RESW_X0) || (px1n == RESW_R - 12'd1));
+
+    // 内区局部坐标(仅 resw_region 内被采用)
+    wire [11:0] resw_lx12 = px1n - RESW_IL;
+    wire [11:0] resw_ly12 = py1n - RESW_IT;
+    wire [6:0]  resw_lx   = resw_lx12[6:0];     // 0..64
+    wire [3:0]  resw_ly   = resw_ly12[3:0];     // 0..9
+
+    wire [3:0]  resw_ci   = resw_lx / 7'd6;     // 字符序号 0..10
+    wire [2:0]  resw_bc   = resw_lx % 7'd6;     // 字内列 0..5(5=间隔)
+    wire [2:0]  resw_row  = resw_ly[2:0];       // 字行 0..6
+
+    // 字符串长度 = 字符数×6: 320x240/640x480 各 7 字符(42); 1024x768/1280x960 各 8 字符(48)
+    //   (内区可用宽 = RESW_W-4 = 64 ≥ 48, 两行都放得下)
+    wire [6:0]  resw_len  = (imgres_s >= 2'd2) ? 7'd48 : 7'd42;
+
+    // 按位置/分辨率取字符码(0..9 数字, 10='x')
+    //   0="320x240" 1="640x480" 2="1024x768" 3="1280x960"
+    reg [3:0] resw_ch;
+    always @* begin
+        case (imgres_s)
+        2'd0: case (resw_ci)            // "320x240"
+                4'd0: resw_ch = 4'd3;    // '3'
+                4'd1: resw_ch = 4'd2;    // '2'
+                4'd2: resw_ch = 4'd0;    // '0'
+                4'd3: resw_ch = 4'd10;   // 'x'
+                4'd4: resw_ch = 4'd2;    // '2'
+                4'd5: resw_ch = 4'd4;    // '4'
+                default: resw_ch = 4'd0; // '0'
+            endcase
+        2'd2: case (resw_ci)            // "1024x768"
+                4'd0: resw_ch = 4'd1;    // '1'
+                4'd1: resw_ch = 4'd0;    // '0'
+                4'd2: resw_ch = 4'd2;    // '2'
+                4'd3: resw_ch = 4'd4;    // '4'
+                4'd4: resw_ch = 4'd10;   // 'x'
+                4'd5: resw_ch = 4'd7;    // '7'
+                4'd6: resw_ch = 4'd6;    // '6'
+                default: resw_ch = 4'd8; // '8'
+            endcase
+        2'd3: case (resw_ci)            // "1280x960"
+                4'd0: resw_ch = 4'd1;    // '1'
+                4'd1: resw_ch = 4'd2;    // '2'
+                4'd2: resw_ch = 4'd8;    // '8'
+                4'd3: resw_ch = 4'd0;    // '0'
+                4'd4: resw_ch = 4'd10;   // 'x'
+                4'd5: resw_ch = 4'd9;    // '9'
+                4'd6: resw_ch = 4'd6;    // '6'
+                default: resw_ch = 4'd0; // '0'
+            endcase
+        default: case (resw_ci)         // 2'd1 = "640x480"
+                4'd0: resw_ch = 4'd6;    // '6'
+                4'd1: resw_ch = 4'd4;    // '4'
+                4'd2: resw_ch = 4'd0;    // '0'
+                4'd3: resw_ch = 4'd10;   // 'x'
+                4'd4: resw_ch = 4'd4;    // '4'
+                4'd5: resw_ch = 4'd8;    // '8'
+                default: resw_ch = 4'd0; // '0'
+            endcase
+        endcase
+    end
+
+    wire [4:0] resw_grow = resw_glyph(resw_ch, resw_row);
+    wire [2:0] resw_bidx = 3'd4 - resw_bc;      // bit4=最左; bc=5 时越界, 被门控
+    wire resw_pix = resw_region && ~resw_border &&
+                    (resw_lx < resw_len) && (resw_ly < 4'd7) &&
+                    (resw_bc < 3'd5) && resw_grow[resw_bidx];
+
+    //--------------------------------------------------------------
+    // 输出仲裁: 亮度条 > 缩放条 > 音量条 > 状态卡 > 分辨率字幕 > 淡入×亮度像素
+    //   (五块 HUD 在 x/y 上互不重叠, 但用 if-else 链明确优先级, 顺序稳定)
     //--------------------------------------------------------------
     reg [DATA_W-1:0] fo;
     always @* begin
@@ -473,11 +762,27 @@ module display_adjust #(
             else
                 fo = C_BAR_BG;
         end
+        else if (vol_region) begin
+            if (vol_border)
+                fo = C_BAR_BD;
+            else if (vol_active)
+                fo = C_VOL_FG;                       // 音量已生效档位(绿)
+            else
+                fo = C_BAR_BG;
+        end
         else if (card_region) begin
             if (card_border || card_mark)
                 fo = card_col;                       // 卡边 / 播放-暂停图形
             else
                 fo = C_CARD_BG;                      // 卡内衬底
+        end
+        else if (resw_region) begin
+            if (resw_border)
+                fo = C_BAR_BD;                       // 字幕牌描边
+            else if (resw_pix)
+                fo = C_RESW_TX;                      // 分辨率文字(近白)
+            else
+                fo = C_CARD_BG;                      // 牌内衬底
         end
         else begin
             if (de1) begin

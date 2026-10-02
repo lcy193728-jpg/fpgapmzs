@@ -45,11 +45,16 @@ if {![batch_mode]} {
 
     add wave -divider "内部(柱阵)"
     add wave -radix unsigned /tb_audio_viz_overlay/dut/wp
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/gcnt
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/zc_cnt
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/env_max
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/z6
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/pit
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/hgt_w
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/hgt_q
     add wave -radix unsigned /tb_audio_viz_overlay/dut/col
+    add wave -radix unsigned /tb_audio_viz_overlay/dut/sub
     add wave -radix unsigned /tb_audio_viz_overlay/dut/ridx
-    add wave -radix unsigned /tb_audio_viz_overlay/dut/grp_max
-    add wave -radix unsigned /tb_audio_viz_overlay/dut/wave_q
-    add wave -radix unsigned /tb_audio_viz_overlay/dut/hgt
     add wave -radix unsigned /tb_audio_viz_overlay/dut/dh
     add wave -radix hex /tb_audio_viz_overlay/dut/accent
 }

@@ -2,10 +2,22 @@
 // 模块名 : ui_key_ctrl.v —— 全局统一人机交互控制器(2026-09-16 改版)
 //
 // 设计目标(全局统一样式, 与场景完全解耦: 四个场景下按键含义一致):
-//   KEY1(A2) : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→4会议计时→0
+//   KEY1(A2) : 功能模式循环, 每按一次 +1: 0图片/切图→1亮度→2缩放→3周期→4会议计时→5音量→0
 //   KEY2(B2) : 当前模式参数 减;  模式4 = 会议计时 开始/暂停/继续
 //   KEY3(B1) : 当前模式参数 加
-//   KEY4(C1) : **已释放(不使用)** —— 原"自动↔手动"改由模式0统一承担
+//   KEY4(C1) : 会议场景 = 当前议题**重新计时**(消抖脉冲 key4_pl 导出给 meeting_ctrl);
+//              其它场景不参与逻辑(顶层不采用)。原"自动↔手动"已并入模式0。
+//
+// 场景接管(2026-10-01 合入 dev_sim 会议改动; 2026-10-01 应急场景改交互):
+//   · control_lock=1 时(会议场景 meeting_key_owner), 本模块
+//     **冻结所有全局UI参数动作**(模式循环/亮度/缩放/周期/音量/切图), 只保留
+//     消抖脉冲导出, 交给会议逻辑使用 → 同一次按键不会既切场景又调参数。
+//   · 应急场景(alarm_scene=1)**不再冻结 UI**, 按键语义与迎新场景完全一致:
+//       KEY1 = 模式循环(0图片→1亮度→2缩放→3周期→4会议→5音量→0)
+//       KEY2/KEY3 = 当前模式参数 减/加
+//     唯一区别: 模式0 在本场景中不再切换图片, 而是**四类告警环绕切换**
+//       KEY3 = 下一类(0→1→2→3→0), KEY2 = 上一类(0→3→2→1→0);
+//     其余模式(亮度/缩放/周期/音量)语义与迎新场景完全相同。
 //
 // 各模式参数语义:
 //   模式0 图片/切图 : 参数 = 图序号(0=自动轮播, N=手动第 N 张)
@@ -35,6 +47,11 @@
 //                 无副作用(会议计时器 en 由场景使能控制, 见 top.v)。
 //                 ※ 这是把 dev_sim 会议场景三的 KEY1/KEY4 控制适配到本板
 //                 "统一按键样式"的落地方式(原按键功能全部保留, 仅新增本模式)。
+//   模式5 音量  : 参数 = **音量档 0..15**(KEY3 加 / KEY2 减, 默认 8 = ×1.0)
+//                 与模式1(亮度)完全同构, 只是作用对象换成音频末级增益。
+//                 仅导出电平 vol_level, 由顶层在"音频链末级"按
+//                 out = (in * vol) >>> 3 缩放(0=静音, 8=×1.0, 15≈×1.875)。
+//                 ※ 2026-09-28 用户要求新增; 原 KEY1 循环到模式4 为止。
 //
 // 数码管"参数强显保持"(小鹅通第三讲 seg7_panel 的 HOLD 机制):
 //   · 任何一次参数动作(亮度/缩放/周期 ±) → 输出 disp_hold 拉高 2 秒,
@@ -60,6 +77,8 @@
 module ui_key_ctrl #(
     parameter [3:0] BRI_INIT = 4'd8,       // 亮度默认档(×1.0)
     parameter [3:0] BRI_MAX  = 4'd15,      // 亮度上限
+    parameter [3:0] VOL_INIT = 4'd8,       // 音量默认档(×1.0, 与亮度同口径)
+    parameter [3:0] VOL_MAX  = 4'd15,      // 音量上限(≈×1.875)
     parameter [3:0] RES_INIT = 4'd4,       // 缩放默认档(4=100% 原始比例, 与原画一致)
     parameter [3:0] RES_MAX  = 4'd7,       // 缩放上限
     parameter [2:0] MODE_PIC = 3'd0,       // 功能模式: 图片
@@ -67,6 +86,7 @@ module ui_key_ctrl #(
     parameter [2:0] MODE_RES = 3'd2,       // 功能模式: 缩放
     parameter [2:0] MODE_PERIOD = 3'd3,    // 功能模式: 轮播周期(批次4 新增)
     parameter [2:0] MODE_MEET = 3'd4,      // 功能模式: 会议计时(会议场景, 2026-09-19 新增)
+    parameter [2:0] MODE_VOL = 3'd5,       // 功能模式: 音量(2026-09-28 新增)
     // ---- 批次4 轮播周期档 ----
     parameter [2:0] PERIOD_NUM = 3'd5,     // 档位数(2/3/5/10/30 s)
     parameter [2:0] PERIOD_DEF = 3'd1,     // 默认档 = 3s(与原 SLIDE_INTERVAL 一致)
@@ -76,18 +96,21 @@ module ui_key_ctrl #(
     input               clk,               // sd_card_clk(100MHz)
     input               rst,               // 高有效复位
     // ---- 板载按键原始电平(上拉高、按下低) ----
-    input               key1,              // 功能模式循环 0图片/切图→1亮度→2缩放→3周期→0
+    input               key1,              // 功能模式循环 0图片/切图→1亮度→2缩放→3周期→4会议→5音量→0
     input               key2,              // 当前模式参数 减
     input               key3,              // 当前模式参数 加
-    input               key4,              // 会议场景当前议题重新计时
-    input               control_lock,       // 1=按键由会议/应急场景接管，不改全局UI参数
+    input               key4,              // 会议场景当前议题重新计时(消抖脉冲导出)
+    input               control_lock,      // 1=按键由会议场景接管, 不改全局UI参数
+    input               alarm_scene,       // 1=处于应急场景(模式0 改为告警类型环绕切换)
     // ---- 上下文 ----
     input       [7:0]   img_no,            // bmp_read_auto 当前图序号(1..N; 0=空闲)
     input               scene_chg,         // 场景切换脉冲(清手动→自动)
     // ---- 输出 ----
-    output reg  [2:0]   mode,              // 功能模式 0图片/1亮度/2缩放/3周期/4会议计时
+    output reg  [2:0]   mode,              // 功能模式 0图片/1亮度/2缩放/3周期/4会议计时/5音量
     output reg  [3:0]   bri_level,         // 亮度档 0..15(模式1可调)
+    output reg  [3:0]   vol_level,         // 音量档 0..15(模式5可调, 默认8=×1.0)
     output reg  [3:0]   res_level,         // 缩放档 0..7(模式2可调)
+    output reg  [1:0]   alarm_type,        // 应急告警类型 0火灾/1地震/2恶劣天气/3疏散(应急模式0可调)
     output wire [7:0]   period_sec,        // 轮播间隔档(秒: 2/3/5/10/30, 模式3可调)
     output wire [31:0]  period_cycles,     // 轮播间隔(时钟周期) → bmp_read_auto
     output wire         disp_hold,         // 1=参数强显保持期(2 秒)
@@ -97,11 +120,11 @@ module ui_key_ctrl #(
     output              key_next_pl,       // 手动"下一张"单周期脉冲
     output              key_prev_pl,       // 手动"上一张"单周期脉冲
     output              res_chg_pl,        // 缩放档变化脉冲(1 拍) → 重载当前图
-    // ---- 四键消抖脉冲导出(最终顶层在会议场景送入 meeting_ctrl) ----
-    output              key1_pl,
-    output              key2_pl,
-    output              key3_pl,
-    output              key4_pl
+    // ---- 四键消抖脉冲导出(顶层在会议场景送入 meeting_ctrl) ----
+    output              key1_pl,           // KEY1 消抖"按下"脉冲(会议=开始/暂停/继续)
+    output              key2_pl,           // KEY2 消抖"按下"脉冲(会议=下一项)
+    output              key3_pl,           // KEY3 消抖"按下"脉冲(会议=上一项)
+    output              key4_pl            // KEY4 消抖"按下"脉冲(会议=当前项重新计时)
 );
 
     //--------------------------------------------------------------
@@ -114,7 +137,7 @@ module ui_key_ctrl #(
     ui_key_dbnc u_k3 (.clk(clk), .rst(rst), .key_raw(key3), .press_pl(k3_p));  // 参数 加
     ui_key_dbnc u_k4 (.clk(clk), .rst(rst), .key_raw(key4), .press_pl(k4_p));  // 会议重新计时
 
-    // 消抖后按键脉冲导出；是否由会议逻辑接管由最终顶层按场景决定。
+    // 消抖后按键脉冲导出; 是否由会议逻辑接管由最终顶层按场景决定。
     assign key1_pl = k1_p;
     assign key2_pl = k2_p;
     assign key3_pl = k3_p;
@@ -129,8 +152,17 @@ module ui_key_ctrl #(
     //--------------------------------------------------------------
     reg  [7:0] img_no_l;                   // 图序号锁存(仅非 0 时更新, 防扫描期抖动)
 
-    assign key_next_pl = k3_p & ~control_lock & (mode == MODE_PIC);
-    assign key_prev_pl = k2_p & ~control_lock & (mode == MODE_PIC) & (img_no_l > 8'd1);
+    // 应急场景下模式0 不做图片切换(改为告警类型环绕切换, 见下), 故加 ~alarm_scene 门控。
+    assign key_next_pl = k3_p & ~control_lock & ~alarm_scene & (mode == MODE_PIC);
+    assign key_prev_pl = k2_p & ~control_lock & ~alarm_scene & (mode == MODE_PIC) & (img_no_l > 8'd1);
+
+    //--------------------------------------------------------------
+    // 应急场景 模式0: 四类告警环绕切换(KEY3=下一类, KEY2=上一类)
+    //   2bit 自然回绕: +1 时 3→0, -1 时 0→3, 无需额外边界判断。
+    //   ※ 仅在 alarm_scene & 模式0 有效; 其余模式沿用迎新场景语义。
+    //--------------------------------------------------------------
+    wire alarm_up_c = k3_p & ~control_lock & alarm_scene & (mode == MODE_PIC);
+    wire alarm_dn_c = k2_p & ~control_lock & alarm_scene & (mode == MODE_PIC);
 
     //--------------------------------------------------------------
     // 缩放档变化脉冲(模式2 且未到边界才真正变化 → 产生 1 拍脉冲)
@@ -205,7 +237,11 @@ module ui_key_ctrl #(
     //--------------------------------------------------------------
     wire bri_up_c  = k3_p & ~control_lock & (mode == MODE_BRI) & (bri_level < BRI_MAX);
     wire bri_dn_c  = k2_p & ~control_lock & (mode == MODE_BRI) & (bri_level > 4'd0);
-    wire param_evt_all = res_up_c | res_dn_c | bri_up_c | bri_dn_c | per_up_c | per_dn_c;
+    // 模式5 音量 ±(与亮度同构: 边界钳位, 不做环绕)
+    wire vol_up_c  = k3_p & ~control_lock & (mode == MODE_VOL) & (vol_level < VOL_MAX);
+    wire vol_dn_c  = k2_p & ~control_lock & (mode == MODE_VOL) & (vol_level > 4'd0);
+    wire param_evt_all = res_up_c | res_dn_c | bri_up_c | bri_dn_c |
+                         per_up_c | per_dn_c | vol_up_c | vol_dn_c;
 
     reg [31:0] hold_cnt;
     always @(posedge clk or posedge rst) begin
@@ -230,21 +266,29 @@ module ui_key_ctrl #(
         if (rst) begin
             mode       <= MODE_PIC;
             bri_level  <= BRI_INIT;
+            vol_level  <= VOL_INIT;
             res_level  <= RES_INIT;
             period_idx <= PERIOD_DEF;
+            alarm_type <= 2'd0;
             pic_manual <= 1'b0;
             img_no_l   <= 8'd0;
         end
         else begin
-            // ---- KEY1: 功能模式循环 0→1→2→3→4→0 ----
+            // ---- KEY1: 功能模式循环 0→1→2→3→4→5→0 ----
             if (k1_p && !control_lock)
-                mode <= (mode == MODE_MEET) ? MODE_PIC : (mode + 3'd1);
+                mode <= (mode == MODE_VOL) ? MODE_PIC : (mode + 3'd1);
 
             // ---- 模式1: 亮度 ± ----
             if (bri_up_c)
                 bri_level <= bri_level + 4'd1;
             if (bri_dn_c)
                 bri_level <= bri_level - 4'd1;
+
+            // ---- 模式5: 音量 ± ----
+            if (vol_up_c)
+                vol_level <= vol_level + 4'd1;
+            if (vol_dn_c)
+                vol_level <= vol_level - 4'd1;
 
             // ---- 模式2: 缩放档 ± ----
             if (res_up_c)
@@ -260,14 +304,26 @@ module ui_key_ctrl #(
                 period_idx <= (period_idx == 3'd0) ? (PERIOD_NUM - 3'd1)
                                                    : (period_idx - 3'd1);
 
+            // ---- 应急场景 模式0: 四类告警环绕切换(KEY3=下一类 / KEY2=上一类) ----
+            if (alarm_up_c)
+                alarm_type <= alarm_type + 2'd1;      // 0→1→2→3→0
+            if (alarm_dn_c)
+                alarm_type <= alarm_type - 2'd1;      // 0→3→2→1→0
+            // 切换场景(含进入应急)回到第 0 类(火灾); 放最后保证优先级最高
+            if (scene_chg)
+                alarm_type <= 2'd0;
+
             // ---- 自动轮播 / 手动单张(模式0 内由切图动作自动转换, 无独立键) ----
             //   · 场景切换           → 回自动(新场景默认轮播)
             //   · 非模式0(亮度/缩放/周期) → 回自动(那几档 KEY2/3 去调参数, 别冻图)
+            //   · 应急模式0          → 回自动(该模式 KEY2/3 去切告警类型, 不冻图)
             //   · 模式0 按 KEY3      → 转手动(切下一张 + 停自动计时)
             //   · 模式0 第1张按 KEY2 → 回自动(与"上一张"共用一键, 已在首张则退自动)
             if (scene_chg)
                 pic_manual <= 1'b0;
             else if (mode != MODE_PIC)
+                pic_manual <= 1'b0;
+            else if (alarm_scene)
                 pic_manual <= 1'b0;
             else if (k3_p && !control_lock)
                 pic_manual <= 1'b1;

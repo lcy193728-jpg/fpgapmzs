@@ -1,28 +1,26 @@
-﻿RUN-1002 : start command "download -bit E:/FPGA/ALST/fpgapmzs/pic_sdram_Runs/phy_1/pic_sdram.bit -mode program_spi -v -spd 7 -cable 0 -flashsize 128"
+﻿RUN-1002 : start command "download -bit E:/FPGA/ALST/_dev_sim_0b18789/audio_final/artifacts/pic_sdram_audio_final.bit -mode program_spi -v -spd 7 -cable 0 -flashsize 128"
 PRG-2014 : Chip validation success: EG4S20BG256
 PRG-1001 : SPI Flash ID is:  ef
-RUN-1002 : start command "bit_to_vec -chip EG4S20BG256 -m program_spi -freq 5.000000 -bit E:/FPGA/ALST/fpgapmzs/pic_sdram_Runs/phy_1/pic_sdram.bit"
-RUN-1003 : finish command "bit_to_vec -chip EG4S20BG256 -m program_spi -freq 5.000000 -bit E:/FPGA/ALST/fpgapmzs/pic_sdram_Runs/phy_1/pic_sdram.bit" in  1.195962s wall, 1.078125s user + 0.109375s system = 1.187500s CPU (99.3%)
+RUN-1002 : start command "bit_to_vec -chip EG4S20BG256 -m program_spi -freq 5.000000 -bit E:/FPGA/ALST/_dev_sim_0b18789/audio_final/artifacts/pic_sdram_audio_final.bit"
+RUN-1003 : finish command "bit_to_vec -chip EG4S20BG256 -m program_spi -freq 5.000000 -bit E:/FPGA/ALST/_dev_sim_0b18789/audio_final/artifacts/pic_sdram_audio_final.bit" in  1.406498s wall, 1.140625s user + 0.156250s system = 1.296875s CPU (92.2%)
 
-RUN-1004 : used memory is 250 MB, reserved memory is 244 MB, peak memory is 260 MB
+RUN-1004 : used memory is 258 MB, reserved memory is 251 MB, peak memory is 269 MB
 RUN-1002 : start command "program_spi -cable 0 -spd 7 -chip EG4S20BG256"
-RUN-1003 : finish command "program_spi -cable 0 -spd 7 -chip EG4S20BG256" in  66.007075s wall, 2.984375s user + 0.281250s system = 3.265625s CPU (4.9%)
+RUN-1003 : finish command "program_spi -cable 0 -spd 7 -chip EG4S20BG256" in  65.116336s wall, 1.484375s user + 0.734375s system = 2.218750s CPU (3.4%)
 
-RUN-1004 : used memory is 250 MB, reserved memory is 244 MB, peak memory is 260 MB
-RUN-1002 : start command "bit_to_vec -chip EG4S20BG256 -m verify_spi -freq 5.000000 -bit E:/FPGA/ALST/fpgapmzs/pic_sdram_Runs/phy_1/pic_sdram.bit"
-RUN-1003 : finish command "bit_to_vec -chip EG4S20BG256 -m verify_spi -freq 5.000000 -bit E:/FPGA/ALST/fpgapmzs/pic_sdram_Runs/phy_1/pic_sdram.bit" in  0.930612s wall, 0.765625s user + 0.125000s system = 0.890625s CPU (95.7%)
+RUN-1004 : used memory is 259 MB, reserved memory is 252 MB, peak memory is 269 MB
+RUN-1002 : start command "bit_to_vec -chip EG4S20BG256 -m verify_spi -freq 5.000000 -bit E:/FPGA/ALST/_dev_sim_0b18789/audio_final/artifacts/pic_sdram_audio_final.bit"
+RUN-1003 : finish command "bit_to_vec -chip EG4S20BG256 -m verify_spi -freq 5.000000 -bit E:/FPGA/ALST/_dev_sim_0b18789/audio_final/artifacts/pic_sdram_audio_final.bit" in  0.489706s wall, 0.468750s user + 0.000000s system = 0.468750s CPU (95.7%)
 
-RUN-1004 : used memory is 168 MB, reserved memory is 160 MB, peak memory is 260 MB
+RUN-1004 : used memory is 172 MB, reserved memory is 162 MB, peak memory is 269 MB
 RUN-1002 : start command "program -cable 0 -spd 7"
 
 0%   10   20   30   40   50   60   70   80   90   100%
 |----|----|----|----|----|----|----|----|----|----|
 ***************************************************
-RUN-1003 : finish command "program -cable 0 -spd 7" in  8.403593s wall, 0.218750s user + 0.125000s system = 0.343750s CPU (4.1%)
+RUN-1003 : finish command "program -cable 0 -spd 7" in  8.138438s wall, 0.234375s user + 0.062500s system = 0.296875s CPU (3.6%)
 
-RUN-1004 : used memory is 197 MB, reserved memory is 189 MB, peak memory is 260 MB
-RUN-1003 : finish command "download -bit E:/FPGA/ALST/fpgapmzs/pic_sdram_Runs/phy_1/pic_sdram.bit -mode program_spi -v -spd 7 -cable 0 -flashsize 128" in  79.414675s wall, 6.125000s user + 0.703125s system = 6.828125s CPU (8.6%)
+RUN-1004 : used memory is 201 MB, reserved memory is 192 MB, peak memory is 269 MB
+RUN-1003 : finish command "download -bit E:/FPGA/ALST/_dev_sim_0b18789/audio_final/artifacts/pic_sdram_audio_final.bit -mode program_spi -v -spd 7 -cable 0 -flashsize 128" in  77.726724s wall, 4.328125s user + 1.078125s system = 5.406250s CPU (7.0%)
 
-RUN-1004 : used memory is 197 MB, reserved memory is 189 MB, peak memory is 260 MB
-
-bw > 
+RUN-1004 : used memory is 201 MB, reserved memory is 193 MB, peak memory is 269 MB

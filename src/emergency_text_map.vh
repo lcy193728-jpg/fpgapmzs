@@ -28,30 +28,8 @@ function [6:0] emergency_glyph_id;
       10'd129: emergency_glyph_id = 7'd16;
       10'd130: emergency_glyph_id = 7'd17;
       10'd131: emergency_glyph_id = 7'd18;
-      // 5: 告警级别：紧急
-      10'd160: emergency_glyph_id = 7'd2;
-      10'd161: emergency_glyph_id = 7'd3;
-      10'd162: emergency_glyph_id = 7'd19;
-      10'd163: emergency_glyph_id = 7'd20;
-      10'd164: emergency_glyph_id = 7'd21;
-      10'd165: emergency_glyph_id = 7'd0;
-      10'd166: emergency_glyph_id = 7'd1;
-      // 6: 告警级别：警告
-      10'd192: emergency_glyph_id = 7'd2;
-      10'd193: emergency_glyph_id = 7'd3;
-      10'd194: emergency_glyph_id = 7'd19;
-      10'd195: emergency_glyph_id = 7'd20;
-      10'd196: emergency_glyph_id = 7'd21;
-      10'd197: emergency_glyph_id = 7'd3;
-      10'd198: emergency_glyph_id = 7'd2;
-      // 7: 告警级别：提示
-      10'd224: emergency_glyph_id = 7'd2;
-      10'd225: emergency_glyph_id = 7'd3;
-      10'd226: emergency_glyph_id = 7'd19;
-      10'd227: emergency_glyph_id = 7'd20;
-      10'd228: emergency_glyph_id = 7'd21;
-      10'd229: emergency_glyph_id = 7'd22;
-      10'd230: emergency_glyph_id = 7'd23;
+      // 5/6/7「告警级别：紧急/警告/提示」: 2026-09-25 该行已从页面删除,
+      //   对应 10'd160..166 / 192..198 / 224..230 条目一并去掉(落到 default)。
       // 8: 事件地点：实验楼三层
       10'd256: emergency_glyph_id = 7'd24;
       10'd257: emergency_glyph_id = 7'd25;
@@ -174,13 +152,8 @@ function [6:0] emergency_glyph_id;
       10'd610: emergency_glyph_id = 7'd16;
       10'd611: emergency_glyph_id = 7'd96;
       10'd612: emergency_glyph_id = 7'd21;
-      // 20: 告警尚未解除
-      10'd640: emergency_glyph_id = 7'd2;
-      10'd641: emergency_glyph_id = 7'd3;
-      10'd642: emergency_glyph_id = 7'd97;
-      10'd643: emergency_glyph_id = 7'd98;
-      10'd644: emergency_glyph_id = 7'd99;
-      10'd645: emergency_glyph_id = 7'd100;
+      // 20「告警尚未解除」: 2026-09-25 该行已从页面删除, 对应 10'd640..645
+      //   条目一并去掉(落到 default)。
       // 21: 仅管理员可解除告警
       10'd672: emergency_glyph_id = 7'd101;
       10'd673: emergency_glyph_id = 7'd102;
