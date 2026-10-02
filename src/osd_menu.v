@@ -7,8 +7,11 @@
 //                  (最高优先级; 底层画面保留不清屏)
 //     · 全屏菜单 : menu 期间【整帧由本模块自绘, 不透传背景】——
 //                  深蓝底色 + 顶部 2×放大标题 + 金色标题线 +
-//                  4 张场景卡(左侧强调色块/描边/2×卡标题/1×副标题) +
+//                  4 张场景卡(左侧强调色块/描边/2×卡标题) +
 //                  底部黑色滚动宣传语条(每帧左移 1px, 平滑滚动)
+//                  ★2026-09-21: 按需求去掉 4 张卡下的 1× 副标题(小字),
+//                    做法是只把 TG0~TG3 从扫描链摘除(分类/几何/取色三处),
+//                    字模 ROM 不动(base 偏移不变, 其它 OSD 模块零影响)。
 //     · 其余       : 原样透传背景(各场景轮播画面)
 // 数据管线 :
 //   {sync,data,px} 输入视为已对齐; 模块内三级移位寄存器(da1/2/3 +
@@ -18,6 +21,8 @@
 //   · 2× 带(标题/卡标题): A 级 row=py-ty, col=(px-gx)>>5, 取位 rom_q[31-((px-gx)&31)]
 //     —— ROM 里直接存 32×32 真字模, 1:1 显示(物理尺寸 = 原 16×16 放大 2 倍)。
 //   · 1× 带(副标题): A 级 row=py-ty, col=(px-gx)>>4, 取位 rom_q[15-((px-gx)&15)]。
+//     ★2026-09-21 卡副标题下线后, 已无字带走这条"非滚动 1×"通路(滚动条自己
+//       走下面的独立分支), 该通路按最小改动原则保留未删, 仅不再被选到。
 //   · 滚动条 : A 级按 (px+phase) 对 320px 取模得到单元内偏移, phase 在
 //     每帧 vsync 上升沿 +1(0..319), 实现整行平滑左移, 无缝循环。
 // 时钟域 : 本模块 video_clk(≈25.175MHz); menu_en/emerg_en 为
@@ -69,7 +74,6 @@ module osd_menu #(
     localparam [DATA_W-1:0] C_ACC2   = 24'hF5_A6_23;   // 卡3 左色块(抢答-橙)
     localparam [DATA_W-1:0] C_ACC3   = 24'hE8_4A_4A;   // 卡4 左色块(应急-红)
     localparam [DATA_W-1:0] C_TEXT_W = 24'hF5_FD_FF;   // 大标题/卡标题(近白)
-    localparam [DATA_W-1:0] C_TAG    = 24'h9D_CB_F2;   // 卡副标题(浅钢蓝)
     localparam [DATA_W-1:0] C_MARQ   = 24'hFF_7A_1F;   // 滚动宣传语(亮橙, 与金线异色便于 TB 计数)
     localparam [DATA_W-1:0] C_MQ_BG  = 24'h00_00_00;   // 宣传语黑底
 
@@ -78,8 +82,10 @@ module osd_menu #(
     //   顶部大标题(2×)      : 行 28..60   x 176..464   9 格  base    0
     //   卡1..4 标题(2×)     : 行 92/182/272/362..+32 x 98..226 4 格
     //                            base 288/416/544/672
-    //   卡1..4 副标题(1×)   : 行 132/222/312/402..+16 x 98..210 7 格
-    //                            base 800/912/1024/1136
+    //   卡1..4 副标题(1×)   : 【2026-09-21 已下线, 不再显示】
+    //                            原行 132/222/312/402..+16 x 98..210 7 格,
+    //                            base 800/912/1024/1136 在 ROM 里仍保留
+    //                            (不动 ROM 就不必重算所有 base)。
     //   滚动宣传语(1×,20格) : 行 451..467  base 1248 (每行 20 字周期 320px)
     //   卡区                : x 70..570, top 80/170/260/350, 高 80, 距 10
     //   ★字模分辨率(字库 V3): 2× 带存 32×32 真字模(1:1 显示, 物理尺寸不变);
@@ -102,10 +108,9 @@ module osd_menu #(
     localparam [4:0]  MQ_P   = 5'd20;          // 每行格数
     localparam [11:0] MQ_PER = 12'd320;        // 周期 = MQ_P*16 px
 
-    // 分区 id
+    // 分区 id(★2026-09-21: ID_TG0~3 随卡副标题一并下线)
     localparam [3:0] ID_TITLE = 4'd0, ID_CT0 = 4'd1, ID_CT1 = 4'd2,
-                     ID_CT2   = 4'd3, ID_CT3 = 4'd4, ID_TG0 = 4'd5,
-                     ID_TG1   = 4'd6, ID_TG2 = 4'd7, ID_TG3 = 4'd8,
+                     ID_CT2   = 4'd3, ID_CT3 = 4'd4,
                      ID_MARQ  = 4'd9, ID_NONE= 4'd15;
 
     //--------------------------------------------------------------
@@ -176,41 +181,41 @@ module osd_menu #(
 
     //--------------------------------------------------------------
     // A 级(读请求): 按 py2 分类所在文字带
+    //   ★2026-09-21: 卡副标题的 4 个分支(原行 132/222/312/402)已删除 ——
+    //     这些行不再归属任何文字带, 逐像素判定与 ROM 读请求都不会产生,
+    //     卡内下半部自然落到"卡内衬"底色。比较器由 10 级缩短为 6 级。
     //--------------------------------------------------------------
     reg [3:0] rid2;
     always @* begin
         rid2 = ID_NONE;
         if      ((py2 >= 12'd28)  && (py2 < 12'd60))  rid2 = ID_TITLE; // 大标题
         else if ((py2 >= 12'd92)  && (py2 < 12'd124)) rid2 = ID_CT0;   // 卡1标题
-        else if ((py2 >= 12'd132) && (py2 < 12'd148)) rid2 = ID_TG0;   // 卡1副标题
         else if ((py2 >= 12'd182) && (py2 < 12'd214)) rid2 = ID_CT1;   // 卡2标题
-        else if ((py2 >= 12'd222) && (py2 < 12'd238)) rid2 = ID_TG1;
-        else if ((py2 >= 12'd272) && (py2 < 12'd304)) rid2 = ID_CT2;
-        else if ((py2 >= 12'd312) && (py2 < 12'd328)) rid2 = ID_TG2;
-        else if ((py2 >= 12'd362) && (py2 < 12'd394)) rid2 = ID_CT3;
-        else if ((py2 >= 12'd402) && (py2 < 12'd418)) rid2 = ID_TG3;
+        else if ((py2 >= 12'd272) && (py2 < 12'd304)) rid2 = ID_CT2;   // 卡3标题
+        else if ((py2 >= 12'd362) && (py2 < 12'd394)) rid2 = ID_CT3;   // 卡4标题
         else if ((py2 >= 12'd451) && (py2 < 12'd467)) rid2 = ID_MARQ;  // 滚动条
     end
 
     // A 级: 几何表(字带)
-    reg [11:0] gx2, ty2;
+    //   xr2 = 字窗右沿(不含) = gx2 + n2*(s2?32:16), 直接列常量:
+    //     标题 176+9*32=464 / 卡标题 98+4*32=226 / 滚动条 320。
+    //   ★2026-09-21: 原先在窗口判定里现算 `gx2 + (s2 ? n2<<5 : n2<<4)`,
+    //     每处都生成"变长移位 + 12bit 加法器 + 12bit 比较器"(A/B 级各一份),
+    //     改为常量表后这些逻辑全部消失。
+    reg [11:0] gx2, ty2, xr2;
     reg [4:0]  n2;
     reg [10:0] b2;
     reg        s2;      // 1=2×放大
     reg        mq2;     // 1=滚动条
     always @* begin
-        gx2 = 12'd0; ty2 = 12'd0; n2 = 5'd0; b2 = 11'd0; s2 = 1'b0; mq2 = 1'b0;
+        gx2 = 12'd0; ty2 = 12'd0; xr2 = 12'd0; n2 = 5'd0; b2 = 11'd0; s2 = 1'b0; mq2 = 1'b0;
         case (rid2)
-            ID_TITLE: begin gx2=12'd176; ty2=12'd28;  n2=5'd9;  b2=11'd0;    s2=1'b1; end
-            ID_CT0:   begin gx2=12'd98;  ty2=12'd92;  n2=5'd4;  b2=11'd288;  s2=1'b1; end
-            ID_CT1:   begin gx2=12'd98;  ty2=12'd182; n2=5'd4;  b2=11'd416;  s2=1'b1; end
-            ID_CT2:   begin gx2=12'd98;  ty2=12'd272; n2=5'd4;  b2=11'd544;  s2=1'b1; end
-            ID_CT3:   begin gx2=12'd98;  ty2=12'd362; n2=5'd4;  b2=11'd672;  s2=1'b1; end
-            ID_TG0:   begin gx2=12'd98;  ty2=12'd132; n2=5'd7;  b2=11'd800;  s2=1'b0; end
-            ID_TG1:   begin gx2=12'd98;  ty2=12'd222; n2=5'd7;  b2=11'd912;  s2=1'b0; end
-            ID_TG2:   begin gx2=12'd98;  ty2=12'd312; n2=5'd7;  b2=11'd1024; s2=1'b0; end
-            ID_TG3:   begin gx2=12'd98;  ty2=12'd402; n2=5'd7;  b2=11'd1136; s2=1'b0; end
-            ID_MARQ:  begin gx2=12'd0;   ty2=12'd451; n2=5'd20; b2=11'd1248; s2=1'b0; mq2=1'b1; end
+            ID_TITLE: begin gx2=12'd176; ty2=12'd28;  xr2=12'd464; n2=5'd9;  b2=11'd0;    s2=1'b1; end
+            ID_CT0:   begin gx2=12'd98;  ty2=12'd92;  xr2=12'd226; n2=5'd4;  b2=11'd288;  s2=1'b1; end
+            ID_CT1:   begin gx2=12'd98;  ty2=12'd182; xr2=12'd226; n2=5'd4;  b2=11'd416;  s2=1'b1; end
+            ID_CT2:   begin gx2=12'd98;  ty2=12'd272; xr2=12'd226; n2=5'd4;  b2=11'd544;  s2=1'b1; end
+            ID_CT3:   begin gx2=12'd98;  ty2=12'd362; xr2=12'd226; n2=5'd4;  b2=11'd672;  s2=1'b1; end
+            ID_MARQ:  begin gx2=12'd0;   ty2=12'd451; xr2=12'd320; n2=5'd20; b2=11'd1248; s2=1'b0; mq2=1'b1; end
             default:  ;
         endcase
     end
@@ -221,23 +226,28 @@ module osd_menu #(
     wire [11:0] wx_m = (wx_1 >= MQ_PER) ? (wx_1 - MQ_PER) : wx_1;
 
     // A 级: ROM 读请求(字形窗内才发, 省功耗)
+    //   ★2026-09-21: 行偏移 `py2 - ty2` 只取低 6 位 —— rid2 已保证 py2 落在
+    //     该带内(带宽 ≤32), 真实差值 ∈[0,31] ⊂ [0,63], 模 64 减法逐位精确,
+    //     却把 12bit 减法器收窄成 6bit(乘法器操作数也随之变窄)。
+    //     窗口右沿改用几何表常量 xr2, 不再现算 gx2 + (n2<<5|n2<<4)。
     reg rom_en;
     reg [12:0] rom_addr;
+    wire [5:0]  dy2   = py2[5:0] - ty2[5:0];
+    wire [11:0] xoff2 = px2 - gx2;
     always @* begin
         rom_en   = 1'b0;
         rom_addr = 13'd0;
         if (menu_ok && de2 && (rid2 != ID_NONE)) begin
             if (mq2) begin
                 rom_en   = 1'b1;
-                rom_addr = b2 + ((py2 - ty2) * n2) + (wx_m >> 4);   // cell=(wx_m>>4)
+                rom_addr = b2 + ({6'b0, dy2} * {1'b0, n2}) + (wx_m >> 4);  // cell=(wx_m>>4)
             end
             else begin
-                if ((px2 >= gx2) &&
-                    (px2 < gx2 + (s2 ? ({1'b0, n2} << 5) : ({1'b0, n2} << 4)))) begin
+                if ((px2 >= gx2) && (px2 < xr2)) begin
                     rom_en   = 1'b1;
                     // 行号 = py2-ty2(2× 带存 32×32 真字模, 不再 >>1 折叠)
-                    rom_addr = b2 + ((py2 - ty2) * n2)
-                                 + ((px2 - gx2) >> (s2 ? 5'd5 : 5'd4));
+                    rom_addr = b2 + ({6'b0, dy2} * {1'b0, n2})
+                                 + (xoff2 >> (s2 ? 5'd5 : 5'd4));
                 end
             end
         end
@@ -252,48 +262,31 @@ module osd_menu #(
     assign rom_addr_o = rom_addr;
 
     //--------------------------------------------------------------
-    // B 级(仲裁): 按 py3 分类所在文字带(供字形位判定)
+    // B 级(仲裁): 文字带 id / 几何 / 滚动相位 —— 全部改为 A 级结果打一拍
+    //   ★2026-09-21 面积优化: py3 ≡ py2 延迟 1 拍(第 172-173 行 px3<=px2;
+    //     py3<=py2), 因此 f(py3) 恒等于 f(py2) 延迟 1 拍。原先 B 级又把
+    //     "按 py3 分类 10 个文字带"和"按 rid3 查几何表"整套重算了一遍,
+    //     等于把 20 个 12bit 比较器 + 10 路优先链 + 10 路 case mux 白做两次,
+    //     是本模块 261 条进位链的首要来源。改为纯打拍后画面逐像素完全不变
+    //     (仍是恒定延迟 3 拍), 且 B 级组合路径显著变短(利于时序)。
     //--------------------------------------------------------------
-    reg [3:0] rid3;
-    always @* begin
-        rid3 = ID_NONE;
-        if      ((py3 >= 12'd28)  && (py3 < 12'd60))  rid3 = ID_TITLE;
-        else if ((py3 >= 12'd92)  && (py3 < 12'd124)) rid3 = ID_CT0;
-        else if ((py3 >= 12'd132) && (py3 < 12'd148)) rid3 = ID_TG0;
-        else if ((py3 >= 12'd182) && (py3 < 12'd214)) rid3 = ID_CT1;
-        else if ((py3 >= 12'd222) && (py3 < 12'd238)) rid3 = ID_TG1;
-        else if ((py3 >= 12'd272) && (py3 < 12'd304)) rid3 = ID_CT2;
-        else if ((py3 >= 12'd312) && (py3 < 12'd328)) rid3 = ID_TG2;
-        else if ((py3 >= 12'd362) && (py3 < 12'd394)) rid3 = ID_CT3;
-        else if ((py3 >= 12'd402) && (py3 < 12'd418)) rid3 = ID_TG3;
-        else if ((py3 >= 12'd451) && (py3 < 12'd467)) rid3 = ID_MARQ;
-    end
-
-    // B 级: 几何表(仅取缩放/窗口宽/滚动标志; base 读侧已用)
-    reg [11:0] gx3;
-    reg [4:0]  n3;
+    reg [3:0]  rid3;
+    reg [11:0] gx3, xr3;
     reg        s3, mq3;
-    always @* begin
-        gx3 = 12'd0; n3 = 5'd0; s3 = 1'b0; mq3 = 1'b0;
-        case (rid3)
-            ID_TITLE: begin gx3=12'd176; n3=5'd9;  s3=1'b1; end
-            ID_CT0:   begin gx3=12'd98;  n3=5'd4;  s3=1'b1; end
-            ID_CT1:   begin gx3=12'd98;  n3=5'd4;  s3=1'b1; end
-            ID_CT2:   begin gx3=12'd98;  n3=5'd4;  s3=1'b1; end
-            ID_CT3:   begin gx3=12'd98;  n3=5'd4;  s3=1'b1; end
-            ID_TG0:   begin gx3=12'd98;  n3=5'd7;  s3=1'b0; end
-            ID_TG1:   begin gx3=12'd98;  n3=5'd7;  s3=1'b0; end
-            ID_TG2:   begin gx3=12'd98;  n3=5'd7;  s3=1'b0; end
-            ID_TG3:   begin gx3=12'd98;  n3=5'd7;  s3=1'b0; end
-            ID_MARQ:  begin gx3=12'd0;   n3=5'd20; s3=1'b0; mq3=1'b1; end
-            default:  ;
-        endcase
-    end
+    reg [11:0] wx3_m;
 
-    // B 级: 滚动条相位取模(px3 版)
-    wire [11:0] wxx3 = px3 + {2'b00, phase};
-    wire [11:0] wx3_1 = (wxx3 >= 12'd640) ? (wxx3 - 12'd640) : wxx3;
-    wire [11:0] wx3_m = (wx3_1 >= MQ_PER) ? (wx3_1 - MQ_PER) : wx3_1;
+    always @(posedge video_clk or posedge rst) begin
+        if (rst) begin
+            rid3  <= ID_NONE;
+            gx3   <= 12'd0; xr3 <= 12'd0; s3 <= 1'b0; mq3 <= 1'b0;
+            wx3_m <= 12'd0;
+        end
+        else begin
+            rid3  <= rid2;
+            gx3   <= gx2;  xr3 <= xr2;  s3 <= s2;  mq3 <= mq2;
+            wx3_m <= wx_m;
+        end
+    end
 
     // B 级: 字形墨点判定(当前像素处字形是否落墨)
     reg ink;
@@ -303,8 +296,7 @@ module osd_menu #(
             if (mq3) begin
                 ink = rom_q[15 - wx3_m[3:0]];   // 字内列 = wx3_m 低 4 位
             end
-            else if ((px3 >= gx3) &&
-                     (px3 < gx3 + (s3 ? ({1'b0, n3} << 5) : ({1'b0, n3} << 4)))) begin
+            else if ((px3 >= gx3) && (px3 < xr3)) begin
                 // 字内列号: 2× 带 = 32×32 字模 1:1(取第 31..0 位);
                 //           1× 带 = 16×16 字模(取第 15..0 位)
                 if (s3)
@@ -377,15 +369,14 @@ module osd_menu #(
     end
 
     //--------------------------------------------------------------
-    // B 级: 字形颜色(按文字带类型)
+    // B 级: 字形颜色(按文字带类型; ★2026-09-21 副标题下线后只剩两档)
     //--------------------------------------------------------------
     reg [DATA_W-1:0] tcol;
     always @* begin
         tcol = C_TEXT_W;
         case (rid3)
-            ID_TG0, ID_TG1, ID_TG2, ID_TG3: tcol = C_TAG;
-            ID_MARQ:                        tcol = C_MARQ;
-            default:                        tcol = C_TEXT_W;
+            ID_MARQ: tcol = C_MARQ;
+            default: tcol = C_TEXT_W;
         endcase
     end
 

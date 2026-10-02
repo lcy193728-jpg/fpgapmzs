@@ -1,0 +1,4 @@
+# Preserve simulation evidence and the original main baseline byte-for-byte.
+* -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+baseline/*.v -whitespace
+evidence/**/transcript.log -whitespace

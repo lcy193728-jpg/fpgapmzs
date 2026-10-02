@@ -1,0 +1,87 @@
+[
+  {
+    "run": "20260917_162552",
+    "status": "incomplete_or_compile_failed",
+    "checks": 0,
+    "errors": null,
+    "waveform_present": false,
+    "wave_screenshot_present": false,
+    "waveform_archived_in_repository": false,
+    "note": "Compilation failed before elaboration, so no waveform exists; original error log retained."
+  },
+  {
+    "run": "20260917_162609",
+    "status": "incomplete_or_compile_failed",
+    "checks": 0,
+    "errors": null,
+    "waveform_present": true,
+    "wave_screenshot_present": true,
+    "waveform_archived_in_repository": false,
+    "note": "Interrupted run; WLF was not closed cleanly. Partial process record only."
+  },
+  {
+    "run": "20260917_162643",
+    "status": "incomplete_or_compile_failed",
+    "checks": 0,
+    "errors": null,
+    "waveform_present": false,
+    "wave_screenshot_present": false,
+    "waveform_archived_in_repository": false,
+    "note": "Compilation failed before elaboration, so no waveform exists; original error log retained."
+  },
+  {
+    "run": "20260917_162654",
+    "status": "passed",
+    "checks": 45,
+    "errors": 0,
+    "waveform_present": true,
+    "wave_screenshot_present": true,
+    "waveform_archived_in_repository": false
+  },
+  {
+    "run": "20260917_162931_edges",
+    "status": "incomplete_or_compile_failed",
+    "checks": 0,
+    "errors": null,
+    "waveform_present": false,
+    "wave_screenshot_present": false,
+    "waveform_archived_in_repository": false,
+    "note": "Compilation failed before elaboration, so no waveform exists; original error log retained."
+  },
+  {
+    "run": "20260917_162950_edges",
+    "status": "passed",
+    "checks": 20,
+    "errors": 0,
+    "waveform_present": true,
+    "wave_screenshot_present": true,
+    "waveform_archived_in_repository": true
+  },
+  {
+    "run": "20260917_163002_io",
+    "status": "passed",
+    "checks": 10,
+    "errors": 0,
+    "waveform_present": true,
+    "wave_screenshot_present": true,
+    "waveform_archived_in_repository": true
+  },
+  {
+    "run": "20260917_163058_full",
+    "status": "passed",
+    "checks": 45,
+    "errors": 0,
+    "waveform_present": true,
+    "wave_screenshot_present": true,
+    "waveform_archived_in_repository": true
+  },
+  {
+    "run": "20260917_163221_display",
+    "status": "passed",
+    "checks": 18,
+    "errors": 0,
+    "waveform_present": true,
+    "wave_screenshot_present": true,
+    "waveform_archived_in_repository": true
+  }
+]

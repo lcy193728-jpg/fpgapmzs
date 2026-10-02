@@ -1,5 +1,42 @@
 `timescale 1ns/1ps
-// Compact actual-final-PCM waveform and peak meter. Hidden in menu/meeting.
+// 时间序列"音量柱"柱阵。2026-09-24: 先由 160 根细柱改为 25 根宽柱, 再按用户
+//   要求把显示框(条带)拉高成两倍、柱数加到 50 根, 其余保持不变。
+// 隐藏条件不变: menu/会议场景不显示。
+//--------------------------------------------------------------------
+// [C1] 分帧与滚动: 一根柱子 = 1024 个 48 kHz 样本(21.3 ms), 50 根柱正好覆盖
+//      1.07 s 的历史。写入时就把这根柱的"柱高"算好存进环形 BRAM, 读出时
+//      col=49 对应最新一根、col=0 最旧, 于是整排柱随时间自右向左滚动,
+//      得到"顺过去"的走带感。
+// [C2] 柱高来源(全部是时域统计, **不是 FFT/频谱**) —— 2026-09-26 起**按场景
+//      分两路**, 因为迎新场景已改为播放 TF 卡真实音乐:
+//        · 迎新(scene 0) = **包络音量**: 组内 Σ|pcm| / 1024 / 128, 真随音量
+//          起伏(副歌高、间奏矮)。真实音乐峰值恒定、过零率随机, 若仍用过零率
+//          会整排顶满而失效, 故必须换。
+//        · 抢答(2)/应急(3) = **音高轮廓**: 组内数 pcm[15] 翻转次数(过零率)。
+//          这两路是片内 DDS 合成音, 等幅纯音:
+//            空袭警报扫频 400 <-> 1000 Hz → 17..43 次 → 柱高 24..64, 柱子成排
+//              由矮变高再变矮地"扫"过去, 韵律最强; 提示音 1500 Hz → 计数饱和
+//              顶满; 静音 → 无翻转 → 柱高 0。
+//      换算 pit = (z6>>1)+(z6>>2) 即 过零率*3/4, 只花移位与加法; 包络路只花
+//      一个 25 位加法器。两路都不占 DSP。条带拉高后整体 <<1, 柱高 0..92
+//      (包络路 > 74 时同样整条填满, 天然限幅); 条带内高 74 行, 无需限幅比较。
+// [C3] 静音门控(只作用于音高路的 抢答/应急): 取组内 |pcm| 峰值, 整组恒 0
+//      (真静音)时柱高强制为 0, 所以警报的"鸣 6 s / 停 6 s"音型与切场景的
+//      淡出段会整排归零, 视觉上是"有声音才起柱子"。迎新路用的是平均幅度,
+//      本身静音即为 0, 无需另做门控。
+// [C4] 列划分: 640 px 均分 50 根柱 = 12.8 px/柱, 用 col = (5*px_x)>>6 得到
+//      0..49, 只花一次 (x<<2)+x 与位截断, 不用除法器。列内位置
+//      sub = (5*px_x) 的低 6 位 ∈ [0,63], sub<46 是柱体(约 9.2 px)、
+//      其余是间隙(约 3.6 px)。
+// [C5] 面积: 柱高已在 48 kHz 域算好写进 BRAM(8 bit), 像素域只剩
+//      "距柱底行数 dh <= 柱高" 的 9 位比较 + 一次列号加法。环形深度仍取
+//      256(模 256 = 8 位位截断, 不需要比较器+减法器), 实际只用 50 格。
+//   条带几何(本次拉高两倍, 柱底位置不变): y ∈ [362, 437] 共 76 行(原 38 行),
+//      上/下边框 y=362/437 为 accent, 内部底色 24'h101820;
+//      y=436 是基线(dh=0 恒 <= 柱高, 永久点亮)。
+// [C6] 应急场景(scene 3)不画条带框: 无内部底色、无上/下边框, 柱体直接叠在
+//      应急页背景上, 与应急画面融合; 场景 0/2 的条带框保持不变。
+//--------------------------------------------------------------------
 module audio_viz_overlay(
  input wire clk,rst, input wire hs_i,vs_i,de_i,input wire [23:0] data_i,
  input wire [11:0] px_x,px_y,input wire menu_active,input wire [1:0] scene_id,
@@ -7,48 +44,92 @@ module audio_viz_overlay(
  output reg hs_o,vs_o,de_o,output reg [23:0] data_o,
  output reg [11:0] px_x_o,px_y_o
 );
- // Explicit logical BRAM keeps the waveform history out of LUT storage.
- wire signed [7:0] wave_q;reg [8:0] wp;reg [3:0] decim;
- reg [14:0] peak;reg menu0,menu1;reg [1:0] sc0,sc1;
+ // ---- [C1][C2][C3] 写侧(48 kHz 域): 每 1024 个样本合成一根柱 ----
+ reg [9:0] gcnt;                // 组内样本计数 0..1023
+ reg [7:0] env_max;             // 本组已见到的 |pcm| 峰值包络(静音门控用)
+ reg [9:0] zc_cnt;              // 本组已累计的过零次数
+ reg sgn_d;                     // 上一个 48 kHz 样本的符号位
+ reg [24:0] mag_acc;            // [C7] 本组 |pcm| 累加(1024 x 15bit, 25 位恰好)
+ reg [7:0] wp;                  // 环形写址; 深度 256 → 8 位自然回绕
+ wire [14:0] abs_pcm=pcm[15]?(~pcm[14:0]+1'b1):pcm[14:0];
+ wire [7:0] mag=abs_pcm[14:7];
+ wire [24:0] mag_acc_nxt=mag_acc+{10'b0,abs_pcm};  // [C7] 含当前样本
+ wire zc_now=pcm_take&&(pcm[15]^sgn_d);          // 符号位翻转 = 一次过零
+ wire [10:0] zc_next=zc_cnt+{{10{1'b0}},zc_now}; // 含当前样本的本组计数
+ wire [5:0] z6=(zc_next>11'd63)?6'd63:zc_next[5:0];
+ wire [6:0] pit=z6[5:1]+z6[5:2];                 // 过零率 * 3/4, 0..46
+ wire [7:0] env_nxt=(mag>env_max)?mag:env_max;
+ // [C2] 条带拉高两倍 → 柱高整体 ×2(<<1), 同样音量在加高的框里按同样比例
+ //   填充; 条带内高 74 行, 柱高上限 92 时自然顶满, 不需要限幅比较。
+ wire [7:0] hgt_pitch=(env_nxt!=8'd0)?({1'b0,pit}<<1):8'd0;  // [C3] 静音门控
+ // [C7] 迎新场景(scene 0)放 TF 卡真实音乐: 峰值恒定、过零率随机, 若仍用过零率
+ //   整排柱会顶满而失效 → 该场景改为**组内平均幅度**(真·音量包络):
+ //     hgt_env = (Σ|pcm| / 1024) / 128 = mag_acc[24:17]
+ //   副歌响 → 柱子高, 间奏轻 → 柱子矮, 静音 → 0(自动门控, 无需另判)。
+ //   仅一个 25 位加法器 + 移位, 不占 DSP。柱高 > 74 即整条填满(自然限幅)。
+ wire [7:0] hgt_env=mag_acc_nxt[24:17];
+ wire wave_we=pcm_take&&(gcnt==10'd1023);           // 组末写入
+ // ---- [C4][C5] 读侧(像素域) ----
+ wire [7:0] hgt_q;              // 本列柱高(写侧算好; 音高路 0..92, 包络路 0..255, >74 即填满)
+ reg menu0,menu1;reg [1:0] sc0,sc1;
+ // [C7] 按场景分柱高来源: 迎新(sc0) = 包络音量; 抢答/应急 = 音高轮廓(过零率)。
+ //   注意: 此处必须位于 sc1 声明之后(Verilog 要求先声明后使用)。
+ wire [7:0] hgt_w=(sc1==2'd0)?hgt_env:hgt_pitch;
  reg hs_d,vs_d,de_d;reg [23:0] data_d;reg [11:0] x_d,y_d;
  wire show=!menu1&&(sc1==0||sc1==2||sc1==3);
- wire [8:0] sum=wp+px_x[8:0];wire [8:0] ridx=sum>=320?sum-320:sum;
- wire signed [12:0] wy=13'sd418-($signed(wave_q)>>>3);
- wire [14:0] abs_pcm=pcm[15]?(~pcm[14:0]+1'b1):pcm[14:0];
- wire [8:0] barw={peak[14:7],1'b0};
+ // 5*px_x: 有效像素 px_x<=639 → 5*px_x<=3195, 12 位足够, 无高位丢失。
+ wire [11:0] px5=(px_x<<2)+px_x;
+ wire [5:0] col=px5[11:6];      // 0..49 → 50 根柱
+ wire [5:0] sub=px5[5:0];       // 列内位置 0..63
+ wire bar=sub<6'd46;            // 柱体内(约 9.2 px); 其余为间隙(约 3.6 px)
+ // 写址 wp 指向"下一次要写"的格子, 故地址 a 里的数据是 (wp-a) 次写入之前的。
+ // 要 col=49 显示最新一根(1 次之前)、col=0 显示最旧一根(50 次之前), 读址就是
+ // wp + col - 50; 常量 206 即 -50 的 8 位补码, 于是只需一次 8 位加法, 且上电
+ // 后只要写过 50 根柱, 整排读址就都指向已写过的格子, 不用等环形填满。
+ wire [7:0] ridx=wp+{2'b0,col}+8'd206;
+ wire [8:0] dh=9'd436-y_d[8:0]; // 当前行距柱底的行数
+ wire [8:0] hgt9={1'b0,hgt_q};
  wire [23:0] accent=sc1==3?24'hff3030:(sc1==2?24'h30e8ff:24'h44ff88);
- wire wave_we=pcm_take&&(decim==15);
  EG_LOGIC_BRAM #(
   .DATA_WIDTH_A(8),.DATA_WIDTH_B(8),.ADDR_WIDTH_A(9),.ADDR_WIDTH_B(9),
   .DATA_DEPTH_A(512),.DATA_DEPTH_B(512),.MODE("DP"),
   .REGMODE_A("NOREG"),.REGMODE_B("NOREG"),.IMPLEMENT("9K")
  ) u_wave_bram (
-  .doa(),.dob(wave_q),.dia(pcm[15:8]),.dib(8'b0),
+  .doa(),.dob(hgt_q),.dia(hgt_w),.dib(8'b0),
   .cea(1'b1),.ocea(1'b1),.clka(clk),.wea(wave_we),.rsta(1'b0),.bea(1'b0),
   .ceb(1'b1),.oceb(1'b1),.clkb(clk),.web(1'b0),.rstb(1'b0),.beb(1'b0),
-  .addra(wp),.addrb(ridx)
+  .addra({1'b0,wp}),.addrb({1'b0,ridx})
  );
  always @(posedge clk) begin
-  if(rst)begin wp<=0;decim<=0;peak<=0;menu0<=1;menu1<=1;sc0<=0;sc1<=0;
+  if(rst)begin wp<=0;gcnt<=0;env_max<=0;zc_cnt<=0;sgn_d<=0;menu0<=1;menu1<=1;sc0<=0;sc1<=0;
    hs_d<=0;vs_d<=0;de_d<=0;data_d<=0;x_d<=0;y_d<=0;
    hs_o<=0;vs_o<=0;de_o<=0;data_o<=0;px_x_o<=0;px_y_o<=0;end
   else begin
    menu0<=menu_active;menu1<=menu0;sc0<=scene_id;sc1<=sc0;
+   // [C1][C2][C3] 48 kHz 写侧: 数满 1024 个样本即写一根柱, 然后把组计数、
+   //   过零计数、包络一起清零, 下一组重新统计。
    if(pcm_take)begin
-    if(decim==15)begin decim<=0;wp<=wp==319?0:wp+1'b1;end else decim<=decim+1'b1;
-    if(abs_pcm>peak)peak<=abs_pcm;else if(peak!=0)peak<=peak-1'b1;
+    sgn_d<=pcm[15];
+    if(wave_we)begin gcnt<=10'd0;zc_cnt<=10'd0;env_max<=8'd0;mag_acc<=25'd0;wp<=wp+1'b1;end
+    else begin gcnt<=gcnt+1'b1;zc_cnt<=zc_next;env_max<=env_nxt;mag_acc<=mag_acc_nxt;end
    end
-   // Synchronous read makes the 320x8 waveform infer block RAM. Delay the
-   // complete video stream by the same one pixel clock.
+   // 同步读使能 BRAM 推断成立(读址打拍), 整条视频流同步延迟 2 拍:
+   //   本拍 data_i→data_d, 下一拍 dob(hgt_q)/x_d 才与 data_d 对齐。
    hs_d<=hs_i;vs_d<=vs_i;de_d<=de_i;data_d<=data_i;x_d<=px_x;y_d<=px_y;
    hs_o<=hs_d;vs_o<=vs_d;de_o<=de_d;px_x_o<=x_d;px_y_o<=y_d;data_o<=data_d;
-   if(de_d&&show&&y_d>=400&&y_d<438)begin
-    data_o<=24'h101820;
-    if(x_d<320&&($signed({1'b0,y_d})>=wy-1)&&($signed({1'b0,y_d})<=wy+1))data_o<=accent;
-    if(x_d>=340&&x_d<620&&y_d>=426&&y_d<434)begin
-      if(x_d-340<barw)data_o<=accent;else data_o<=24'h303840;
+   // 条带 y ∈ [362,437](本次由 [400,437] 拉高两倍, 柱底不动); 上/下边框
+   //   y=362/437 全宽点亮, 内部底色 101820。
+   // [C6] 应急场景(sc1==3)去掉条带"框": 不画内部底色、也不画上/下边框,
+   //   只保留柱体本身直接叠在应急页背景上 —— 即音频可视化与应急画面融合,
+   //   不再是"贴上去的一整条色块"。其余场景(0 迎新 / 2 抢答)行为不变。
+   if(de_d&&show&&y_d[8:0]>=9'd362&&y_d[8:0]<9'd438)begin
+    if(sc1!=2'd3)begin
+     data_o<=24'h101820;
+     if(y_d[8:0]==9'd362||y_d[8:0]==9'd437)data_o<=accent;
     end
-    if(y_d==400||y_d==437)data_o<=accent;
+    // [C4][C5] 柱体内且 (436-y) <= 柱高 的像素填 accent; 条带内 dh 最大 74,
+    //   柱高上限 92 时整条内高全填, 因此不需要限幅比较。
+    if(bar&&dh<=hgt9)data_o<=accent;
    end
   end
  end

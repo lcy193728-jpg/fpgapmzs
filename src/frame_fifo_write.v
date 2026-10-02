@@ -69,8 +69,22 @@ reg App_wr_en_r;
 reg App_wr_en_d0;
 reg [9:0]							wr_col;    // 写地址行序翻转的列号计数器(0~IMG_WIDTH-1)
 
+// Register the FIFO/data-length comparison before it enters the read/write
+// arbitration path.  While S_CHECK_FIFO is waiting, rdusedw can only stay the
+// same or grow and write_cnt is stable, so the one-cycle delay is conservative
+// and does not permit a burst before enough data is available.
+reg write_data_ready;
 wire into_burst;
-assign into_burst = (((write_len_latch <= (rdusedw + write_cnt))||rdusedw > BURST_SIZE) && ~App_rd_busy);//当rd在突发时不会进入burst
+assign into_burst = write_data_ready && ~App_rd_busy;//当rd在突发时不会进入burst
+
+always @(posedge mem_clk or posedge rst)
+begin
+	if(rst == 1'b1)
+		write_data_ready <= 1'b0;
+	else
+		write_data_ready <= ((write_len_latch <= (rdusedw + write_cnt)) ||
+		                     (rdusedw > BURST_SIZE));
+end
 
 assign App_wr_addr = {App_wr_addr_r[ADDR_BITS - 1:0]};
 //assign O_wr_busy = (state != S_IDLE || (S_IDLE && write_req_d2));

@@ -1,0 +1,346 @@
+function [6:0] emergency_glyph_id;
+  input [4:0] text_id; input [4:0] char_pos;
+  begin
+    emergency_glyph_id = 7'h7f;
+    case ({text_id,char_pos})
+      // 0: 紧急告警
+      10'd0: emergency_glyph_id = 7'd0;
+      10'd1: emergency_glyph_id = 7'd1;
+      10'd2: emergency_glyph_id = 7'd2;
+      10'd3: emergency_glyph_id = 7'd3;
+      // 1: 火灾警报
+      10'd32: emergency_glyph_id = 7'd4;
+      10'd33: emergency_glyph_id = 7'd5;
+      10'd34: emergency_glyph_id = 7'd3;
+      10'd35: emergency_glyph_id = 7'd6;
+      // 2: 地震避险
+      10'd64: emergency_glyph_id = 7'd7;
+      10'd65: emergency_glyph_id = 7'd8;
+      10'd66: emergency_glyph_id = 7'd9;
+      10'd67: emergency_glyph_id = 7'd10;
+      // 3: 恶劣天气
+      10'd96: emergency_glyph_id = 7'd11;
+      10'd97: emergency_glyph_id = 7'd12;
+      10'd98: emergency_glyph_id = 7'd13;
+      10'd99: emergency_glyph_id = 7'd14;
+      // 4: 临时疏散
+      10'd128: emergency_glyph_id = 7'd15;
+      10'd129: emergency_glyph_id = 7'd16;
+      10'd130: emergency_glyph_id = 7'd17;
+      10'd131: emergency_glyph_id = 7'd18;
+      // 5/6/7「告警级别：紧急/警告/提示」: 2026-09-25 该行已从页面删除,
+      //   对应 10'd160..166 / 192..198 / 224..230 条目一并去掉(落到 default)。
+      // 8: 事件地点：实验楼三层
+      10'd256: emergency_glyph_id = 7'd24;
+      10'd257: emergency_glyph_id = 7'd25;
+      10'd258: emergency_glyph_id = 7'd7;
+      10'd259: emergency_glyph_id = 7'd26;
+      10'd260: emergency_glyph_id = 7'd21;
+      10'd261: emergency_glyph_id = 7'd27;
+      10'd262: emergency_glyph_id = 7'd28;
+      10'd263: emergency_glyph_id = 7'd29;
+      10'd264: emergency_glyph_id = 7'd30;
+      10'd265: emergency_glyph_id = 7'd31;
+      // 9: 事件地点：校园室外
+      10'd288: emergency_glyph_id = 7'd24;
+      10'd289: emergency_glyph_id = 7'd25;
+      10'd290: emergency_glyph_id = 7'd7;
+      10'd291: emergency_glyph_id = 7'd26;
+      10'd292: emergency_glyph_id = 7'd21;
+      10'd293: emergency_glyph_id = 7'd32;
+      10'd294: emergency_glyph_id = 7'd33;
+      10'd295: emergency_glyph_id = 7'd34;
+      10'd296: emergency_glyph_id = 7'd35;
+      // 10: 事件地点：教学楼区域
+      10'd320: emergency_glyph_id = 7'd24;
+      10'd321: emergency_glyph_id = 7'd25;
+      10'd322: emergency_glyph_id = 7'd7;
+      10'd323: emergency_glyph_id = 7'd26;
+      10'd324: emergency_glyph_id = 7'd21;
+      10'd325: emergency_glyph_id = 7'd36;
+      10'd326: emergency_glyph_id = 7'd37;
+      10'd327: emergency_glyph_id = 7'd29;
+      10'd328: emergency_glyph_id = 7'd38;
+      10'd329: emergency_glyph_id = 7'd39;
+      // 11: 请沿东侧安全通道有序撤离
+      10'd352: emergency_glyph_id = 7'd40;
+      10'd353: emergency_glyph_id = 7'd41;
+      10'd354: emergency_glyph_id = 7'd42;
+      10'd355: emergency_glyph_id = 7'd43;
+      10'd356: emergency_glyph_id = 7'd44;
+      10'd357: emergency_glyph_id = 7'd45;
+      10'd358: emergency_glyph_id = 7'd46;
+      10'd359: emergency_glyph_id = 7'd47;
+      10'd360: emergency_glyph_id = 7'd48;
+      10'd361: emergency_glyph_id = 7'd49;
+      10'd362: emergency_glyph_id = 7'd50;
+      10'd363: emergency_glyph_id = 7'd51;
+      // 12: 禁止乘坐电梯
+      10'd384: emergency_glyph_id = 7'd52;
+      10'd385: emergency_glyph_id = 7'd53;
+      10'd386: emergency_glyph_id = 7'd54;
+      10'd387: emergency_glyph_id = 7'd55;
+      10'd388: emergency_glyph_id = 7'd56;
+      10'd389: emergency_glyph_id = 7'd57;
+      // 13: 远离玻璃和高大物体
+      10'd416: emergency_glyph_id = 7'd58;
+      10'd417: emergency_glyph_id = 7'd51;
+      10'd418: emergency_glyph_id = 7'd59;
+      10'd419: emergency_glyph_id = 7'd60;
+      10'd420: emergency_glyph_id = 7'd61;
+      10'd421: emergency_glyph_id = 7'd62;
+      10'd422: emergency_glyph_id = 7'd63;
+      10'd423: emergency_glyph_id = 7'd64;
+      10'd424: emergency_glyph_id = 7'd65;
+      // 14: 双手保护头部
+      10'd448: emergency_glyph_id = 7'd66;
+      10'd449: emergency_glyph_id = 7'd67;
+      10'd450: emergency_glyph_id = 7'd68;
+      10'd451: emergency_glyph_id = 7'd69;
+      10'd452: emergency_glyph_id = 7'd70;
+      10'd453: emergency_glyph_id = 7'd71;
+      // 15: 暂停室外活动前往室内安全区
+      10'd480: emergency_glyph_id = 7'd72;
+      10'd481: emergency_glyph_id = 7'd73;
+      10'd482: emergency_glyph_id = 7'd34;
+      10'd483: emergency_glyph_id = 7'd35;
+      10'd484: emergency_glyph_id = 7'd74;
+      10'd485: emergency_glyph_id = 7'd75;
+      10'd486: emergency_glyph_id = 7'd76;
+      10'd487: emergency_glyph_id = 7'd77;
+      10'd488: emergency_glyph_id = 7'd34;
+      10'd489: emergency_glyph_id = 7'd78;
+      10'd490: emergency_glyph_id = 7'd44;
+      10'd491: emergency_glyph_id = 7'd45;
+      10'd492: emergency_glyph_id = 7'd38;
+      // 16: 远离树木和高空坠物
+      10'd512: emergency_glyph_id = 7'd58;
+      10'd513: emergency_glyph_id = 7'd51;
+      10'd514: emergency_glyph_id = 7'd79;
+      10'd515: emergency_glyph_id = 7'd80;
+      10'd516: emergency_glyph_id = 7'd61;
+      10'd517: emergency_glyph_id = 7'd62;
+      10'd518: emergency_glyph_id = 7'd81;
+      10'd519: emergency_glyph_id = 7'd82;
+      10'd520: emergency_glyph_id = 7'd64;
+      // 17: 按照现场人员指引有序撤离
+      10'd544: emergency_glyph_id = 7'd83;
+      10'd545: emergency_glyph_id = 7'd84;
+      10'd546: emergency_glyph_id = 7'd85;
+      10'd547: emergency_glyph_id = 7'd86;
+      10'd548: emergency_glyph_id = 7'd87;
+      10'd549: emergency_glyph_id = 7'd88;
+      10'd550: emergency_glyph_id = 7'd89;
+      10'd551: emergency_glyph_id = 7'd90;
+      10'd552: emergency_glyph_id = 7'd48;
+      10'd553: emergency_glyph_id = 7'd49;
+      10'd554: emergency_glyph_id = 7'd50;
+      10'd555: emergency_glyph_id = 7'd51;
+      // 18: 前往东区操场集合点
+      10'd576: emergency_glyph_id = 7'd76;
+      10'd577: emergency_glyph_id = 7'd77;
+      10'd578: emergency_glyph_id = 7'd42;
+      10'd579: emergency_glyph_id = 7'd38;
+      10'd580: emergency_glyph_id = 7'd91;
+      10'd581: emergency_glyph_id = 7'd86;
+      10'd582: emergency_glyph_id = 7'd92;
+      10'd583: emergency_glyph_id = 7'd93;
+      10'd584: emergency_glyph_id = 7'd26;
+      // 19: 持续时间：
+      10'd608: emergency_glyph_id = 7'd94;
+      10'd609: emergency_glyph_id = 7'd95;
+      10'd610: emergency_glyph_id = 7'd16;
+      10'd611: emergency_glyph_id = 7'd96;
+      10'd612: emergency_glyph_id = 7'd21;
+      // 20「告警尚未解除」: 2026-09-25 该行已从页面删除, 对应 10'd640..645
+      //   条目一并去掉(落到 default)。
+      // 21: 仅管理员可解除告警
+      10'd672: emergency_glyph_id = 7'd101;
+      10'd673: emergency_glyph_id = 7'd102;
+      10'd674: emergency_glyph_id = 7'd103;
+      10'd675: emergency_glyph_id = 7'd88;
+      10'd676: emergency_glyph_id = 7'd104;
+      10'd677: emergency_glyph_id = 7'd99;
+      10'd678: emergency_glyph_id = 7'd100;
+      10'd679: emergency_glyph_id = 7'd2;
+      10'd680: emergency_glyph_id = 7'd3;
+      // 22: 火灾警报 请沿东侧安全通道有序撤离 禁止乘坐电梯
+      10'd704: emergency_glyph_id = 7'd4;
+      10'd705: emergency_glyph_id = 7'd5;
+      10'd706: emergency_glyph_id = 7'd3;
+      10'd707: emergency_glyph_id = 7'd6;
+      10'd708: emergency_glyph_id = 7'd105;
+      10'd709: emergency_glyph_id = 7'd40;
+      10'd710: emergency_glyph_id = 7'd41;
+      10'd711: emergency_glyph_id = 7'd42;
+      10'd712: emergency_glyph_id = 7'd43;
+      10'd713: emergency_glyph_id = 7'd44;
+      10'd714: emergency_glyph_id = 7'd45;
+      10'd715: emergency_glyph_id = 7'd46;
+      10'd716: emergency_glyph_id = 7'd47;
+      10'd717: emergency_glyph_id = 7'd48;
+      10'd718: emergency_glyph_id = 7'd49;
+      10'd719: emergency_glyph_id = 7'd50;
+      10'd720: emergency_glyph_id = 7'd51;
+      10'd721: emergency_glyph_id = 7'd105;
+      10'd722: emergency_glyph_id = 7'd52;
+      10'd723: emergency_glyph_id = 7'd53;
+      10'd724: emergency_glyph_id = 7'd54;
+      10'd725: emergency_glyph_id = 7'd55;
+      10'd726: emergency_glyph_id = 7'd56;
+      10'd727: emergency_glyph_id = 7'd57;
+      10'd728: emergency_glyph_id = 7'd105;
+      10'd729: emergency_glyph_id = 7'd105;
+      10'd730: emergency_glyph_id = 7'd105;
+      10'd731: emergency_glyph_id = 7'd105;
+      10'd732: emergency_glyph_id = 7'd105;
+      10'd733: emergency_glyph_id = 7'd105;
+      10'd734: emergency_glyph_id = 7'd105;
+      10'd735: emergency_glyph_id = 7'd105;
+      // 23: 地震避险 远离玻璃和高大物体 双手保护头部
+      10'd736: emergency_glyph_id = 7'd7;
+      10'd737: emergency_glyph_id = 7'd8;
+      10'd738: emergency_glyph_id = 7'd9;
+      10'd739: emergency_glyph_id = 7'd10;
+      10'd740: emergency_glyph_id = 7'd105;
+      10'd741: emergency_glyph_id = 7'd58;
+      10'd742: emergency_glyph_id = 7'd51;
+      10'd743: emergency_glyph_id = 7'd59;
+      10'd744: emergency_glyph_id = 7'd60;
+      10'd745: emergency_glyph_id = 7'd61;
+      10'd746: emergency_glyph_id = 7'd62;
+      10'd747: emergency_glyph_id = 7'd63;
+      10'd748: emergency_glyph_id = 7'd64;
+      10'd749: emergency_glyph_id = 7'd65;
+      10'd750: emergency_glyph_id = 7'd105;
+      10'd751: emergency_glyph_id = 7'd66;
+      10'd752: emergency_glyph_id = 7'd67;
+      10'd753: emergency_glyph_id = 7'd68;
+      10'd754: emergency_glyph_id = 7'd69;
+      10'd755: emergency_glyph_id = 7'd70;
+      10'd756: emergency_glyph_id = 7'd71;
+      10'd757: emergency_glyph_id = 7'd105;
+      10'd758: emergency_glyph_id = 7'd105;
+      10'd759: emergency_glyph_id = 7'd105;
+      10'd760: emergency_glyph_id = 7'd105;
+      10'd761: emergency_glyph_id = 7'd105;
+      10'd762: emergency_glyph_id = 7'd105;
+      10'd763: emergency_glyph_id = 7'd105;
+      10'd764: emergency_glyph_id = 7'd105;
+      10'd765: emergency_glyph_id = 7'd105;
+      10'd766: emergency_glyph_id = 7'd105;
+      10'd767: emergency_glyph_id = 7'd105;
+      // 24: 恶劣天气 暂停室外活动前往室内安全区 远离树木和高空坠物
+      10'd768: emergency_glyph_id = 7'd11;
+      10'd769: emergency_glyph_id = 7'd12;
+      10'd770: emergency_glyph_id = 7'd13;
+      10'd771: emergency_glyph_id = 7'd14;
+      10'd772: emergency_glyph_id = 7'd105;
+      10'd773: emergency_glyph_id = 7'd72;
+      10'd774: emergency_glyph_id = 7'd73;
+      10'd775: emergency_glyph_id = 7'd34;
+      10'd776: emergency_glyph_id = 7'd35;
+      10'd777: emergency_glyph_id = 7'd74;
+      10'd778: emergency_glyph_id = 7'd75;
+      10'd779: emergency_glyph_id = 7'd76;
+      10'd780: emergency_glyph_id = 7'd77;
+      10'd781: emergency_glyph_id = 7'd34;
+      10'd782: emergency_glyph_id = 7'd78;
+      10'd783: emergency_glyph_id = 7'd44;
+      10'd784: emergency_glyph_id = 7'd45;
+      10'd785: emergency_glyph_id = 7'd38;
+      10'd786: emergency_glyph_id = 7'd105;
+      10'd787: emergency_glyph_id = 7'd58;
+      10'd788: emergency_glyph_id = 7'd51;
+      10'd789: emergency_glyph_id = 7'd79;
+      10'd790: emergency_glyph_id = 7'd80;
+      10'd791: emergency_glyph_id = 7'd61;
+      10'd792: emergency_glyph_id = 7'd62;
+      10'd793: emergency_glyph_id = 7'd81;
+      10'd794: emergency_glyph_id = 7'd82;
+      10'd795: emergency_glyph_id = 7'd64;
+      10'd796: emergency_glyph_id = 7'd105;
+      10'd797: emergency_glyph_id = 7'd105;
+      10'd798: emergency_glyph_id = 7'd105;
+      10'd799: emergency_glyph_id = 7'd105;
+      // 25: 临时疏散 按照现场人员指引有序撤离 前往东区操场集合点
+      10'd800: emergency_glyph_id = 7'd15;
+      10'd801: emergency_glyph_id = 7'd16;
+      10'd802: emergency_glyph_id = 7'd17;
+      10'd803: emergency_glyph_id = 7'd18;
+      10'd804: emergency_glyph_id = 7'd105;
+      10'd805: emergency_glyph_id = 7'd83;
+      10'd806: emergency_glyph_id = 7'd84;
+      10'd807: emergency_glyph_id = 7'd85;
+      10'd808: emergency_glyph_id = 7'd86;
+      10'd809: emergency_glyph_id = 7'd87;
+      10'd810: emergency_glyph_id = 7'd88;
+      10'd811: emergency_glyph_id = 7'd89;
+      10'd812: emergency_glyph_id = 7'd90;
+      10'd813: emergency_glyph_id = 7'd48;
+      10'd814: emergency_glyph_id = 7'd49;
+      10'd815: emergency_glyph_id = 7'd50;
+      10'd816: emergency_glyph_id = 7'd51;
+      10'd817: emergency_glyph_id = 7'd105;
+      10'd818: emergency_glyph_id = 7'd76;
+      10'd819: emergency_glyph_id = 7'd77;
+      10'd820: emergency_glyph_id = 7'd42;
+      10'd821: emergency_glyph_id = 7'd38;
+      10'd822: emergency_glyph_id = 7'd91;
+      10'd823: emergency_glyph_id = 7'd86;
+      10'd824: emergency_glyph_id = 7'd92;
+      10'd825: emergency_glyph_id = 7'd93;
+      10'd826: emergency_glyph_id = 7'd26;
+      10'd827: emergency_glyph_id = 7'd105;
+      10'd828: emergency_glyph_id = 7'd105;
+      10'd829: emergency_glyph_id = 7'd105;
+      10'd830: emergency_glyph_id = 7'd105;
+      10'd831: emergency_glyph_id = 7'd105;
+      // 26: 0123456789：
+      10'd832: emergency_glyph_id = 7'd106;
+      10'd833: emergency_glyph_id = 7'd107;
+      10'd834: emergency_glyph_id = 7'd108;
+      10'd835: emergency_glyph_id = 7'd109;
+      10'd836: emergency_glyph_id = 7'd110;
+      10'd837: emergency_glyph_id = 7'd111;
+      10'd838: emergency_glyph_id = 7'd112;
+      10'd839: emergency_glyph_id = 7'd113;
+      10'd840: emergency_glyph_id = 7'd114;
+      10'd841: emergency_glyph_id = 7'd115;
+      10'd842: emergency_glyph_id = 7'd21;
+      default: emergency_glyph_id = 7'h7f;
+    endcase
+  end
+endfunction
+function [4:0] emergency_text_len; input [4:0] text_id; begin
+  case(text_id)
+    5'd0: emergency_text_len = 5'd4;
+    5'd1: emergency_text_len = 5'd4;
+    5'd2: emergency_text_len = 5'd4;
+    5'd3: emergency_text_len = 5'd4;
+    5'd4: emergency_text_len = 5'd4;
+    5'd5: emergency_text_len = 5'd7;
+    5'd6: emergency_text_len = 5'd7;
+    5'd7: emergency_text_len = 5'd7;
+    5'd8: emergency_text_len = 5'd10;
+    5'd9: emergency_text_len = 5'd9;
+    5'd10: emergency_text_len = 5'd10;
+    5'd11: emergency_text_len = 5'd12;
+    5'd12: emergency_text_len = 5'd6;
+    5'd13: emergency_text_len = 5'd9;
+    5'd14: emergency_text_len = 5'd6;
+    5'd15: emergency_text_len = 5'd13;
+    5'd16: emergency_text_len = 5'd9;
+    5'd17: emergency_text_len = 5'd12;
+    5'd18: emergency_text_len = 5'd9;
+    5'd19: emergency_text_len = 5'd5;
+    5'd20: emergency_text_len = 5'd6;
+    5'd21: emergency_text_len = 5'd9;
+    5'd22: emergency_text_len = 5'd32;
+    5'd23: emergency_text_len = 5'd32;
+    5'd24: emergency_text_len = 5'd32;
+    5'd25: emergency_text_len = 5'd32;
+    5'd26: emergency_text_len = 5'd11;
+    default: emergency_text_len = 5'd0;
+  endcase
+end endfunction

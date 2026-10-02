@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/lcy193728-jpg/fpgapmzs",
+  "branch": "main",
+  "commit": "e888998",
+  "sha256": {
+    "scene_control.v": "9d4407eab2bc68e8fb14a59d326f6300cd2f7869dfcc3823fda7576bca9724d9",
+    "seg_decoder.v": "4592b6e4d2e9e8b7e4ab5266d850d30e43537ab9c4157d4221e3f8dfd342decd",
+    "seg_scan.v": "0224f167af7bf0a25946f36a556cc3564d2d3fe6369f8287c2b21dbb9f93fc71"
+  }
+}

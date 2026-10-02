@@ -377,14 +377,30 @@ module key_debounce #(
     output reg          negedge_pulse   // 稳定电平下降沿(单周期脉冲)
 );
 
-    reg [20:0]  sync_cnt;   // 消抖计数器
+    // 2026-09-21 布线拥塞专项修复(消抖器曾是全场最差路径):
+    //   原写法 `else if (sync_cnt == DEB_MAX)` 把 21bit 全等比较的输出**组合**
+    //   接到 21 个计数位 D 端的"清零/自增"多路器上 —— 比较树要跨 21 个触发器
+    //   收集输入、输出再扇出 21 路, 在 92% LUT 占用的拥塞下实测单条 18.7ns
+    //   (cell 2.6ns / net 16.1ns, 线延迟占 87%), 是 sd_card_clk 最差 -8.973ns。
+    //   现在把"已到终点"的比较结果**单独打一拍** term_q, 把这条长路径断开:
+    //     · 路径A: sync_cnt[*] → 21bit 比较树 → term_q.D (扇出仅 1, 无扇出树);
+    //     · 路径B: term_q → 各位 D 的清零/自增多路器 (1 级 LUT, 局部扇出 21)。
+    //   逻辑级数由 7 降到约 3+1。代价: 采纳新电平的时刻由 DEB_MAX+1 拍变为
+    //   DEB_MAX+2 拍(+10ns @100MHz), 对 10ms 消抖无任何实际意义。
+    //   (另: 曾试过"13bit 分频 + 9bit 计数"两级结构, 因比较/使能串进 hold_cnt
+    //    自环反而更差且写漏自增导致死锁, 故不再采用。)
+    reg [20:0]  sync_cnt;   // 偏离基准的连续拍数(到 DEB_MAX 才采纳新电平)
+    reg         term_q;     // 上一拍"已到 DEB_MAX"
     reg [1:0]   key_sync;   // 两级同步器(防亚稳态)
     reg         key_level;  // 消抖后电平(1=高/释放)
     reg         key_d;      // 延迟一拍(边沿检测)
 
+    wire        term = (sync_cnt == DEB_MAX);   // 终点比较(单点负载, 不打散)
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             sync_cnt       <= 21'd0;
+            term_q         <= 1'b0;
             key_sync       <= 2'b11;     // 释放(高)
             key_level      <= 1'b1;      // 稳定电平初值=高
             key_d          <= 1'b1;
@@ -393,12 +409,13 @@ module key_debounce #(
         end
         else begin
             key_sync <= {key_sync[0], key_raw};      // 两级同步
+            term_q   <= term;
 
             if (key_sync[1] == key_level) begin
-                sync_cnt <= 21'd0;                   // 与基准一致 → 清零
+                sync_cnt <= 21'd0;                  // 与基准一致 → 清零
             end
-            else if (sync_cnt == DEB_MAX) begin
-                key_level <= key_sync[1];            // 连续 10ms 偏离 → 采纳
+            else if (term_q) begin                  // 上一拍已到终点 → 采纳
+                key_level <= key_sync[1];           // 连续 10ms 偏离
                 sync_cnt  <= 21'd0;
             end
             else

@@ -1,0 +1,20 @@
+# do run_checks.do
+# Model Technology ModelSim PE vmap 10.3c Lib Mapping Utility 2014.09 Sep 20 2014
+# vmap -modelsim_quiet work work 
+# Modifying modelsim.ini
+# Start time: 16:29:32 on Sep 17,2026
+# vlog rtl/meeting_ctrl.v rtl/meeting_audio.v rtl/meeting_sd_reader.v tb/tb_meeting_edges.v tb/tb_meeting_io.v 
+# Model Technology ModelSim ALTERA vlog 10.3c Compiler 2014.09 Sep 20 2014
+# -- Compiling module meeting_ctrl
+# -- Compiling module meeting_audio
+# -- Compiling module meeting_sd_reader
+# -- Compiling module tb_meeting_edges
+# ** Error: tb/tb_meeting_edges.v(6): (vlog-2730) Undefined variable: 'current'.
+# 
+# ** Error: tb/tb_meeting_edges.v(7): (vlog-2388) 'current' already declared in this scope (tb_meeting_edges).
+# 
+# -- Compiling module tb_meeting_io
+# End time: 16:29:32 on Sep 17,2026, Elapsed time: 0:00:00
+# Errors: 2, Warnings: 0
+# ** Error: D:/altera/14.1/modelsim_ase/win32aloem/vlog failed.
+# Executing ONERROR command at macro ./run_checks.do line 5

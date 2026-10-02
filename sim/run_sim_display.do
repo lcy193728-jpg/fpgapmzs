@@ -5,6 +5,9 @@
 #   或命令行: vsim -c -do run_sim_display.do (自动退出)
 #====================================================================
 
+# 0. 出错即退出(避免 TD/ModelSim 批处理挂起)
+onerror {quit -f}
+
 # 0. 清旧库
 if {[file exists work]} { file delete -force work }
 
@@ -32,6 +35,7 @@ if {![batch_mode]} {
     add wave /tb_display_adjust/emerg
     add wave /tb_display_adjust/bmp_busy
     add wave -radix unsigned /tb_display_adjust/bri_level
+    add wave -radix unsigned /tb_display_adjust/vol_level
     add wave -radix unsigned /tb_display_adjust/res_level
     add wave /tb_display_adjust/pic_manual
     add wave -radix unsigned /tb_display_adjust/ui_mode

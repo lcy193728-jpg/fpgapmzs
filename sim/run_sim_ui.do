@@ -4,6 +4,8 @@
 #====================================================================
 
 # 1. 建立工作库
+onerror {quit -f}
+if {[file exists work]} { file delete -force work }
 vlib work
 vmap work work
 
@@ -23,16 +25,21 @@ add wave /tb_ui_key_ctrl/key2
 add wave /tb_ui_key_ctrl/key3
 add wave -radix unsigned /tb_ui_key_ctrl/img_no
 add wave /tb_ui_key_ctrl/scene_chg
+add wave /tb_ui_key_ctrl/alarm_scene
 
 add wave -divider "输出(模式/参数)"
 add wave -radix unsigned /tb_ui_key_ctrl/mode
+add wave -radix unsigned /tb_ui_key_ctrl/alarm_type
 add wave -radix unsigned /tb_ui_key_ctrl/bri_level
+add wave -radix unsigned /tb_ui_key_ctrl/vol_level
 add wave -radix unsigned /tb_ui_key_ctrl/res_level
 add wave /tb_ui_key_ctrl/pic_manual
 add wave -radix unsigned /tb_ui_key_ctrl/pic_param
 add wave /tb_ui_key_ctrl/key_next_pl
 add wave /tb_ui_key_ctrl/key_prev_pl
 add wave /tb_ui_key_ctrl/res_chg_pl
+add wave /tb_ui_key_ctrl/disp_hold
+add wave -radix unsigned /tb_ui_key_ctrl/disp_sel
 
 add wave -divider "内部(消抖脉冲)"
 add wave /tb_ui_key_ctrl/dut/k1_p

@@ -1,0 +1,14 @@
+{
+  "meeting": "2026年学院学生工作会议",
+  "organizer": "主办单位：信息工程学院",
+  "venue": "会场：第一会议室",
+  "notices": ["请将手机调至静音状态", "发言结束前一分钟将自动提醒", "请下一位发言人提前准备", "如遇紧急情况请按照告警指引疏散"],
+  "agenda": [
+    {"title": "会议开场与工作回顾", "speaker": "李老师", "seconds": 120},
+    {"title": "学生工作重点部署", "speaker": "王老师", "seconds": 180},
+    {"title": "嵌入式竞赛工作安排", "speaker": "张老师", "seconds": 300},
+    {"title": "校园安全工作安排", "speaker": "刘老师", "seconds": 180},
+    {"title": "交流讨论与问题反馈", "speaker": "各位代表", "seconds": 240},
+    {"title": "会议总结", "speaker": "李老师", "seconds": 120}
+  ]
+}

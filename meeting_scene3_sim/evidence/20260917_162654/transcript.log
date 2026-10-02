@@ -1,0 +1,110 @@
+# do run.do
+# Model Technology ModelSim PE vmap 10.3c Lib Mapping Utility 2014.09 Sep 20 2014
+# vmap -modelsim_quiet work work 
+# Modifying modelsim.ini
+# Start time: 16:26:54 on Sep 17,2026
+# vlog baseline/scene_control.v baseline/seg_scan.v baseline/seg_decoder.v 
+# Model Technology ModelSim ALTERA vlog 10.3c Compiler 2014.09 Sep 20 2014
+# -- Compiling module scene_control
+# -- Compiling module key_debounce
+# -- Compiling module seg_scan
+# -- Compiling module seg_decoder
+# 
+# Top level modules:
+# 	scene_control
+# 	seg_scan
+# 	seg_decoder
+# End time: 16:26:54 on Sep 17,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+# Model Technology ModelSim ALTERA vlog 10.3c Compiler 2014.09 Sep 20 2014
+# Start time: 16:26:54 on Sep 17,2026
+# vlog "+incdir+rtl" rtl/meeting_glyph_rom.v rtl/meeting_config.v rtl/meeting_keys.v rtl/meeting_ctrl.v rtl/meeting_audio.v rtl/meeting_osd.v rtl/meeting_sd_reader.v rtl/meeting_scene3.v tb/tb_meeting_scene3.v 
+# -- Compiling module meeting_glyph_rom
+# -- Compiling module meeting_config
+# -- Compiling module meeting_keys
+# -- Compiling module meeting_ctrl
+# -- Compiling module meeting_audio
+# -- Compiling module meeting_osd
+# -- Compiling module meeting_sd_reader
+# -- Compiling module meeting_scene3
+# -- Compiling module tb_meeting_scene3
+# 
+# Top level modules:
+# 	meeting_sd_reader
+# 	tb_meeting_scene3
+# End time: 16:26:55 on Sep 17,2026, Elapsed time: 0:00:01
+# Errors: 0, Warnings: 0
+# vsim -c -l D:\fpga_work\code\meetings\runs\20260917_162654\transcript.log -wlf D:\fpga_work\code\meetings\runs\20260917_162654\meeting.wlf -do "run.do" 
+# Start time: 16:26:55 on Sep 17,2026
+# Loading work.tb_meeting_scene3
+# Loading work.meeting_scene3
+# Loading work.meeting_keys
+# Loading work.meeting_config
+# Loading work.meeting_ctrl
+# Loading work.meeting_osd
+# Loading work.meeting_glyph_rom
+# Loading work.meeting_audio
+# Loading work.seg_decoder
+# Loading work.seg_scan
+# Loading work.key_debounce
+# ** Warning: (vsim-WLF-5000) WLF file currently in use: vsim.wlf
+# 
+#           File in use by: 18441  Hostname: HP  ProcessID: 8828
+# 
+#           Attempting to use alternate WLF file "./wlftsnrsnn".
+# ** Warning: (vsim-WLF-5001) Could not open WLF file: vsim.wlf
+# 
+#           Using alternate file: ./wlftsnrsnn
+# 
+# PASS bad magic rejected
+# PASS START blocked without config
+# PASS truncated config rejected
+# PASS zero agenda count rejected
+# PASS zero duration rejected
+# PASS excess agenda count rejected
+# PASS TF byte stream parsed with gaps
+# PASS current and next planned duration
+# PASS title/speaker loaded from TF payload
+# PASS idle overview remains idle
+# PASS key bounce filtered
+# PASS KEY1 start first agenda
+# PASS seven segment MM:SS BCD
+# PASS KEY1 pause
+# PASS paused countdown frozen
+# PASS pause retained during frame rendering
+# PASS KEY1 resume
+# PASS countdown reached target
+# PASS one minute warning exactly once
+# PASS warning pause freezes
+# PASS resume warning phase
+# PASS countdown reached target
+# PASS timeout event exactly once
+# PASS positive overtime and BCD
+# PASS pause overtime freezes
+# PASS resume overtime
+# PASS KEY4 resets current agenda timer
+# PASS KEY2 next agenda and duration
+# PASS KEY3 previous agenda
+# PASS previous at first agenda bounded
+# PASS alarm latch forces pause
+# PASS alarm blocks keys and time
+# PASS alarm input wins clear
+# PASS alarm stays latched after input release
+# PASS clear leaves meeting paused
+# PASS host KEY1 required to resume
+# PASS scene disable freezes meeting
+# PASS long KEY2 finishes without short next action
+# PASS finished timer frozen
+# PASS long KEY4 returns initial state
+# PASS last agenda reachable
+# PASS next after final agenda finishes bounded
+# PASS alarm before START resumes by loading first agenda
+# PASS disabled RGB and sync pipeline passthrough
+# PASS blanking preserves input RGB
+# RESULT checks=45 errors=0
+# ALL TESTS PASSED
+# ** Note: $stop    : tb/tb_meeting_scene3.v(113)
+#    Time: 21855130 ns  Iteration: 1  Instance: /tb_meeting_scene3
+# Break in Module tb_meeting_scene3 at tb/tb_meeting_scene3.v line 113
+# End time: 16:29:10 on Sep 17,2026, Elapsed time: 0:02:15
+# Errors: 0, Warnings: 2

@@ -311,6 +311,36 @@ module osd_scene #(
     wire [11:0] mw_m = (wx_1 >= 12'd320) ? (wx_1 - 12'd320) : wx_1;  // 会议/抢答
     wire [11:0] aw_m = (wx_1 >= 12'd384) ? (wx_1 - 12'd384) : wx_1;  // 应急
 
+    // A 级: 行内偏移收窄 + 变量×小常量改移位加(★2026-09-21 面积优化)
+    //   rid2 已把 py2 限定在本带行窗内(带宽 ≤32), 模 2^k 减法逐位精确,
+    //   却把 12bit 减法器与 12bit×常量乘法器一起收窄到 5/4 位。
+    wire [4:0] dy_mt = py2[4:0] - 5'd14;   // 会议标题  [14,46)
+    wire [4:0] dy_20 = py2[4:0] - 5'd20;   // 抢答标题[20,52) / 倒计时[180,212)
+    wire [4:0] dy_at = py2[4:0] - 5'd18;   // 应急标题  [82,114)
+    wire [4:0] dy_qs = py2[4:0];           // 抢答状态  [96,128)
+    wire [3:0] dy_4  = py2[3:0] - 4'd4;    // 公告[196,212) / 底部滚动[452,468)
+    wire [3:0] dy_12 = py2[3:0] - 4'd12;   // "已运行"[76,92)
+
+    wire [7:0] r_mt8  = {dy_mt, 3'b0};                                          // *8
+    wire [7:0] r_mr3  = ({2'b0, dy_12} << 1) + {2'b0, dy_12};                   // *3
+    wire [7:0] r_mr10 = ({4'b0, dy_12} << 3) + ({4'b0, dy_12} << 1);            // *10
+    wire [7:0] r_ma10 = ({4'b0, dy_4}  << 3) + ({4'b0, dy_4}  << 1);            // *10
+    wire [8:0] r_ft20 = ({5'b0, dy_4}  << 4) + ({5'b0, dy_4}  << 2);            // *20
+    wire [8:0] r_ft24 = ({5'b0, dy_4}  << 4) + ({5'b0, dy_4}  << 3);            // *24
+    wire [7:0] r_qt5  = ({2'b0, dy_20} << 2) + {2'b0, dy_20};                   // *5
+    wire [6:0] r_qs2  = {dy_qs, 1'b0};                                          // *2
+    wire [6:0] r_qs3  = ({2'b0, dy_qs} << 1) + {2'b0, dy_qs};                   // *3
+    wire [6:0] r_qs4  = {dy_qs, 2'b0};                                          // *4
+    wire [7:0] r_qs5  = ({2'b0, dy_qs} << 2) + {2'b0, dy_qs};                   // *5
+    wire [7:0] r_qs8  = {dy_qs, 3'b0};                                          // *8
+    wire [7:0] r_qsd10= ({4'b0, dy_qs[4:1]} << 3) + ({4'b0, dy_qs[4:1]} << 1);  // (dy>>1)*10
+    wire [7:0] r_qcd10= ({4'b0, dy_20[4:1]} << 3) + ({4'b0, dy_20[4:1]} << 1);  // (dy>>1)*10
+    wire [8:0] r_at10 = ({4'b0, dy_at} << 3) + ({4'b0, dy_at} << 1);            // *10
+
+    // A 级: 页码数字窗命中(px 的纯函数; B 级打拍复用, 右沿 = 424+16)
+    wire mpg_a = (px2 >= MP_GX) && (px2 < 12'd440);
+
+
     // A 级: 会议运行时长数字窗(6 格 16px + 2 处 6px 冒号间隙)
     reg        mdg_a;                    // 命中某位数字
     reg [2:0]  mdg_p;                    // 数字位 0..5
@@ -349,45 +379,41 @@ module osd_scene #(
             case (rid2)
                 // ---- 会议 ----
                 ID_MT_TITLE: begin
-                    if ((px2 >= MT_GX) && (px2 < MT_GX + 12'd256)) begin
+                    if ((px2 >= MT_GX) && (px2 < 12'd448)) begin
                         rom_en   = 1'b1;
-                        rom_addr = 13'd2512 + ((py2 - MT_TY) * 13'd8)      // 32×32 真字模
-                                 + ((px2 - MT_GX) >> 5);
+                        rom_addr = 13'd2512 + r_mt8 + ((px2 - MT_GX) >> 5);   // 32×32 真字模
                     end
                 end
                 ID_MT_RUN: begin
-                    if ((px2 >= MR_GX) && (px2 < MR_GX + 12'd48)) begin
+                    if ((px2 >= MR_GX) && (px2 < 12'd444)) begin
                         rom_en   = 1'b1;
-                        rom_addr = 13'd3408 + ((py2 - MR_TY) * 13'd3)
-                                 + ((px2 - MR_GX) >> 4);
+                        rom_addr = 13'd3408 + r_mr3 + ((px2 - MR_GX) >> 4);
                     end
                     else if (mdg_a) begin
                         rom_en   = 1'b1;
-                        rom_addr = NUM_BASE + ((py2 - MR_TY) * 13'd10) + mdg_dig;
+                        rom_addr = NUM_BASE + r_mr10 + mdg_dig;
                     end
                 end
                 ID_MT_ANN: begin
-                    if ((px2 >= MA_GX) && (px2 < MA_GX + 12'd160)) begin
+                    if ((px2 >= MA_GX) && (px2 < 12'd400)) begin
                         rom_en   = 1'b1;
                         rom_addr = MA_B0 + ({11'd0, page} * MA_PG)
-                                 + ((py2 - MA_TY) * 13'd10) + ((px2 - MA_GX) >> 4);
+                                 + r_ma10 + ((px2 - MA_GX) >> 4);
                     end
-                    else if ((px2 >= MP_GX) && (px2 < MP_GX + 12'd16)) begin
+                    else if (mpg_a) begin
                         rom_en   = 1'b1;
-                        rom_addr = NUM_BASE + ((py2 - MA_TY) * 13'd10)
-                                 + {2'd0, page} + 4'd1;
+                        rom_addr = NUM_BASE + r_ma10 + {2'd0, page} + 4'd1;
                     end
                 end
                 ID_MT_FOOT: begin
                     rom_en   = 1'b1;
-                    rom_addr = MF_BASE + ((py2 - 12'd452) * 13'd20) + (mw_m >> 4);
+                    rom_addr = MF_BASE + r_ft20 + (mw_m >> 4);
                 end
                 // ---- 抢答 ----
                 ID_QZ_TITLE: begin
-                    if ((px2 >= QT_GX) && (px2 < QT_GX + 12'd160)) begin
+                    if ((px2 >= QT_GX) && (px2 < 12'd400)) begin
                         rom_en   = 1'b1;
-                        rom_addr = 13'd3776 + ((py2 - QT_TY) * 13'd5)      // 32×32 真字模
-                                 + ((px2 - QT_GX) >> 5);
+                        rom_addr = 13'd3776 + r_qt5 + ((px2 - QT_GX) >> 5);   // 32×32 真字模
                     end
                 end
                 ID_QZ_STAT: begin
@@ -395,40 +421,34 @@ module osd_scene #(
                         2'd0: begin   // 等待开始(N4, gx256)
                             if ((px2 >= 12'd256) && (px2 < 12'd384)) begin
                                 rom_en   = 1'b1;
-                                rom_addr = QW_BASE + ((py2 - QS_TY) * 13'd4)
-                                         + ((px2 - 12'd256) >> 5);
+                                rom_addr = QW_BASE + r_qs4 + ((px2 - 12'd256) >> 5);
                             end
                         end
                         2'd1: begin   // 抢答中(N3, gx272)
                             if ((px2 >= 12'd272) && (px2 < 12'd368)) begin
                                 rom_en   = 1'b1;
-                                rom_addr = QR_BASE + ((py2 - QS_TY) * 13'd3)
-                                         + ((px2 - 12'd272) >> 5);
+                                rom_addr = QR_BASE + r_qs3 + ((px2 - 12'd272) >> 5);
                             end
                         end
                         2'd2: begin   // 选手(N2,192) + 号(NUM,256) + 号抢答成功(N5,288)
                             if ((px2 >= 12'd192) && (px2 < 12'd256)) begin
                                 rom_en   = 1'b1;
-                                rom_addr = QL_BASE + ((py2 - QS_TY) * 13'd2)
-                                         + ((px2 - 12'd192) >> 5);
+                                rom_addr = QL_BASE + r_qs2 + ((px2 - 12'd192) >> 5);
                             end
                             else if ((px2 >= 12'd256) && (px2 < 12'd288)) begin
                                 // NUM 数字带仍是 16×16 字模, 在此 2× 窗内由 RTL 行列折叠放大
                                 rom_en   = 1'b1;
-                                rom_addr = NUM_BASE + (((py2 - QS_TY) >> 1) * 13'd10)
-                                         + {1'b0, winner_s} + 3'd1;
+                                rom_addr = NUM_BASE + r_qsd10 + {1'b0, winner_s} + 3'd1;
                             end
                             else if ((px2 >= 12'd288) && (px2 < 12'd448)) begin
                                 rom_en   = 1'b1;
-                                rom_addr = QX_BASE + ((py2 - QS_TY) * 13'd5)
-                                         + ((px2 - 12'd288) >> 5);
+                                rom_addr = QX_BASE + r_qs5 + ((px2 - 12'd288) >> 5);
                             end
                         end
                         default: begin // 时间到 无人抢答(N8, gx192)
                             if ((px2 >= 12'd192) && (px2 < 12'd448)) begin
                                 rom_en   = 1'b1;
-                                rom_addr = QN_BASE + ((py2 - QS_TY) * 13'd8)
-                                         + ((px2 - 12'd192) >> 5);
+                                rom_addr = QN_BASE + r_qs8 + ((px2 - 12'd192) >> 5);
                             end
                         end
                     endcase
@@ -436,32 +456,31 @@ module osd_scene #(
                 ID_QZ_CNT: begin
                     if ((px2 >= 12'd272) && (px2 < 12'd304) && (t_tens_s != 4'd0)) begin
                         rom_en   = 1'b1;      // 倒计时数字: NUM 16×16 字模 2× 折叠放大
-                        rom_addr = NUM_BASE + (((py2 - QC_TY) >> 1) * 13'd10) + t_tens_s;
+                        rom_addr = NUM_BASE + r_qcd10 + t_tens_s;
                     end
                     else if ((px2 >= 12'd304) && (px2 < 12'd336)) begin
                         rom_en   = 1'b1;
-                        rom_addr = NUM_BASE + (((py2 - QC_TY) >> 1) * 13'd10) + t_ones_s;
+                        rom_addr = NUM_BASE + r_qcd10 + t_ones_s;
                     end
                     else if ((px2 >= 12'd336) && (px2 < 12'd368)) begin
                         rom_en   = 1'b1;      // "秒" 为 2× 带 → 32×32 真字模
-                        rom_addr = QSEC_BASE + ((py2 - QC_TY) * 13'd1);
+                        rom_addr = QSEC_BASE + {7'b0, dy_20};
                     end
                 end
                 ID_QZ_FOOT: begin
                     rom_en   = 1'b1;
-                    rom_addr = QF_BASE + ((py2 - 12'd452) * 13'd20) + (mw_m >> 4);
+                    rom_addr = QF_BASE + r_ft20 + (mw_m >> 4);
                 end
                 // ---- 应急 ----
                 ID_AL_TITLE: begin
-                    if ((px2 >= AT_GX) && (px2 < AT_GX + 12'd320)) begin
+                    if ((px2 >= AT_GX) && (px2 < 12'd480)) begin
                         rom_en   = 1'b1;
-                        rom_addr = 13'd4992 + ((py2 - AT_TY) * 13'd10)     // 32×32 真字模
-                                 + ((px2 - AT_GX) >> 5);
+                        rom_addr = 13'd4992 + r_at10 + ((px2 - AT_GX) >> 5);  // 32×32 真字模
                     end
                 end
                 ID_AL_FOOT: begin
                     rom_en   = 1'b1;
-                    rom_addr = AF_BASE + ((py2 - 12'd452) * 13'd24) + (aw_m >> 4);
+                    rom_addr = AF_BASE + r_ft24 + (aw_m >> 4);
                 end
                 default: ;
             endcase
@@ -477,70 +496,42 @@ module osd_scene #(
     assign rom_addr_o = rom_addr;
 
     //--------------------------------------------------------------
-    // B 级: 行窗分类(py3)
+    // B 级: 行窗分类 / 页码数字窗 / 滚动取模 —— 全部改为 A 级结果打一拍
+    //   ★2026-09-21 面积优化: py3 ≡ py2 延迟 1 拍(第 265-266 行 px3<=px2;
+    //     py3<=py2), 故 f(py3) 恒等于 f(py2) 延迟 1 拍。原先 B 级把
+    //     "按 py3 分类 10 个文字带(10 个 12bit 比较器 + 优先链)"、
+    //     "6 格运行数字窗(12 个 12bit 比较器)"、"px3+phase 两次取模
+    //     (12bit 加法 + 4 个比较器 + 4 个减法器)"整套重算了一遍,
+    //     是本模块 633 条进位链的首要来源。改为纯打拍后画面逐像素完全不变。
     //--------------------------------------------------------------
-    reg [3:0] rid3;
-    always @(*) begin
-        rid3 = ID_NONE;
-        if (al_ok) begin
-            if      ((py3 >= 12'd82)  && (py3 < 12'd114)) rid3 = ID_AL_TITLE;
-            else if ((py3 >= 12'd452) && (py3 < 12'd468)) rid3 = ID_AL_FOOT;
+    reg [3:0]  rid3;
+    reg        mdg_hit, mpg_hit;
+    reg [11:0] mdg_bx0;
+    reg [11:0] mw3_m, aw3_m;
+    always @(posedge video_clk or posedge rst) begin
+        if (rst) begin
+            rid3    <= ID_NONE;
+            mdg_hit <= 1'b0; mdg_bx0 <= 12'd452;
+            mpg_hit <= 1'b0;
+            mw3_m   <= 12'd0; aw3_m   <= 12'd0;
         end
-        else if (mt_ok) begin
-            if      ((py3 >= MT_TY) && (py3 < MT_TY + 12'd32)) rid3 = ID_MT_TITLE;
-            else if ((py3 >= MR_TY) && (py3 < MR_TY + 12'd16)) rid3 = ID_MT_RUN;
-            else if ((py3 >= MA_TY) && (py3 < MA_TY + 12'd16)) rid3 = ID_MT_ANN;
-            else if ((py3 >= 12'd452) && (py3 < 12'd468))      rid3 = ID_MT_FOOT;
-        end
-        else if (qz_ok) begin
-            if      ((py3 >= QT_TY) && (py3 < QT_TY + 12'd32)) rid3 = ID_QZ_TITLE;
-            else if ((py3 >= QS_TY) && (py3 < QS_TY + 12'd32)) rid3 = ID_QZ_STAT;
-            else if ((py3 >= QC_TY) && (py3 < QC_TY + 12'd32) &&
-                     (qstate_s <= 2'd1))                       rid3 = ID_QZ_CNT;
-            else if ((py3 >= 12'd452) && (py3 < 12'd468))      rid3 = ID_QZ_FOOT;
+        else begin
+            rid3    <= rid2;
+            mdg_hit <= mdg_a;  mdg_bx0 <= mdg_x0;
+            mpg_hit <= mpg_a;
+            mw3_m   <= mw_m;   aw3_m   <= aw_m;
         end
     end
 
-    // B 级: 动态数字格命中(决定墨点列算法与金色取色)
-    reg        mdg_hit, mpg_hit, qcg_hit, qwg_hit;
-    reg [11:0] mdg_bx0, mpg_bx0, qcg_bx0, qwg_bx0;
-    always @(*) begin
-        mdg_hit = 1'b0; mdg_bx0 = 12'd452;
-        mpg_hit = 1'b0; mpg_bx0 = 12'd424;
-        qcg_hit = 1'b0; qcg_bx0 = 12'd272;
-        qwg_hit = 1'b0; qwg_bx0 = 12'd256;
-
-        if      ((px3 >= 12'd452) && (px3 < 12'd468)) begin mdg_hit=1'b1; mdg_bx0=12'd452; end
-        else if ((px3 >= 12'd468) && (px3 < 12'd484)) begin mdg_hit=1'b1; mdg_bx0=12'd468; end
-        else if ((px3 >= 12'd490) && (px3 < 12'd506)) begin mdg_hit=1'b1; mdg_bx0=12'd490; end
-        else if ((px3 >= 12'd506) && (px3 < 12'd522)) begin mdg_hit=1'b1; mdg_bx0=12'd506; end
-        else if ((px3 >= 12'd528) && (px3 < 12'd544)) begin mdg_hit=1'b1; mdg_bx0=12'd528; end
-        else if ((px3 >= 12'd544) && (px3 < 12'd560)) begin mdg_hit=1'b1; mdg_bx0=12'd544; end
-
-        if ((px3 >= MP_GX) && (px3 < MP_GX + 12'd16)) begin
-            mpg_hit = 1'b1; mpg_bx0 = MP_GX;
-        end
-
-        if ((rid3 == ID_QZ_CNT) && (qstate_s <= 2'd1)) begin
-            if ((px3 >= 12'd272) && (px3 < 12'd304) && (t_tens_s != 4'd0)) begin
-                qcg_hit = 1'b1; qcg_bx0 = 12'd272;
-            end
-            else if ((px3 >= 12'd304) && (px3 < 12'd336)) begin
-                qcg_hit = 1'b1; qcg_bx0 = 12'd304;
-            end
-        end
-
-        if ((rid3 == ID_QZ_STAT) && (qstate_s == 2'd2) &&
-            (px3 >= 12'd256) && (px3 < 12'd288)) begin
-            qwg_hit = 1'b1; qwg_bx0 = 12'd256;
-        end
-    end
-
-    // B 级: 滚动取模(px3 版)
-    wire [11:0] wxx3  = px3 + {2'b00, phase};
-    wire [11:0] wx3_1 = (wxx3 >= 12'd640) ? (wxx3 - 12'd640) : wxx3;
-    wire [11:0] mw3_m = (wx3_1 >= 12'd320) ? (wx3_1 - 12'd320) : wx3_1;
-    wire [11:0] aw3_m = (wx3_1 >= 12'd384) ? (wx3_1 - 12'd384) : wx3_1;
+    // B 级: 抢答动态数字格命中(倒计时两位 / 胜者号)
+    //   这两处依赖 qstate_s(sd 域慢变), 保留组合判定以保证与当拍 qstate 严格
+    //   同拍, 不作打拍(仅在 qstate 跳变的那个像素周期上可能差 1 拍, 不可见)。
+    wire qcg_hit = (rid3 == ID_QZ_CNT) && (qstate_s <= 2'd1) &&
+                   (((px3 >= 12'd272) && (px3 < 12'd304) && (t_tens_s != 4'd0)) ||
+                    ((px3 >= 12'd304) && (px3 < 12'd336)));
+    wire [11:0] qcg_bx0 = (px3 < 12'd304) ? 12'd272 : 12'd304;
+    wire qwg_hit = (rid3 == ID_QZ_STAT) && (qstate_s == 2'd2) &&
+                   (px3 >= 12'd256) && (px3 < 12'd288);
 
     // B 级: 字形墨点判定
     reg ink;
@@ -550,7 +541,7 @@ module osd_scene #(
             if (al_ok) begin
                 case (rid3)
                     ID_AL_TITLE: begin
-                        if ((px3 >= AT_GX) && (px3 < AT_GX + 12'd320))
+                        if ((px3 >= AT_GX) && (px3 < 12'd480))
                             ink = rom_q[31 - ((px3 - AT_GX) & 12'd31)];   // 32×32 真字模
                     end
                     ID_AL_FOOT:  ink = rom_q[15 - aw3_m[3:0]];
@@ -560,20 +551,20 @@ module osd_scene #(
             else if (mt_ok) begin
                 case (rid3)
                     ID_MT_TITLE: begin
-                        if ((px3 >= MT_GX) && (px3 < MT_GX + 12'd256))
+                        if ((px3 >= MT_GX) && (px3 < 12'd448))
                             ink = rom_q[31 - ((px3 - MT_GX) & 12'd31)];   // 32×32 真字模
                     end
                     ID_MT_RUN: begin
-                        if ((px3 >= MR_GX) && (px3 < MR_GX + 12'd48))
+                        if ((px3 >= MR_GX) && (px3 < 12'd444))
                             ink = rom_q[15 - ((px3 - MR_GX) & 12'd15)];
                         else if (mdg_hit)
                             ink = rom_q[15 - ((px3 - mdg_bx0) & 12'd15)];
                     end
                     ID_MT_ANN: begin
-                        if ((px3 >= MA_GX) && (px3 < MA_GX + 12'd160))
+                        if ((px3 >= MA_GX) && (px3 < 12'd400))
                             ink = rom_q[15 - ((px3 - MA_GX) & 12'd15)];
                         else if (mpg_hit)
-                            ink = rom_q[15 - ((px3 - mpg_bx0) & 12'd15)];
+                            ink = rom_q[15 - ((px3 - 12'd424) & 12'd15)];
                     end
                     ID_MT_FOOT:  ink = rom_q[15 - mw3_m[3:0]];
                     default: ;
@@ -582,7 +573,7 @@ module osd_scene #(
             else if (qz_ok) begin
                 case (rid3)
                     ID_QZ_TITLE: begin
-                        if ((px3 >= QT_GX) && (px3 < QT_GX + 12'd160))
+                        if ((px3 >= QT_GX) && (px3 < 12'd400))
                             ink = rom_q[31 - ((px3 - QT_GX) & 12'd31)];   // 32×32 真字模
                     end
                     ID_QZ_STAT: begin
@@ -600,7 +591,7 @@ module osd_scene #(
                                     ink = rom_q[31 - ((px3 - 12'd192) & 12'd31)];
                                 else if (qwg_hit)
                                     // 胜者号仍为 NUM 16×16 字模, 2× 折叠 → 取第 15..0 位
-                                    ink = rom_q[15 - (((px3 - qwg_bx0) & 12'd31) >> 1)];
+                                    ink = rom_q[15 - (((px3 - 12'd256) & 12'd31) >> 1)];
                                 else if ((px3 >= 12'd288) && (px3 < 12'd448))
                                     ink = rom_q[31 - ((px3 - 12'd288) & 12'd31)];
                             end

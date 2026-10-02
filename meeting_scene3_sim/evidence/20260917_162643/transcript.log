@@ -1,0 +1,38 @@
+# do run.do
+# Model Technology ModelSim PE vmap 10.3c Lib Mapping Utility 2014.09 Sep 20 2014
+# vmap -modelsim_quiet work work 
+# Modifying modelsim.ini
+# Start time: 16:26:44 on Sep 17,2026
+# vlog baseline/scene_control.v baseline/seg_scan.v baseline/seg_decoder.v 
+# Model Technology ModelSim ALTERA vlog 10.3c Compiler 2014.09 Sep 20 2014
+# -- Compiling module scene_control
+# -- Compiling module key_debounce
+# -- Compiling module seg_scan
+# -- Compiling module seg_decoder
+# 
+# Top level modules:
+# 	scene_control
+# 	seg_scan
+# 	seg_decoder
+# End time: 16:26:44 on Sep 17,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+# Model Technology ModelSim ALTERA vlog 10.3c Compiler 2014.09 Sep 20 2014
+# Start time: 16:26:44 on Sep 17,2026
+# vlog "+incdir+rtl" rtl/meeting_glyph_rom.v rtl/meeting_config.v rtl/meeting_keys.v rtl/meeting_ctrl.v rtl/meeting_audio.v rtl/meeting_osd.v rtl/meeting_sd_reader.v rtl/meeting_scene3.v tb/tb_meeting_scene3.v 
+# -- Compiling module meeting_glyph_rom
+# -- Compiling module meeting_config
+# -- Compiling module meeting_keys
+# -- Compiling module meeting_ctrl
+# -- Compiling module meeting_audio
+# -- Compiling module meeting_osd
+# ** Error: rtl/meeting_osd.v(24): (vlog-2730) Undefined variable: 'bits'.
+# 
+# ** Error: rtl/meeting_osd.v(26): (vlog-2388) 'bits' already declared in this scope (meeting_osd).
+# 
+# -- Compiling module meeting_sd_reader
+# -- Compiling module meeting_scene3
+# -- Compiling module tb_meeting_scene3
+# End time: 16:26:44 on Sep 17,2026, Elapsed time: 0:00:00
+# Errors: 2, Warnings: 0
+# ** Error: D:/altera/14.1/modelsim_ase/win32aloem/vlog failed.
+# Executing ONERROR command at macro ./run.do line 6

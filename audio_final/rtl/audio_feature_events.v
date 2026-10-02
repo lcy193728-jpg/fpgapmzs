@@ -1,16 +1,14 @@
 `timescale 1ns/1ps
-// Adds audio-only behavior without changing scene_control/quiz_ctrl interfaces.
-// Meeting reminders use a 120 s session measured from entry: warning at 60 s,
-// timeout at 120 s. Existing video and key behavior is untouched.
+// Meeting reminders come directly from meeting_ctrl, so HDMI audio follows the
+// actual agenda countdown (including pause/resume and re-timing).
 module audio_feature_events #(
-    parameter integer CLOCK_HZ=25000000,
-    parameter integer MEETING_WARN_SEC=60,
-    parameter integer MEETING_TIMEOUT_SEC=120
+    parameter integer CLOCK_HZ=25000000
 )(
     input wire clk,rst_n,
     input wire menu_active,emergency,
     input wire [1:0] scene_id,q_state,
     input wire [3:0] q_t_tens,q_t_ones,
+    input wire meeting_warn_event,meeting_timeout_event,
     output reg event_valid,
     output reg [1:0] event_kind,event_media
 );
@@ -19,8 +17,6 @@ module audio_feature_events #(
     reg [3:0] qt0a,qt0b,qt1a,qt1b;
     reg [1:0] sc_d,qs_d; reg menu_d;
     reg [7:0] qsec_d;
-    reg [31:0] sec_div;
-    reg [15:0] meeting_elapsed;
     reg [31:0] repeat_delay;
     reg repeat_pending;
     wire [7:0] qsec={qt1a,qt1b};
@@ -31,24 +27,19 @@ module audio_feature_events #(
         if(!rst_n) begin
             menu0<=1;menu1<=1;em0<=0;em1<=0;sc0<=0;sc1<=0;qs0<=0;qs1<=0;
             qt0a<=0;qt0b<=0;qt1a<=0;qt1b<=0;sc_d<=0;qs_d<=0;qsec_d<=0;menu_d<=1;
-            sec_div<=0;meeting_elapsed<=0;repeat_delay<=0;repeat_pending<=0;
+            repeat_delay<=0;repeat_pending<=0;
             event_valid<=0;event_kind<=0;event_media<=0;
         end else begin
             menu0<=menu_active;menu1<=menu0;em0<=emergency;em1<=em0;
             sc0<=scene_id;sc1<=sc0;qs0<=q_state;qs1<=qs0;
             qt0a<=q_t_tens;qt0b<=q_t_ones;qt1a<=qt0a;qt1b<=qt0b;
             sc_d<=sc1;qs_d<=qs1;qsec_d<=qsec;menu_d<=menu1;event_valid<=0;
-            if(!in_meeting) begin sec_div<=0;meeting_elapsed<=0;end
-            else if(sec_div==CLOCK_HZ-1) begin
-                sec_div<=0;
-                if(meeting_elapsed<MEETING_TIMEOUT_SEC) meeting_elapsed<=meeting_elapsed+1'b1;
-                if(meeting_elapsed==MEETING_WARN_SEC-1) begin
-                    event_valid<=1;event_kind<=1;event_media<=1;
-                end else if(meeting_elapsed==MEETING_TIMEOUT_SEC-1) begin
-                    event_valid<=1;event_kind<=1;event_media<=1;
-                    repeat_pending<=1;repeat_delay<=CLOCK_HZ/5; // second, distinct timeout beep
-                end
-            end else sec_div<=sec_div+1'b1;
+            if(in_meeting && meeting_warn_event) begin
+                event_valid<=1;event_kind<=1;event_media<=1;
+            end else if(in_meeting && meeting_timeout_event) begin
+                event_valid<=1;event_kind<=1;event_media<=1;
+                repeat_pending<=1;repeat_delay<=CLOCK_HZ/5; // timeout = two short tones
+            end
 
             if(repeat_pending) begin
                 if(repeat_delay==0) begin

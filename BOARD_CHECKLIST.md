@@ -85,10 +85,20 @@
   - 正确算法：采样同步 → 计数器只在**当前电平 ≠ 消抖后电平**时累加，达到 `DEB_MAX`（10ms@100MHz = 1_000_000）才把消抖后电平翻新；**触发脉冲一律由「消抖后电平」的上升/下降沿产生**。`ui_key_ctrl.ui_key_dbnc` 与 `scene_control.key_debounce` 两处必须同算法，不许各写一套。
   - 回归要求：TB 必须含**抖动沿 + 毛刺 + 连按 + 长按**四类激励（见 `tb_ui_key_ctrl.v`），只测「理想单次按下」抓不到这类缺陷。
 
+- [ ] C11 **窄位宽「相加后右移」必须先把操作数扩宽，否则进位被静默丢弃**（本项是「1280×960 迎新图偏色/色差」的真根因）：
+  - 反例：`wire [7:0] avg = (a + b) >> 1;` 其中 `a`/`b` 均 8bit、赋值目标也 8bit ⇒ Verilog 按**上下文宽度 8bit** 定加法宽度 ⇒ 进位丢掉，实际算的是 `((a+b) mod 256) >> 1`。实证：`200+200=400` 得 **72**（应 200）、`255+255=510` 得 **127**（应 255）—— 凡「配对两像素同通道之和 ≥ 256」的通道输出恒小 128，表现为大片偏色 + 在 sum 跨 256 处出现硬边界色带。
+  - 正确写法（对齐小鹅通官方 `第五讲/第4课 bmp24_decoder.v` 的 `average_four`，官方把每个操作数显式零扩展 `{1'b0,..}`/`{2'b00,..}` 到 10bit `total` 再相加）：
+    `wire [8:0] sum = {1'b0,a} + {1'b0,b};  wire [7:0] avg = sum[8:1];`   // 9bit 求和，进位落在 bit8
+  - ⚠ **本工程其余 `>>1` 都是安全的**（`osd_scene.v`/`osd_welcome.v` 的 `bg_r9/g_g9/b_b9` 本就是 9bit，`255+255=510` 不溢出）—— 说明「先加宽再求和」是本工程既有惯例，`bmp_read_auto.v` 这处是唯一漏网的。
+  - 通用判据：**任何 `(X + Y) >> n` 前先自问「X+Y 的最大值放得下吗」**。8bit+8bit 必须用 9bit 承载；不要靠 `>>` 的右移去"回收"高位，右移发生在截断之后。
+  - 回归要求：新增 `tb/tb_bmp_2x_decim.v` 专项喂「通道和 ≥256」的像素对；**并且要在修复前的版本上跑一次确认它会 FAIL**（本文用例修复前 640/640 像素不匹配、修复后 0），否则等于没测。
+
+
+
 ## D. 版本验证纪律
 
-- [ ] D1 每版上板前跑全套 ModelSim 回归，**10 套**全 PASS（错误 0）再走 TD：
-  `run_sim.do` / `run_sim_scene.do` / `run_sim_ui.do` / `run_sim_osd.do` / `run_sim_menu.do` / `run_sim_welcome.do` / `run_sim_osd_scene.do` / `run_sim_quiz.do` / `run_sim_bmp_scale.do` / `run_sim_display.do`。
+- [ ] D1 每版上板前跑全套 ModelSim 回归，**11 套**全 PASS（错误 0）再走 TD：
+  `run_sim.do` / `run_sim_scene.do` / `run_sim_ui.do` / `run_sim_osd.do` / `run_sim_menu.do` / `run_sim_welcome.do` / `run_sim_osd_scene.do` / `run_sim_quiz.do` / `run_sim_bmp_scale.do` / `run_sim_display.do` / **`run_sim_2x_decim.do`**（1280×960 2×1 抽取降采样专项，C11 的守卫用例）。
 - [ ] D2 大改后对照 README「当前视频链路」与 top.v 实际接线是否一致（防文档/代码漂移）。
 - [ ] D3 源文件改完先做**纯编译体检**（不开仿真），快速抓语法/端口错：
   `vlog +incdir+../src ../src/top.v ../src/scene_control.v ../src/sd_card_bmp.v ...`（top.v 会经 `include` 带入 ui_key_ctrl/osd_welcome/display_adjust/osd_scene/quiz_ctrl/**bmp_scale**，勿再单独编译这六个，否则重复定义）。
@@ -122,3 +132,5 @@
 - [2026-09-16] 现象：按键**偶发失灵**（长按/连按会丢键或连跳）。 / 根因：消抖用「原始电平边沿」触发 + 计数器滤抖两套判据混用，抖动期首个边沿被吞、释放期抖动产生假触发。 / 修复：`ui_key_ctrl.ui_key_dbnc` 与 `scene_control.key_debounce` 统一为「以消抖后电平为唯一基准，连续 10ms(DEB_MAX=1_000_000@100MHz) 偏离才采纳，触发脉冲一律取自消抖后电平的边沿」；`tb_ui_key_ctrl.v` 补抖动沿/毛刺/连按/长按四类激励。 / 归入分类：C10。
 - [2026-09-16] 现象：多场景同开时语义与需求不符（旧为静态 `SW4>SW3>SW2>SW1` 优先级）。 / 修复：`scene_control.v` 改 **「应急最高 + 无应急时先触发先锁定」**——SW1/2/3 以先被拨上者为准并锁定，持锁场景被拨回时让给仍开着的 `SW1>SW2>SW3`；SW4 电平直通最高优先级，应急期间拨动普通 SW 只更新锁定权不改画面。 / 归入分类：需求确认（设计评审）。
 - [2026-09-16] 现象：调分辨率/亮度、切轮播手动时屏幕上没有任何反馈。 / 修复：`display_adjust.v` 内建三块 HUD（`res_cnt` 青条 8 档 / `bar_cnt` 金条 16 档亮度 / `man_cnt` 绿=自动、橙=手动状态卡），由 `res_level`/`bri_level`/`pic_manual` 跨域两级同步后的**变化沿**武装，保持 30 帧后自动消失；`tb_display_adjust.v` 扩为 42 帧用例全 PASS。 / 归入分类：D1、C2（HUD 计数时序要按「武装当帧即扣 1」核 TB 期望）。
+- [2026-10-02] 现象：迎新场景 4 张图里 640×480 的显示正常，**1280×960 的两张整体偏色**（用户描述"色差/位深调色板不匹配、颜色不对"）。 / 排查：先用 Python 解析 G: 卡上 8 张 BMP 的实际头 —— 6 张 640×480×24bit(921654B) + 2 张 1280×960×24bit(3686454B)，**全部 bits=24 / comp=0 / clrUsed=0 / 行填充=0**，**位深和调色板完全一致**，故用户的猜测方向不对；真差异只在"宽 1280"。再 `git diff` 看到 `bmp_read_auto.v` 当天 14:22 刚加的多分辨率白名单 + 2×1 抽取，定位到降采样均值处。 / 根因：`ha_r/ha_g/ha_b = (dfirst[..] + asm_data[..]) >> 1` 两个 8bit 相加、上下文也 8bit ⇒ 进位丢失，实为 `((a+b) mod 256)>>1`。凡同通道和 ≥256 即少 128（180+180 得 52；255+255 得 127）。640 源走 `!is_2x` 直通、不经此路 ⇒ 只有 1280 图偏色，与现象完全吻合。 / 修复：改 9bit 求和取 `sum[8:1]`（对齐小鹅通官方 `average_four` 的零扩展写法）；新增 `tb/tb_bmp_2x_decim.v` 专项用例并**在改前版本上确认必然 FAIL**（640/640 像素不匹配）→ 改后 0。 / 归入分类：**C11**（新增）、D1。
+- [2026-10-02] 现象：修完 C11 重新综合后，`sd_card_clk` 域 **SWNS=-0.052ns、1 个违例端点**，被项目自己的 build.ps1 闸门拦下（禁止下载）。 / 排查：读 `pic_sdram_audio_final_pr.timing` 的最差路径 —— 起点 `bmp_read_auto_m0/height_reg[21]` → 终点 `len_ok_reg.fci`，**Data Path Delay 9.772ns / Logic Level 9（ADDER=4）**。 / 根因：`len_ok <= (file_len >= (pixel_offset + pix_bytes_sel))` 一拍内串了「`dim_2x` mux（依赖 height）+ 32bit **变长**加 + 32bit 比较」。该长链早已存在（作者从 rd_cnt==54 提前到 26 只是"减了一拍"，没拆组合级），原本靠布局运气压住，C11 改动挤动布局后暴露 → **9.772ns 已违反 C9「100MHz 域单条组合 ≤8ns」**。 / 修复：拆成 rd_cnt **26/27/28 三级打拍**（26 只做 mux+移位 → 27 只做 32bit 加 → 28 只做 32bit 比较），消费点仍在 rd_cnt==54，富余 26 拍、语义不变。修后 **SWNS -0.052 → +0.148ns，0 违例**，且**无需重扫 place seed**（seed=31 直接达标）。 / 归入分类：C9、B5。（注：`pix_bytes_sel` 组合 wire 已删除，改用 `pix_bytes_r`/`need_len_r` 两级寄存器。）

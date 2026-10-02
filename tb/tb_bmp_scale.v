@@ -9,6 +9,7 @@
 //      · 50%(档2) : 逐像素 out(x,y) == src(2*(x-x0), 2*y), 区外=黑
 //      · 25%(档0) : 逐像素 out(x,y) == src(4*(x-x0), 4*y), 区外=黑
 //      · 300%(档7): 只查"整帧正好 307200/小画布 3072 个像素 + 不死锁"
+//      · src_v2x=1(档4): 源只喂 SH/2 行, 出满 SH 行(纵向 2× 插值) —— 多分辨率适配
 //      · 每帧输出像素数必须精确 = CANV_W*CANV_H(多/少都算错)
 //   3. 输入节拍两种都覆盖: 单拍脉冲 / 连续 3 拍电平(模拟真实 SPI 字节节拍)
 // 注意   : 喂数速率必须**≈实机 SPI 速率(96 拍/像素)**, 本 tb 用 97 拍。
@@ -30,6 +31,7 @@ module tb_bmp_scale;
     reg  [3:0]  scale_sel;
     reg         frame_start, in_en;
     reg  [31:0] in_data;
+    reg         v2x_en;              // 1=本帧按 src_v2x 喂(源只有 SH/2 行)
     wire        out_en;
     wire [31:0] out_data;
 
@@ -48,6 +50,7 @@ module tb_bmp_scale;
         .rst         (rst),
         .scale_sel   (scale_sel),
         .frame_start (frame_start),
+        .src_v2x     (v2x_en),
         .in_en       (in_en),
         .in_data     (in_data),
         .out_en      (out_en),
@@ -58,7 +61,7 @@ module tb_bmp_scale;
     reg  [3:0]  cfg_sel;
     bmp_scale u_cfg (
         .clk (clk), .rst (rst), .scale_sel (cfg_sel),
-        .frame_start (1'b0), .in_en (1'b0), .in_data (32'd0),
+        .frame_start (1'b0), .src_v2x (1'b0), .in_en (1'b0), .in_data (32'd0),
         .out_en (), .out_data ()
     );
 
@@ -106,8 +109,53 @@ module tb_bmp_scale;
     endfunction
 
     //--------------------------------------------------------------
+    // 期望输出像素 —— src_v2x 纵向 2× 档(2026-10-02, 多分辨率适配)
+    //   源只有 SH/2 行(小实例 = 24), 纵向映射 sy = (v*K)>>1 且末行按有效源高
+    //   SH/2-1 钳位。100% 档(K=65536)下 sp=floor(v/2)、fy=(v 偶 ? 0 : 128):
+    //     v 偶 → fy=0   → out = hrA           = src(x, v/2)
+    //     v 奇 → fy=128 → out = hrA+((hrB-hrA)*128)>>8
+    //                        = a + floor((b-a)/2) = floor((a+b)/2)   (逐通道)
+    //   这正是"2× 线性放大"的标准形态(行复制 + 中点插值), 列方向 100% 档
+    //   x0=0/fx=0 → 逐列 1:1, 无水平混合。
+    //   ★注意 fy=0 时**不是**平均值(踩过一次): 偶行必须是源的整行原值。
+    //--------------------------------------------------------------
+    function [31:0] exp_word_v2x;
+        input integer x, y;
+        integer sh2, sp, s0, s1, c, sum;
+        reg [7:0] ca, cb;
+        reg [31:0] wa, wb, wr;
+        begin
+            sh2 = SH/2;                    // 有效源高 = 24
+            sp  = y / 2;
+            s0  = (sp >= sh2-1) ? (sh2-1) : sp;
+            s1  = (sp >= sh2-1) ? (sh2-1) : (sp + 1);
+            wa  = src_word(x, s0);
+            wb  = src_word(x, s1);
+            wr  = 32'd0;
+            for (c = 0; c < 3; c = c + 1) begin
+                case (c)
+                    0: begin ca = wa[31:24]; cb = wb[31:24]; end
+                    1: begin ca = wa[23:16]; cb = wb[23:16]; end
+                    default: begin ca = wa[15:8]; cb = wb[15:8]; end
+                endcase
+                // ★求和必须用宽中间量(integer): ca/cb 是 8bit, 直接写 (ca+cb)>>1
+                //   会被按 8bit 求值 → 129+128 溢出成 1(清单 C11 的位宽截断坑)。
+                sum = ca + cb;
+                // 偶行 fy=0 → 原值; 奇行 fy=128 → a+floor((b-a)/2) = floor((a+b)/2)
+                case (c)
+                    0: wr[31:24] = ((y % 2) == 0) ? ca : (sum >> 1);
+                    1: wr[23:16] = ((y % 2) == 0) ? ca : (sum >> 1);
+                    default: wr[15:8] = ((y % 2) == 0) ? ca : (sum >> 1);
+                endcase
+            end
+            exp_word_v2x = wr;
+        end
+    endfunction
+
+    //--------------------------------------------------------------
     // 输出采集 + 比对
     //--------------------------------------------------------------
+    reg [31:0] exp_now;
     always @(posedge clk) begin
         if (rst) begin
             out_cnt <= 0;
@@ -117,12 +165,12 @@ module tb_bmp_scale;
         end
         else if (out_en) begin
             if (!skip_cmp) begin
-                if (out_data !== exp_word(ox, oy, scale_sel)) begin
+                exp_now = v2x_en ? exp_word_v2x(ox, oy) : exp_word(ox, oy, scale_sel);
+                if (out_data !== exp_now) begin
                     err_pix <= err_pix + 1;
                     if (err_pix < 5)
-                        $display("  [比对] t=%0t out(%0d,%0d)=%08x 期望 %08x (sel=%0d)",
-                                 $time, ox, oy, out_data,
-                                 exp_word(ox, oy, scale_sel), scale_sel);
+                        $display("  [比对] t=%0t out(%0d,%0d)=%08x 期望 %08x (sel=%0d v2x=%0d)",
+                                 $time, ox, oy, out_data, exp_now, scale_sel, v2x_en);
                 end
             end
             out_cnt <= out_cnt + 1;
@@ -150,14 +198,15 @@ module tb_bmp_scale;
     //             gap = 像素间隔低电平拍数(1 像素总周期 = hold+gap)
     //--------------------------------------------------------------
     task send_frame(input integer hold, input integer gap);
-        integer x, y;
+        integer x, y, nrow;
         begin
             // 帧起点(写通路应答): 高 4 拍 → 内部两级同步后产生 fs_pulse
             frame_start = 1'b1;
             repeat (4) @(posedge clk);
             frame_start = 1'b0;
             repeat (6) @(posedge clk);
-            for (y = 0; y < SH; y = y + 1) begin
+            nrow = v2x_en ? (SH/2) : SH;     // src_v2x 帧只有 SH/2 行源数据
+            for (y = 0; y < nrow; y = y + 1) begin
                 for (x = 0; x < SW; x = x + 1) begin
                     in_en   = 1'b1;
                     in_data = src_word(x, y);
@@ -188,10 +237,11 @@ module tb_bmp_scale;
     // 单帧测试流程
     //--------------------------------------------------------------
     task run_frame(input [3:0] sel, input integer hold, input integer gap,
-                   input integer cmp, input [255:0] msg);
+                   input integer v2x, input integer cmp, input [255:0] msg);
         begin
-            $display("---- 档位 %0d : %0s ----", sel, msg);
+            $display("---- 档位 %0d : %0s (src_v2x=%0d) ----", sel, msg, v2x);
             scale_sel = sel;
+            v2x_en    = (v2x != 0);
             skip_cmp  = (cmp == 0) ? 1 : 0;
             in_en = 1'b0; frame_start = 1'b0;
             repeat (4) @(posedge clk);
@@ -228,7 +278,7 @@ module tb_bmp_scale;
 
     initial begin
         rst = 1'b1; scale_sel = 4'd4; frame_start = 1'b0;
-        in_en = 1'b0; in_data = 32'd0;
+        in_en = 1'b0; in_data = 32'd0; v2x_en = 1'b0;
         out_cnt = 0; ox = 0; oy = 0; err_pix = 0; skip_cmp = 1;
         repeat (5) @(posedge clk);
         rst = 1'b0;
@@ -278,15 +328,21 @@ module tb_bmp_scale;
         //    喂数 1 像素 = 1+96 = 97 拍(对齐实机 SPI 25MHz 的 ~96 拍/像素)
         //========================================================
         // 100%: 恒等(最严格)
-        run_frame(4'd4, 1, 96, 1, "100% 恒等");
+        run_frame(4'd4, 1, 96, 0, 1, "100% 恒等");
         // 50%: 2:1 精确取样(整数映射, 无插值误差) + 下方大黑区
-        run_frame(4'd2, 1, 96, 1, "50% 2:1 取样");
+        run_frame(4'd2, 1, 96, 0, 1, "50% 2:1 取样");
         // 25%: 4:1 精确取样 + 大片黑区
-        run_frame(4'd0, 1, 96, 1, "25% 4:1 取样");
+        run_frame(4'd0, 1, 96, 0, 1, "25% 4:1 取样");
         // 300%: 只查整帧数量与不死锁(每源像素产出 3 个输出像素, 最吃带宽)
-        run_frame(4'd7, 1, 96, 0, "300% 放大裁剪");
+        run_frame(4'd7, 1, 96, 0, 0, "300% 放大裁剪");
         // 100% + 输入电平保持 3 拍(模拟真实 SPI 字节节拍)
-        run_frame(4'd4, 3, 96, 1, "100% 恒等(输入电平保持 3 拍)");
+        run_frame(4'd4, 3, 96, 0, 1, "100% 恒等(输入电平保持 3 拍)");
+        // ---- src_v2x 纵向 2× 档(2026-10-02 多分辨率适配) ----
+        //   源只喂 SH/2=24 行, 期望输出 48 行(100% 档 = 纵向 2× 插值铺满画布)。
+        //   逐像素比对: 偶行取 src(x,v/2), 奇行 = (hrA+hrB)>>1(与 RTL 逐位一致)。
+        //   这一条同时守住"末行按有效源高钳位"——若误用 SRC_H-1 会去取行缓存里
+        //   从未写过的行(输入只到第 23 行) → 末行比对必然失败。
+        run_frame(4'd4, 1, 96, 1, 1, "src_v2x 纵向 2x (源 24 行 → 出 48 行)");
 
         $display("=== bmp_scale 仿真结束,失败数=%0d ===", fail_cnt);
         if (fail_cnt == 0) $display("=== [ALL PASS] ===");
