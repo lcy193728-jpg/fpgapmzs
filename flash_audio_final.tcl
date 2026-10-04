@@ -1,8 +1,14 @@
-# 烧录脚本: 迎新场景 TF 卡 WAV 音乐(裸 PCM, LBA 300000) + 音频可视化包络柱
+# 烧录脚本: 固化到板载 SPI Flash(上电自启) —— 赛题红线要求
 # 位流: audio_final/artifacts/pic_sdram_audio_final.bit
-# SHA-256: 5caa4c1e1030b57df66325fdba9c09bf9dcab7adf173354c4ed626530eac993f
-# 时序: SWNS +0.148ns / HWNS +0.020ns (0 违例, place seed=31)
-# 面积: LUT 86.57% / reg 36.06% / bram9k 63-64 / bram32k 3-16 / dsp 12-29
+# SHA-256: 552f3051cf9179ad824f509c1c1c1397310ed05914c07885cdb9ffecd27f30f1
+# 时序: SWNS +0.131ns / HWNS +0.020ns (0 违例, place seed=7)
+# 面积: LUT 17463-19600 (89.10%) / bram9k 63-64 / bram32k 3-16 / dsp 14-29
+# [2026-10-03 01:10 本版] 修数码管"模式号"位误显复用槽标记码 6 的 bug:
+#   迎新模式4 应显示 4、应急模式2 应显示 2, 原接 hud_mode(对比度复用槽=6)。
+#   改为顶层 wire disp_digit = ui_mode_raw(ui_key_ctrl 内部真实 mode 0..5);
+#   仅换一个 wire 源、零新增寄存器(中途加 disp_num 寄存器导致 slices 97% +
+#   seed 退化 -5.244ns, 已回退)。仿真全量 17 套 0 FAIL。
+#   注意: 本版 RTL 微变 → netlist 变 → place seed 由 29 重扫为 7。
 # [2026-10-02 三次改动] 修 1280×960 迎新图偏色: bmp_read_auto 的 2× 源水平均值
 #   原按 8bit 求和丢进位(200+200 得 72、255+255 得 127), 改为 9bit 求和取 [8:1];
 #   同时把 len_ok 长度校验拆成 rd_cnt 26/27/28 三级打拍, 消除 9.772ns/9 级长组合

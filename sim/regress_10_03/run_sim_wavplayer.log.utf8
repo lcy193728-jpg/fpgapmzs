@@ -1,0 +1,25 @@
+Reading D:/Quat/modelsim_ase/tcl/vsim/pref.tcl 
+
+# 10.1d
+
+# do run_sim_wavplayer.do 
+# Modifying modelsim.ini
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module wav_stream_player
+# 
+# Top level modules:
+# 	wav_stream_player
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module tb_wav_stream_player
+# 
+# Top level modules:
+# 	tb_wav_stream_player
+# vsim -t 1ps work.tb_wav_stream_player 
+# Loading work.tb_wav_stream_player
+# Loading work.wav_stream_player
+# ====================================================
+# tb_wav_stream_player: checks=50 fails=0
+# RESULT: PASS
+# ====================================================
+# ** Note: $finish    : ../sim/tb/tb_wav_stream_player.v(372)
+#    Time: 415705 ns  Iteration: 1  Instance: /tb_wav_stream_player

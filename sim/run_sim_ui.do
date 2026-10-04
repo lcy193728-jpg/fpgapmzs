@@ -26,12 +26,15 @@ add wave /tb_ui_key_ctrl/key3
 add wave -radix unsigned /tb_ui_key_ctrl/img_no
 add wave /tb_ui_key_ctrl/scene_chg
 add wave /tb_ui_key_ctrl/alarm_scene
+add wave -radix unsigned /tb_ui_key_ctrl/scene_id
 
 add wave -divider "输出(模式/参数)"
 add wave -radix unsigned /tb_ui_key_ctrl/mode
+add wave -radix unsigned /tb_ui_key_ctrl/hud_mode
 add wave -radix unsigned /tb_ui_key_ctrl/alarm_type
 add wave -radix unsigned /tb_ui_key_ctrl/bri_level
 add wave -radix unsigned /tb_ui_key_ctrl/vol_level
+add wave -radix unsigned /tb_ui_key_ctrl/con_level
 add wave -radix unsigned /tb_ui_key_ctrl/res_level
 add wave /tb_ui_key_ctrl/pic_manual
 add wave -radix unsigned /tb_ui_key_ctrl/pic_param

@@ -108,7 +108,31 @@ load_run_param -run phy_1
 #     seed 31 退化到 SWNS -0.001ns(1 违例端点), 复用 21:00 的 gate.db 重扫:
 #       37 -0.212 | 31 -0.001 | 17 +0.102(0 违例) | 29 -1.326
 #     → 固定 seed=17。
-set_param place seed 17
+#
+#   [2026-10-02 23:30 重扫 —— 补对比度调节后] 本轮新增 = display_adjust.v 的
+#     对比度链(stage1.5: (in-128)*(con-8)>>>3, 14 个 DSP 乘法器) + ui_key_ctrl.v
+#     的「复用槽」对比度档(迎新模式4 / 应急模式2) + 对比度 HUD 条。
+#     LUT 16967→17487(89.22%), DSP 12→14 → 拥塞抬高, seed 17 退化到
+#     SWNS -0.374ns(3 违例端点)。违例路径 = bmp_scale.v(574) 的
+#     dsth_r→MULT18→ADDER×2→sx_prod_reg (Logic Level 仅 4, cell 5.3ns/
+#     net 4.7ns → 典型布局绕线问题, 非逻辑问题; clk2/125MHz 显示域含对比度
+#     链仍是 +0.293ns 无违例)。复用本轮 23:18 的 gate.db 重扫种子:
+#       31 -2.286 | 37 -8.599 | 17 -0.374 | 29 +0.568(0 违例, HWNS +0.020ns)
+#     → 固定 seed=29。RTL/SDC 一字未改, 仅布局种子。
+#
+#   [2026-10-03 00:40 重扫 —— 修数码管"模式号显示 6"后] 本轮 RTL 改动:
+#     top_final.v 数码管"模式号"位输入由 ui_mode(=hud_mode, 对比度复用槽=6)
+#     改为 ui_mode_raw(=ui_key_ctrl 内部真实 mode, 0..5) —— 这样迎新模式4
+#     显示 4、应急模式2 显示 2, 不再显示复用槽标记码 6(用户上板实测反馈)。
+#     ★仅顶层换一个 wire 源, 无新增寄存器; 但 netlist 微变即导致布局解大变
+#     (LUT 逼近 90%、slices 97%, 完全符合"高占用下混沌敏感"的已知规律):
+#       seed 29 -0.190 | 11 -0.117 | 25 -0.259 | 37 -0.456 | 17 -0.916 ...
+#       seed 7  +0.131(0 违例) | 5 +0.105 | 63 +0.062
+#     唯一违例路径 = sd_card_bmp_m0/bmp_read_auto_m0 的
+#       dcol_reg[5] → planes → up_st(fanout 85) → hskip_lat → hacc → ADDER
+#       (Data Path 9.765ns, net 占 61%, Logic Level 10 → 拥塞绕线, 非逻辑问题)
+#     → 固定 seed=7。
+set_param place seed 7
 place
 route
 # 官方 DefaultFlow.tcl 的收尾步骤: route 之后跑一次 fix_hold 修保持时间,

@@ -53,10 +53,28 @@
 //                 out = (in * vol) >>> 3 缩放(0=静音, 8=×1.0, 15≈×1.875)。
 //                 ※ 2026-09-28 用户要求新增; 原 KEY1 循环到模式4 为止。
 //
+// ★对比度复用槽(2026-10-02 新增, 用户指定):
+//   赛题扩展要求"实时参数调节(亮度/对比度/OSD)"原先只做了亮度。补对比度时
+//   不再新增模式(KEY1 循环已到 6 个, 再加会打乱既有手感), 而是**复用两个
+//   在本场景本来就无副作用的模式槽**, 由 scene_id 分派:
+//     · 迎新场景(scene_id==0) 的**模式4(会议计时)**: 本场景不消费 key 脉冲
+//       (顶层 meet_key_evt_sd 带 {4{meeting_en}} 门控), 按了完全没反应 → 复用;
+//     · 应急场景(scene_id==3) 的**模式2(缩放)**: 应急冻结画面(slideshow_en=0)
+//       且不重载图, 缩放档对画面无任何可见影响 → 复用。
+//   复用后 KEY3/KEY2 = 对比度档 加/减(0..15, 默认 8 = ×1.0, 边界钳位);
+//   对外一律以 hud_mode = MODE_CON(6) 上报, 供:
+//     · display_adjust 弹"对比度条"(与真正的模式2/4 区分);
+//     · 顶层数码管显示模式号 6 与该参数值。
+//   被占用的槽**不再执行原动作**: 应急场景模式2 不再改 res_level(故也不发
+//   res_chg_pl 重载脉冲); 迎新场景模式4 本就无参数动作, 无需屏蔽。
+//   其余场景/模式一律不变(会议场景模式4 仍是会议计时, 由 control_lock 接管)。
+//
 // 数码管"参数强显保持"(小鹅通第三讲 seg7_panel 的 HOLD 机制):
 //   · 任何一次参数动作(亮度/缩放/周期 ±) → 输出 disp_hold 拉高 2 秒,
-//     并锁存当时所在模式 disp_sel; 顶层据此让第2~4位临时显示该参数值,
-//     2 秒后自动回到"当前模式"的常规显示。
+//     并锁存当时所在模式 disp_sel(= hud_mode); 顶层据此让第2~4位临时显示
+//     该参数值, 2 秒后自动回到"当前模式"的常规显示。
+//   ★数码管"模式号"位(第5位)不走 disp_sel —— hud_mode 在对比度复用槽 = 6,
+//     直接显示会让用户看到 6 而不是真实的 4(迎新)/2(应急)。顶层用真实模式。
 //   · 默认观感不变: 在模式1/2/3 内本就在显示对应参数, 加不加保持都一样;
 //     只有"调完参数立刻切回模式0"时, 参数值会多留 2 秒再回到图序号。
 //
@@ -79,6 +97,8 @@ module ui_key_ctrl #(
     parameter [3:0] BRI_MAX  = 4'd15,      // 亮度上限
     parameter [3:0] VOL_INIT = 4'd8,       // 音量默认档(×1.0, 与亮度同口径)
     parameter [3:0] VOL_MAX  = 4'd15,      // 音量上限(≈×1.875)
+    parameter [3:0] CON_INIT = 4'd8,       // 对比度默认档(8=×1.0 直通, 2026-10-02)
+    parameter [3:0] CON_MAX  = 4'd15,      // 对比度上限(≈×1.875; 下限 0=全灰)
     parameter [3:0] RES_INIT = 4'd4,       // 缩放默认档(4=100% 原始比例, 与原画一致)
     parameter [3:0] RES_MAX  = 4'd7,       // 缩放上限
     parameter [2:0] MODE_PIC = 3'd0,       // 功能模式: 图片
@@ -87,6 +107,9 @@ module ui_key_ctrl #(
     parameter [2:0] MODE_PERIOD = 3'd3,    // 功能模式: 轮播周期(批次4 新增)
     parameter [2:0] MODE_MEET = 3'd4,      // 功能模式: 会议计时(会议场景, 2026-09-19 新增)
     parameter [2:0] MODE_VOL = 3'd5,       // 功能模式: 音量(2026-09-28 新增)
+    parameter [2:0] MODE_CON = 3'd6,       // 对外提示: 对比度档(复用槽, 2026-10-02)
+                                           //   ※ 仅用于 hud_mode/disp_sel 上报,
+                                           //     内部 mode 状态仍只会是 0..5
     // ---- 批次4 轮播周期档 ----
     parameter [2:0] PERIOD_NUM = 3'd5,     // 档位数(2/3/5/10/30 s)
     parameter [2:0] PERIOD_DEF = 3'd1,     // 默认档 = 3s(与原 SLIDE_INTERVAL 一致)
@@ -102,19 +125,27 @@ module ui_key_ctrl #(
     input               key4,              // 会议场景当前议题重新计时(消抖脉冲导出)
     input               control_lock,      // 1=按键由会议场景接管, 不改全局UI参数
     input               alarm_scene,       // 1=处于应急场景(模式0 改为告警类型环绕切换)
+    input       [1:0]   scene_id,          // 生效场景码 0迎新/1会议/2抢答/3应急
+                                           //   (2026-10-02: 决定模式4/模式2 是否复用为对比度)
     // ---- 上下文 ----
     input       [7:0]   img_no,            // bmp_read_auto 当前图序号(1..N; 0=空闲)
     input               scene_chg,         // 场景切换脉冲(清手动→自动)
     // ---- 输出 ----
-    output reg  [2:0]   mode,              // 功能模式 0图片/1亮度/2缩放/3周期/4会议计时/5音量
+    output reg  [2:0]   mode,              // 内部功能模式 0图片/1亮度/2缩放/3周期/4会议计时/5音量
+    output wire [2:0]   hud_mode,          // 对外展示模式码: 命中对比度复用槽时 = MODE_CON(6)
+                                           //   ※ display_adjust/数码管应使用本信号而非 mode
     output reg  [3:0]   bri_level,         // 亮度档 0..15(模式1可调)
     output reg  [3:0]   vol_level,         // 音量档 0..15(模式5可调, 默认8=×1.0)
+    output reg  [3:0]   con_level,         // 对比度档 0..15(复用槽可调, 默认8=×1.0; 2026-10-02)
     output reg  [3:0]   res_level,         // 缩放档 0..7(模式2可调)
     output reg  [1:0]   alarm_type,        // 应急告警类型 0火灾/1地震/2恶劣天气/3疏散(应急模式0可调)
     output wire [7:0]   period_sec,        // 轮播间隔档(秒: 2/3/5/10/30, 模式3可调)
     output wire [31:0]  period_cycles,     // 轮播间隔(时钟周期) → bmp_read_auto
     output wire         disp_hold,         // 1=参数强显保持期(2 秒)
-    output reg  [2:0]   disp_sel,          // 保持期显示的模式(产生动作时的 mode)
+    output reg  [2:0]   disp_sel,          // 保持期"参数来源"模式码(产生动作时的 hud_mode;
+                                           //   对比度复用槽 = MODE_CON(6)) → 顶层据此选参数值
+                                           //   ※ 顶层数码管"模式号"位**不能**用本信号(会显示 6),
+                                           //     必须用真实模式(顶层取 ui_mode_raw)
     output reg          pic_manual,        // 1=手动单张(冻结自动轮播) / 0=自动轮播
     output      [7:0]   pic_param,         // 显示用图片参数: 0=轮播, >0=手动第N张
     output              key_next_pl,       // 手动"下一张"单周期脉冲
@@ -165,10 +196,27 @@ module ui_key_ctrl #(
     wire alarm_dn_c = k2_p & ~control_lock & alarm_scene & (mode == MODE_PIC);
 
     //--------------------------------------------------------------
-    // 缩放档变化脉冲(模式2 且未到边界才真正变化 → 产生 1 拍脉冲)
+    // ★对比度复用槽(2026-10-02): scene_id 分派, 见文件头说明
+    //   迎新(0) 模式4 / 应急(3) 模式2 → 复用为对比度档
+    //   hud_mode 对外上报 MODE_CON(6), 与真正的模式2/4 区分
     //--------------------------------------------------------------
-    wire res_up_c = k3_p & ~control_lock & (mode == MODE_RES) & (res_level < RES_MAX);
-    wire res_dn_c = k2_p & ~control_lock & (mode == MODE_RES) & (res_level > 4'd0);
+    wire con_on = (scene_id == 2'd0) ? (mode == MODE_MEET)
+                : (scene_id == 2'd3) ? (mode == MODE_RES )
+                : 1'b0;
+
+    wire con_up_c = k3_p & ~control_lock & con_on & (con_level < CON_MAX);
+    wire con_dn_c = k2_p & ~control_lock & con_on & (con_level > 4'd0);
+
+    assign hud_mode = con_on ? MODE_CON : mode;
+
+    //--------------------------------------------------------------
+    // 缩放档变化脉冲(模式2 且未到边界才真正变化 → 产生 1 拍脉冲)
+    //   ★加 ~con_on: 应急场景的模式2 已被对比度占用, 不得再改 res_level
+    //     (也就不再发 res_chg_pl 触发重载 —— 应急本就冻结画面, 语义一致)
+    //   迎新场景模式4 时 mode≠MODE_RES, ~con_on 对该式无影响。
+    //--------------------------------------------------------------
+    wire res_up_c = k3_p & ~control_lock & ~con_on & (mode == MODE_RES) & (res_level < RES_MAX);
+    wire res_dn_c = k2_p & ~control_lock & ~con_on & (mode == MODE_RES) & (res_level > 4'd0);
 
     reg  res_chg_f;
     always @(posedge clk or posedge rst) begin
@@ -234,6 +282,8 @@ module ui_key_ctrl #(
     // 参数强显保持(2 秒): 任一参数动作 → 重置保持计时并锁存"动作时的模式"
     //   · disp_hold 供顶层把数码管第2~4位临时改显该参数, 2 秒后自动返回
     //   · 计时器由参数动作重装(连按不断刷新), 归零后 disp_hold 落低
+    //   ★锁存的是 hud_mode(对比度动作时锁 MODE_CON=6): 顶层据此选"参数值来源"
+    //     (6 → 显示对比度档)。数码管"模式号"位**不走本信号**, 见端口注释。
     //--------------------------------------------------------------
     wire bri_up_c  = k3_p & ~control_lock & (mode == MODE_BRI) & (bri_level < BRI_MAX);
     wire bri_dn_c  = k2_p & ~control_lock & (mode == MODE_BRI) & (bri_level > 4'd0);
@@ -241,7 +291,8 @@ module ui_key_ctrl #(
     wire vol_up_c  = k3_p & ~control_lock & (mode == MODE_VOL) & (vol_level < VOL_MAX);
     wire vol_dn_c  = k2_p & ~control_lock & (mode == MODE_VOL) & (vol_level > 4'd0);
     wire param_evt_all = res_up_c | res_dn_c | bri_up_c | bri_dn_c |
-                         per_up_c | per_dn_c | vol_up_c | vol_dn_c;
+                         per_up_c | per_dn_c | vol_up_c | vol_dn_c |
+                         con_up_c | con_dn_c;
 
     reg [31:0] hold_cnt;
     always @(posedge clk or posedge rst) begin
@@ -251,7 +302,7 @@ module ui_key_ctrl #(
         end
         else if (param_evt_all) begin
             hold_cnt <= DISP_HOLD_CYCLES;
-            disp_sel <= mode;
+            disp_sel <= hud_mode;      // ★锁 hud_mode(对比度动作 → MODE_CON=6, 供顶层选参数)
         end
         else if (hold_cnt != 32'd0) begin
             hold_cnt <= hold_cnt - 32'd1;
@@ -267,6 +318,7 @@ module ui_key_ctrl #(
             mode       <= MODE_PIC;
             bri_level  <= BRI_INIT;
             vol_level  <= VOL_INIT;
+            con_level  <= CON_INIT;
             res_level  <= RES_INIT;
             period_idx <= PERIOD_DEF;
             alarm_type <= 2'd0;
@@ -289,6 +341,12 @@ module ui_key_ctrl #(
                 vol_level <= vol_level + 4'd1;
             if (vol_dn_c)
                 vol_level <= vol_level - 4'd1;
+
+            // ---- 对比度档 ± (2026-10-02: 迎新模式4 / 应急模式2 复用槽) ----
+            if (con_up_c)
+                con_level <= con_level + 4'd1;
+            if (con_dn_c)
+                con_level <= con_level - 4'd1;
 
             // ---- 模式2: 缩放档 ± ----
             if (res_up_c)

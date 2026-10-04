@@ -33,20 +33,22 @@
 //====================================================================
 
 module meeting_sd_rd #(
-    parameter [31:0] MAX_SECTORS   = 32'd3,             // 最多读几个扇区(16 项 = 1277B 需 3 扇区)
     parameter [31:0] CLK_FREQ_HZ   = 32'd100_000_000,   // 本模块时钟 = sd_card_clk
     parameter [31:0] TIMEOUT_MS    = 32'd100            // 连续无字节进展超时(ms)
 )(
     input               clk,                    // sd_card_clk(100MHz)
     input               rst,                    // 高有效复位
-    input      [31:0]   start_sector,           // 配置起始扇区(顶层给, 见 m8 写卡说明)
-    input               sd_init_done,           // sd_card_top 的原始初始化完成(未门控)
-    // ---- SD 扇区读口(接 sd_card_bmp 内的总线仲裁) ----
-    output reg          sd_sec_read,            // 读请求(电平)
-    output reg  [31:0]  sd_sec_read_addr,       // 扇区地址
-    input      [7:0]    sd_sec_read_data,       // 扇区数据(字节)
-    input               sd_sec_read_data_valid, // 数据有效
-    input               sd_sec_read_end,        // 本扇区读完
+    input      [31:0]   start_cluster,          // MTG1.CFG 起始簇号(scanner 扫出, sd_card_bmp 查表给)
+    input      [31:0]   file_size,              // MTG1.CFG 文件大小(字节, scanner 扫出)
+    input               sd_init_done,           // 扫描完成标志(scan_ok; 簇号已就绪才读)
+    // ---- FAT32 文件流读口(对接 fat32_file_streamer) ----
+    output reg          file_start,             // 文件读取启动(单周期脉冲)
+    output reg  [31:0]  file_cluster,           // 起始簇号
+    output reg  [31:0]  file_len_out,           // 文件大小(字节)
+    input      [7:0]    file_byte,              // 文件字节
+    input               file_valid,             // 文件字节有效
+    input               file_done,              // 文件读完(单拍)
+    input      [7:0]    file_error,             // 文件读取错误码(0=无)
     // ---- 配置 RAM 写口(同域, 接 meeting_cfg) ----
     output reg          ram_we,
     output reg  [10:0]  ram_addr,
@@ -63,7 +65,6 @@ module meeting_sd_rd #(
     localparam [0:0] S_WAIT = 1'b0, S_READ = 1'b1;
 
     reg        state;
-    reg [31:0] sector;
     reg [31:0] to_cnt;
     reg [11:0] pos;         // 配置字节流位置(0 基, 未自增)
     reg [4:0]  ptotal;      // 解析中的项数
@@ -75,16 +76,15 @@ module meeting_sd_rd #(
     // expected = 285 + ptotal*62  (×62 用移位加减, 避免综合出乘法器)
     wire [11:0] expected = 12'd285 + ({7'd0, ptotal} << 6) - ({7'd0, ptotal} << 1);
 
-    // 本扇区结束时是否收尾: 解析已完成 / 已判坏 / 已达扇区上限
+    // 收尾判定: 解析已完成 / 已判坏 / 文件读完(file_done, streamer 跨扇区读完整文件)
     wire parse_done  = (pos >= expected) && (ptotal != 5'd0);
-    wire stop_at_end = parse_done | bad | ((sector + 32'd1) >= MAX_SECTORS);
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             state            <= S_WAIT;
-            sd_sec_read      <= 1'b0;
-            sd_sec_read_addr <= start_sector;
-            sector           <= 32'd0;
+            file_start       <= 1'b0;
+            file_cluster     <= 32'd0;
+            file_len_out     <= 32'd0;
             to_cnt           <= 32'd0;
             pos              <= 12'd0;
             ptotal           <= 5'd0;
@@ -102,65 +102,54 @@ module meeting_sd_rd #(
         end
         else begin
             ram_we <= 1'b0;     // 默认单拍写脉冲
+            file_start <= 1'b0; // 默认拉低(单拍脉冲)
 
             case (state)
             //------------------------------------------------
-            // 等 SD 控制器初始化完成(与 bmp_read_auto 的挂起点一致)
-            //   卡未插/初始化失败 → 一直等, 与改造前行为相同(不额外阻塞)
+            // 等扫描完成(簇号就绪); 发一次 file_start 启动文件流读取
             //------------------------------------------------
             S_WAIT: begin
                 if (sd_init_done && !fin) begin
-                    sd_sec_read      <= 1'b1;
-                    sd_sec_read_addr <= start_sector;
-                    sector           <= 32'd0;
-                    to_cnt           <= 32'd0;
-                    pos              <= 12'd0;
-                    ptotal           <= 5'd0;
-                    dmod             <= 6'd0;
-                    bad              <= 1'b0;
-                    state            <= S_READ;
+                    file_cluster <= start_cluster;
+                    file_len_out <= file_size;
+                    file_start   <= 1'b1;
+                    to_cnt       <= 32'd0;
+                    pos          <= 12'd0;
+                    ptotal       <= 5'd0;
+                    dmod         <= 6'd0;
+                    bad          <= 1'b0;
+                    state        <= S_READ;
                 end
             end
             //------------------------------------------------
-            // 逐字节解析 + 写配置 RAM; 扇区读完换地址继续
+            // 逐字节解析 + 写配置 RAM; 文件读完(file_done)收尾
             //------------------------------------------------
             S_READ: begin
                 // ---- 字节流解析(规则与仿真版 meeting_config 完全一致) ----
-                if (sd_sec_read_data_valid) begin
-                    last_data <= sd_sec_read_data;
+                if (file_valid) begin
+                    last_data <= file_byte;
                     if (pos < 12'd4) begin
                         case (pos)
-                            12'd0: if (sd_sec_read_data != 8'h4d) bad <= 1'b1; // 'M'
-                            12'd1: if (sd_sec_read_data != 8'h54) bad <= 1'b1; // 'T'
-                            12'd2: if (sd_sec_read_data != 8'h47) bad <= 1'b1; // 'G'
-                            default: if (sd_sec_read_data != 8'h31) bad <= 1'b1;// '1'
+                            12'd0: if (file_byte != 8'h4d) bad <= 1'b1; // 'M'
+                            12'd1: if (file_byte != 8'h54) bad <= 1'b1; // 'T'
+                            12'd2: if (file_byte != 8'h47) bad <= 1'b1; // 'G'
+                            default: if (file_byte != 8'h31) bad <= 1'b1;// '1'
                         endcase
                     end
                     else if (pos == 12'd4) begin
-                        ptotal <= sd_sec_read_data[4:0];
-                        total  <= sd_sec_read_data[4:0];
-                        if (sd_sec_read_data == 8'd0 || sd_sec_read_data > 8'd16)
+                        ptotal <= file_byte[4:0];
+                        total  <= file_byte[4:0];
+                        if (file_byte == 8'd0 || file_byte > 8'd16)
                             bad <= 1'b1;
                     end
                     else if (pos < expected && pos < 12'd1277) begin
                         ram_we   <= 1'b1;
                         ram_addr <= pos[10:0] - 11'd5;
-                        ram_data <= sd_sec_read_data;
+                        ram_data <= file_byte;
                         // 时长(项内前 2 字节, 大端)合法性: 0 < 值 <= 5999
-                        //   ※ 必须加 pos>=285 门控(上板实测致命 bug):
-                        //     dmod 自 pos=0 起就每 62 拍回绕(只在 pos==285 被强
-                        //     制归零), 若不限项区, 会在 pos=62/124/186/248 处也
-                        //     命中 dmod==0, 把元数据区(会议名称/主办/地点/注意
-                        //     事项, 补零填充)的字节对当成时长校验:
-                        //       pos=62  00 00 = 0     → 非法
-                        //       pos=124 00 00 = 0     → 非法
-                        //       pos=186 00 00 = 0     → 非法
-                        //       pos=248 3C 3D = 15421 → 非法
-                        //     结果 bad=1 → error=1, ready 永远为 0, 会议层一个
-                        //     像素都不画(画面退回 osd_scene 的旧"会议公告")。
                         if (dmod == 6'd0 && pos >= 12'd285) begin
-                            if ({last_data, sd_sec_read_data} == 16'd0 ||
-                                {last_data, sd_sec_read_data} > 16'd5999)
+                            if ({last_data, file_byte} == 16'd0 ||
+                                {last_data, file_byte} > 16'd5999)
                                 bad <= 1'b1;
                         end
                     end
@@ -171,34 +160,27 @@ module meeting_sd_rd #(
                     else                     dmod <= dmod + 6'd1;
                 end
 
-                // ---- 扇区边界 / 超时 ----
+                // ---- 超时 / 文件读完 ----
                 if (to_cnt == TIMEOUT_CYCLES) begin
                     // 超时兜底: 撤请求并收尾(保证 BMP 通路不被拖死)
-                    sd_sec_read <= 1'b0;
                     error       <= 1'b1;
                     done        <= 1'b1;
                     fin         <= 1'b1;
                     state       <= S_WAIT;      // 停在等待态(不再抢总线)
                 end
-                else if (sd_sec_read_end) begin
+                else if (file_done) begin
                     to_cnt <= 32'd0;
-                    if (stop_at_end) begin
-                        sd_sec_read <= 1'b0;
-                        done        <= 1'b1;
-                        fin         <= 1'b1;
-                        if (parse_done && !bad) ready <= 1'b1;
-                        else                    error <= 1'b1;
-                        state       <= S_WAIT;  // 收尾后不再占用总线
-                    end
-                    else begin
-                        sd_sec_read_addr <= sd_sec_read_addr + 32'd1;
-                        sector           <= sector + 32'd1;
-                        sd_sec_read      <= 1'b1;   // 电平保持, 继续读下一扇区
-                    end
+                    done   <= 1'b1;
+                    fin    <= 1'b1;
+                    if (parse_done && !bad && file_error == 8'h00) ready <= 1'b1;
+                    else                                            error <= 1'b1;
+                    state  <= S_WAIT;           // 收尾后不再占用总线
+                end
+                else if (file_valid) begin
+                    to_cnt <= 32'd0;            // 有字节进展即清零超时
                 end
                 else begin
-                    to_cnt      <= to_cnt + 32'd1;
-                    sd_sec_read <= 1'b1;
+                    to_cnt <= to_cnt + 32'd1;
                 end
             end
             endcase

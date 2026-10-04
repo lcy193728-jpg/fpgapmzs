@@ -1,0 +1,204 @@
+Reading D:/Quat/modelsim_ase/tcl/vsim/pref.tcl 
+
+# 10.1d
+
+# do run_sim_audio_e2e.do 
+# Modifying modelsim.ini
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module wav_stream_player
+# 
+# Top level modules:
+# 	wav_stream_player
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module audio_src_sel
+# 
+# Top level modules:
+# 	audio_src_sel
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module audio_src_mux
+# 
+# Top level modules:
+# 	audio_src_mux
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module fat32_file_streamer
+# 
+# Top level modules:
+# 	fat32_file_streamer
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module sd_sector_adapter
+# 
+# Top level modules:
+# 	sd_sector_adapter
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module tb_audio_chain_e2e
+# 
+# Top level modules:
+# 	tb_audio_chain_e2e
+# vsim -t 1ps work.tb_audio_chain_e2e 
+# Loading work.tb_audio_chain_e2e
+# Loading work.audio_src_sel
+# Loading work.audio_src_mux
+# Loading work.wav_stream_player
+# Loading work.fat32_file_streamer
+# Loading work.sd_sector_adapter
+# ** Warning: (vsim-3017) ../sim/tb/tb_audio_chain_e2e.v(172): [TFMPC] - Too few port connections. Expected 24, found 23.
+# 
+#         Region: /tb_audio_chain_e2e/u_streamer
+# ** Warning: (vsim-3722) ../sim/tb/tb_audio_chain_e2e.v(172): [TFMPC] - Missing connection for port 'sectors_per_cluster_shift'.
+# 
+# === tb_audio_chain_e2e start ===
+# [tr] t=895000 sd_read=0 strst=0 wstate=1 srvst=0 srv_cnt=0 wr_ptr=0
+# [tr] t=905000 sd_read=0 strst=1 wstate=1 srvst=0 srv_cnt=0 wr_ptr=0
+# [tr] t=915000 sd_read=0 strst=2 wstate=1 srvst=0 srv_cnt=0 wr_ptr=0
+# [srv-req] t=925000 latch lba=x
+# [tr] t=925000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=0 wr_ptr=0
+# [tr] t=935000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=0 wr_ptr=0
+# [tr] t=1265000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=0
+# [wr] t=1295000 wr_ptr=0 sample=0
+# [wr] t=1315000 wr_ptr=1 sample=0
+# [tr] t=6385000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=255
+# [srv-req] t=6395000 latch lba=x
+# [tr] t=6395000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=255
+# [tr] t=6405000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=256
+# [tr] t=6415000 sd_read=0 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=256
+# [tr] t=6425000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=256
+# [tr] t=6735000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=256
+# [wr] t=6765000 wr_ptr=256 sample=0
+# [wr] t=7405000 wr_ptr=288 sample=0
+# [tr] t=11855000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=511
+# [srv-req] t=11865000 latch lba=x
+# [tr] t=11865000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=511
+# [tr] t=11875000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=512
+# [tr] t=11885000 sd_read=0 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=512
+# [tr] t=11895000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=512
+# [tr] t=12205000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=512
+# [wr] t=12235000 wr_ptr=512 sample=0
+# [tr] t=17325000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=767
+# [srv-req] t=17335000 latch lba=x
+# [tr] t=17335000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=767
+# [tr] t=17345000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=768
+# [tr] t=17355000 sd_read=0 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=768
+# [tr] t=17365000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=768
+# [tr] t=17675000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=768
+# [tr] t=22795000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=1023
+# [srv-req] t=22805000 latch lba=x
+# [tr] t=22805000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=1023
+# [tr] t=22815000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1024
+# [tr] t=22825000 sd_read=0 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1024
+# [tr] t=22835000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1024
+# [tr] t=23145000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=1024
+# [tr] t=28265000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=1279
+# [srv-req] t=28275000 latch lba=x
+# [tr] t=28275000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=1279
+# [tr] t=28285000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1280
+# [tr] t=28295000 sd_read=0 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1280
+# [tr] t=28305000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1280
+# [tr] t=28615000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=1280
+# [tr] t=33735000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=1535
+# [srv-req] t=33745000 latch lba=x
+# [tr] t=33745000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=1535
+# [tr] t=33755000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1536
+# [tr] t=33765000 sd_read=0 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1536
+# [tr] t=33775000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1536
+# [tr] t=34085000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=1536
+# [tr] t=39205000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=1791
+# [srv-req] t=39215000 latch lba=x
+# [tr] t=39215000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=1791
+# [tr] t=39225000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1792
+# [tr] t=39555000 sd_read=0 strst=1 wstate=1 srvst=2 srv_cnt=0 wr_ptr=1792
+# ---- [diag] ???é?? tick ??? 15 ??? ----
+# [diag] t=42100000 tick=1 wav_ready=1 mux_busy=0 mux_sv=1 mux_bit=8 launch=1 zero_valid=1 media_valid=1 rd_ptr=1
+# [diag] t=42140000 tick=1 wav_ready=1 mux_busy=0 mux_sv=1 mux_bit=8 launch=1 zero_valid=1 media_valid=1 rd_ptr=1
+# [diag] t=42180000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=0 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42220000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=1 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42260000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=2 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42300000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=3 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42340000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=4 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42380000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=5 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42420000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=6 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42460000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=7 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42500000 tick=0 wav_ready=0 mux_busy=1 mux_sv=0 mux_bit=8 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42540000 tick=0 wav_ready=0 mux_busy=0 mux_sv=1 mux_bit=8 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42580000 tick=0 wav_ready=0 mux_busy=0 mux_sv=1 mux_bit=8 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42620000 tick=0 wav_ready=0 mux_busy=0 mux_sv=1 mux_bit=8 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# [diag] t=42660000 tick=0 wav_ready=0 mux_busy=0 mux_sv=1 mux_bit=8 launch=0 zero_valid=1 media_valid=1 rd_ptr=2
+# ---- [diag] end ----
+# [tr] t=44675000 sd_read=0 strst=1 wstate=1 srvst=3 srv_cnt=511 wr_ptr=1792
+# [tr] t=44685000 sd_read=0 strst=1 wstate=1 srvst=0 srv_cnt=511 wr_ptr=1792
+# [hb t=1000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=47 lvl_rd=1745 srv=0 req=0
+# [hb t=2000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=95 lvl_rd=1697 srv=0 req=0
+# [hb t=3000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=143 lvl_rd=1649 srv=0 req=0
+# [hb t=4000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=191 lvl_rd=1601 srv=0 req=0
+# [hb t=5000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=239 lvl_rd=1553 srv=0 req=0
+# [tr] t=5354705000 sd_read=0 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=1792
+# [srv-req] t=5354715000 latch lba=x
+# [tr] t=5354715000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=1792
+# [tr] t=5354725000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=1792
+# [tr] t=5355055000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=1792
+# [tr] t=5360175000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=2047
+# [srv-req] t=5360185000 latch lba=x
+# [tr] t=5360185000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=2047
+# [tr] t=5360195000 sd_read=0 strst=3 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=5360525000 sd_read=0 strst=3 wstate=1 srvst=2 srv_cnt=0 wr_ptr=0
+# [tr] t=5365645000 sd_read=0 strst=3 wstate=1 srvst=3 srv_cnt=511 wr_ptr=0
+# [tr] t=5365655000 sd_read=0 strst=3 wstate=1 srvst=0 srv_cnt=511 wr_ptr=0
+# [hb t=6000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=287 lvl_rd=1761 srv=0 req=0
+# [chk] t=6042180000 cnt=290 rd_ptr=290 rd_addr=289 rd_q=0 wav_left=0 wr_ptr=0
+# [chk] buffer é?????é??é???????? = -1 (?????? 288)
+# [chk] buffer[286..291] = 0 0 0 0 0 0
+# [hb t=7000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=335 lvl_rd=1713 srv=0 req=0
+# [hb t=8000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=383 lvl_rd=1665 srv=0 req=0
+# [hb t=9000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=431 lvl_rd=1617 srv=0 req=0
+# [hb t=10000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=479 lvl_rd=1569 srv=0 req=0
+# [tr] t=10688025000 sd_read=0 strst=4 wstate=1 srvst=0 srv_cnt=511 wr_ptr=0
+# [srv-req] t=10688035000 latch lba=32
+# [tr] t=10688035000 sd_read=1 strst=4 wstate=1 srvst=0 srv_cnt=511 wr_ptr=0
+# [tr] t=10688045000 sd_read=1 strst=4 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10688375000 sd_read=1 strst=4 wstate=1 srvst=2 srv_cnt=0 wr_ptr=0
+# [tr] t=10693495000 sd_read=1 strst=4 wstate=1 srvst=3 srv_cnt=511 wr_ptr=0
+# [srv-req] t=10693505000 latch lba=32
+# [tr] t=10693505000 sd_read=1 strst=4 wstate=1 srvst=0 srv_cnt=511 wr_ptr=0
+# [tr] t=10693515000 sd_read=0 strst=5 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693525000 sd_read=0 strst=7 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693535000 sd_read=0 strst=0 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693545000 sd_read=0 strst=0 wstate=3 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693555000 sd_read=0 strst=0 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693565000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693575000 sd_read=0 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693585000 sd_read=1 strst=2 wstate=1 srvst=1 srv_cnt=511 wr_ptr=0
+# [tr] t=10693845000 sd_read=1 strst=2 wstate=1 srvst=2 srv_cnt=0 wr_ptr=0
+# [wr] t=10693875000 wr_ptr=0 sample=0
+# [wr] t=10693895000 wr_ptr=1 sample=0
+# [tr] t=10698965000 sd_read=1 strst=2 wstate=1 srvst=3 srv_cnt=511 wr_ptr=255
+# [srv-req] t=10698975000 latch lba=x
+# [tr] t=10698975000 sd_read=1 strst=2 wstate=1 srvst=0 srv_cnt=511 wr_ptr=255
+# [tr] t=10698985000 sd_read=0 strst=1 wstate=1 srvst=1 srv_cnt=511 wr_ptr=256
+# [tr] t=10699315000 sd_read=0 strst=1 wstate=1 srvst=2 srv_cnt=0 wr_ptr=256
+# [tr] t=10704435000 sd_read=0 strst=1 wstate=1 srvst=3 srv_cnt=511 wr_ptr=256
+# [tr] t=10704445000 sd_read=0 strst=1 wstate=1 srvst=0 srv_cnt=511 wr_ptr=256
+# [hb t=11000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=527 lvl_rd=1777 srv=0 req=0
+# [hb t=12000000000 ns] primed=1 wav_left=0 audio_left=0 rd_ptr=575 lvl_rd=1729 srv=0 req=0
+# ----------------------------------------------------
+# primed é?????=1         : t=22980 ns  (wav_primed=1)
+# wav_left é?????é??é??     : t=-1 ns  (nonzero cycles=0)
+# audio_left é?????é??é??   : t=-1 ns  (nonzero cycles=0)
+# media_ready è???????°    : 577
+# wav_ready è???????°      : 577
+# 48kHz tick ??°         : 576
+# tick && wav_ready ??????: 576  <== ???é?? >0 ????????¨????????¨è??
+# ????????¨??¨è??????????????    : 575
+# audio_pcm_valid ?????°  : 294805
+# mux accepted_pairs    : 577
+# player sample_counter : 576
+# player wr_ptr/rd_ptr  : 256 / 576
+# player wstate         : 1
+# level_rd / level_wr   : 1728 / 1728
+# streamer state        : 1
+# ----------------------------------------------------
+# è°?è?????è?? D[7:0]={primed1,pcm_nz,out_nz,send,bytes,req,sel_wav,primed}
+#   = {1,0,0,1,1,0,1,1}
+# ----------------------------------------------------
+# RESULT: FAIL  (?????? PCM ??? 0 ??? ?¤???°????????????é??, ????????¨???è?°?????§)
+# === tb_audio_chain_e2e end ===
+# ** Note: $finish    : ../sim/tb/tb_audio_chain_e2e.v(453)
+#    Time: 12000860 ns  Iteration: 0  Instance: /tb_audio_chain_e2e

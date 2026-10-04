@@ -8,9 +8,10 @@ vlib work
 vmap work work
 
 vlog ../audio_final/rtl/wav_stream_player.v
-vlog ../src/audio_sd_arbiter.v
 vlog ../audio_final/rtl/audio_src_sel.v
 vlog ../audio_board/rtl/audio_src_mux.v
+vlog ../src/fat32/fat32_file_streamer.v
+vlog ../src/fat32/sd_sector_adapter.v
 vlog ../sim/tb/tb_audio_chain_e2e.v
 
 vsim -t 1ps work.tb_audio_chain_e2e
@@ -36,9 +37,9 @@ if {![batch_mode]} {
     add wave -radix decimal /tb_audio_chain_e2e/audio_left
     add wave -divider "SD"
     add wave /tb_audio_chain_e2e/sd_sec_read
-    add wave /tb_audio_chain_e2e/wav_sec_req_raw
-    add wave /tb_audio_chain_e2e/wav_sec_data_valid
-    add wave /tb_audio_chain_e2e/wav_sec_end
+    add wave /tb_audio_chain_e2e/wav_file_start
+    add wave /tb_audio_chain_e2e/wav_file_valid
+    add wave /tb_audio_chain_e2e/wav_file_done
 }
 
 run -all

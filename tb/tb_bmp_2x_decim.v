@@ -34,8 +34,6 @@
 module tb_bmp_2x_decim;
 
     localparam CLK_PERIOD = 10;                 // 100MHz
-    localparam [31:0] IMG_2X   = 32'd30000;     // 2× 源所在扇区
-    localparam [31:0] Z_WRAP   = 32'd40000;
     localparam [31:0] FILE_LEN = 32'd7734;      // 54 + 2560*3
     localparam integer SRC_PX  = 2560;          // 2 行 × 1280
     localparam integer EXP_OUT = 640;           // 只有第 0 行产出
@@ -46,16 +44,18 @@ module tb_bmp_2x_decim;
     reg         sd_init_done;
     reg         key_trigger, key_prev, slide_en;
     reg  [31:0] slide_interval;
-    reg  [31:0] zone_start, zone_wrap, zone_max_img;
+    reg  [31:0] zone_cluster0, zone_size0, zone_max_img;
     reg         zone_load, reload_req;
-    reg  [7:0]  sd_sec_read_data;
-    reg         sd_sec_read_data_valid, sd_sec_read_end;
+    reg  [7:0]  file_byte;
+    reg         file_valid, file_done;
+    reg  [7:0]  file_error;
     reg         write_req_ack;
 
     wire [3:0]  state_code;
     wire        write_req;
-    wire        sd_sec_read;
-    wire [31:0] sd_sec_read_addr;
+    wire        file_start;
+    wire [31:0] file_cluster;
+    wire [31:0] file_len_out;
     wire        bmp_data_wr_en;
     wire [23:0] bmp_data;
     wire [7:0]  img_no;
@@ -74,10 +74,9 @@ module tb_bmp_2x_decim;
     bmp_read_auto #(
         .SLIDE_INTERVAL      (32'd10_000_000),
         .MIN_PERIOD_CYCLES   (32'd1000),
-        .ZONE_START_SECTOR   (IMG_2X),
-        .ZONE_WRAP_SECTOR    (Z_WRAP),
         .ZONE_MAX_IMAGES     (32'd1),
         .BMP_PIXEL_BYTES     (BMP_PIX_BYTES_SIM),
+        .BMP_PIXEL_BYTES_1024(32'd480),
         .SD_READ_TIMEOUT_MS  (16'd20),
         .CLK_FREQ_HZ         (32'd1_000_000),
         .MAX_RETRIES         (4'd1),
@@ -91,20 +90,34 @@ module tb_bmp_2x_decim;
         .key_prev               (key_prev),
         .slide_en               (slide_en),
         .slide_interval         (slide_interval),
-        .zone_start             (zone_start),
-        .zone_wrap              (zone_wrap),
+        .zone_start             (32'd0),
+        .zone_wrap              (32'd0),
         .zone_max_img           (zone_max_img),
         .zone_load              (zone_load),
+        .zone_cluster0          (zone_cluster0),
+        .zone_cluster1          (32'd0),
+        .zone_cluster2          (32'd0),
+        .zone_cluster3          (32'd0),
+        .zone_cluster4          (32'd0),
+        .zone_cluster5          (32'd0),
+        .zone_size0             (zone_size0),
+        .zone_size1             (32'd0),
+        .zone_size2             (32'd0),
+        .zone_size3             (32'd0),
+        .zone_size4             (32'd0),
+        .zone_size5             (32'd0),
         .reload_req             (reload_req),
         .state_code             (state_code),
         .bmp_width              (16'd640),
         .write_req              (write_req),
         .write_req_ack          (write_req_ack),
-        .sd_sec_read            (sd_sec_read),
-        .sd_sec_read_addr       (sd_sec_read_addr),
-        .sd_sec_read_data       (sd_sec_read_data),
-        .sd_sec_read_data_valid (sd_sec_read_data_valid),
-        .sd_sec_read_end        (sd_sec_read_end),
+        .file_start             (file_start),
+        .file_cluster           (file_cluster),
+        .file_len_out           (file_len_out),
+        .file_valid             (file_valid),
+        .file_byte              (file_byte),
+        .file_done              (file_done),
+        .file_error             (file_error),
         .bmp_data_wr_en         (bmp_data_wr_en),
         .bmp_data               (bmp_data),
         .img_no                 (img_no),
@@ -130,67 +143,36 @@ module tb_bmp_2x_decim;
     endtask
 
     //---------------- 假 SD 卡(单扇区 512B) -----------------
-    reg [2:0]  sd_st;
-    reg [31:0] sd_cur_addr;
-    reg [9:0]  sd_byte_idx;
+    //   FAT32 化后删除: bmp_read_auto 改用 file 接口, 不再有 sd_sec_read。
+    //   文件字节流由 feed_file task 直接按 file_* 接口吐出。
 
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            sd_st <= 3'd0; sd_cur_addr <= 32'd0; sd_byte_idx <= 10'd0;
-            sd_sec_read_data <= 8'd0; sd_sec_read_data_valid <= 1'b0; sd_sec_read_end <= 1'b0;
-        end
-        else begin
-            sd_sec_read_end <= 1'b0;
-            case (sd_st)
-                3'd0: begin
-                    sd_sec_read_data_valid <= 1'b0;
-                    if (sd_sec_read) begin
-                        sd_st <= 3'd1; sd_byte_idx <= 10'd0; sd_cur_addr <= sd_sec_read_addr;
-                    end
-                end
-                3'd1: begin
-                    sd_sec_read_data <= read_sd_byte(sd_cur_addr, sd_byte_idx);
-                    sd_sec_read_data_valid <= 1'b1;
-                    if (sd_byte_idx == 10'd511) sd_st <= 3'd2; else sd_byte_idx <= sd_byte_idx + 10'd1;
-                end
-                3'd2: begin
-                    sd_sec_read_data_valid <= 1'b0; sd_sec_read_end <= 1'b1; sd_st <= 3'd3;
-                end
-                3'd3: sd_st <= 3'd0;
-                default: sd_st <= 3'd0;
-            endcase
-        end
-    end
-
-    // 假卡字节生成: 文件字节 gpos = (addr-IMG_2X)*512 + idx
-    function [7:0] read_sd_byte;
-        input [31:0] addr;
-        input [9:0]  idx;
-        reg [31:0] gpos, p, n, ch;
+    // 文件字节生成: 按文件内字节偏移 gpos(0..FILE_LEN-1)生成 BMP 内容
+    function [7:0] file_byte_at;
+        input [31:0] gpos;
+        reg [31:0] p, n, ch;
         begin
-            read_sd_byte = 8'h00;
-            gpos = (addr - IMG_2X) * 32'd512 + idx;
+            file_byte_at = 8'h00;
             if (gpos < 32'd54) begin
                 // ---- BMP 头(小端) ----
                 case (gpos)
-                    32'd0 : read_sd_byte = "B";
-                    32'd1 : read_sd_byte = "M";
-                    32'd2 : read_sd_byte = 8'h36;   // file_len = 7734 = 0x1E36
-                    32'd3 : read_sd_byte = 8'h1E;
-                    32'd4 : read_sd_byte = 8'h00;
-                    32'd5 : read_sd_byte = 8'h00;
-                    32'd10: read_sd_byte = 8'h36;   // pixel_offset = 54
-                    32'd14: read_sd_byte = 8'h28;   // DIB = 40
-                    32'd18: read_sd_byte = 8'h00;   // width  = 1280 = 0x0500
-                    32'd19: read_sd_byte = 8'h05;
-                    32'd22: read_sd_byte = 8'hC0;   // height = 960  = 0x03C0
-                    32'd23: read_sd_byte = 8'h03;
-                    32'd26: read_sd_byte = 8'h01;   // planes = 1
-                    32'd28: read_sd_byte = 8'h18;   // bits   = 24
-                    32'd30: read_sd_byte = 8'h00;   // compression = 0 (BI_RGB)
-                    32'd34: read_sd_byte = 8'h00;   // biSizeImage = 7680 = 0x1E00
-                    32'd35: read_sd_byte = 8'h1E;
-                    default: read_sd_byte = 8'h00;
+                    32'd0 : file_byte_at = "B";
+                    32'd1 : file_byte_at = "M";
+                    32'd2 : file_byte_at = 8'h36;   // file_len = 7734 = 0x1E36
+                    32'd3 : file_byte_at = 8'h1E;
+                    32'd4 : file_byte_at = 8'h00;
+                    32'd5 : file_byte_at = 8'h00;
+                    32'd10: file_byte_at = 8'h36;   // pixel_offset = 54
+                    32'd14: file_byte_at = 8'h28;   // DIB = 40
+                    32'd18: file_byte_at = 8'h00;   // width  = 1280 = 0x0500
+                    32'd19: file_byte_at = 8'h05;
+                    32'd22: file_byte_at = 8'hC0;   // height = 960  = 0x03C0
+                    32'd23: file_byte_at = 8'h03;
+                    32'd26: file_byte_at = 8'h01;   // planes = 1
+                    32'd28: file_byte_at = 8'h18;   // bits   = 24
+                    32'd30: file_byte_at = 8'h00;   // compression = 0 (BI_RGB)
+                    32'd34: file_byte_at = 8'h00;   // biSizeImage = 7680 = 0x1E00
+                    32'd35: file_byte_at = 8'h1E;
+                    default: file_byte_at = 8'h00;
                 endcase
             end
             else begin
@@ -203,27 +185,61 @@ module tb_bmp_2x_decim;
                     if ((n >> 1) < 32'd320) begin
                         // 像素对 (R=200, G=100, B=50): R 和 = 400 ≥ 256 → 命中位宽陷阱
                         case (ch)
-                            32'd0: read_sd_byte = 8'd50;    // B
-                            32'd1: read_sd_byte = 8'd100;   // G
-                            32'd2: read_sd_byte = 8'd200;   // R
+                            32'd0: file_byte_at = 8'd50;    // B
+                            32'd1: file_byte_at = 8'd100;   // G
+                            32'd2: file_byte_at = 8'd200;   // R
                         endcase
                     end
                     else begin
                         // 像素对 (255,255,255): 三通道和 = 510 ≥ 256 → 三通道均命中
-                        read_sd_byte = 8'd255;
+                        file_byte_at = 8'd255;
                     end
                 end
                 else begin
                     // 第 1 行: 奇数行, 必须整行丢弃; 若泄漏到输出即为 FAIL
                     case (ch)
-                        32'd0: read_sd_byte = 8'd3;    // B
-                        32'd1: read_sd_byte = 8'd2;    // G
-                        32'd2: read_sd_byte = 8'd1;    // R
+                        32'd0: file_byte_at = 8'd3;    // B
+                        32'd1: file_byte_at = 8'd2;    // G
+                        32'd2: file_byte_at = 8'd1;    // R
                     endcase
                 end
             end
         end
     endfunction
+
+    // 文件流响应: 检测到 file_start 后逐字节吐整个文件(头 + 像素 + file_done)
+    //   每字节用 @(negedge clk) 驱动, file_valid=1 覆盖一个 clk 上升沿, 相位鲁棒。
+    task feed_file;
+        integer g;
+        begin
+            wait (file_start == 1'b1);
+            @(negedge clk);
+            // 吐文件头 54 字节
+            for (g = 0; g < 54; g = g + 1) begin
+                @(negedge clk);
+                file_byte  = file_byte_at(g);
+                file_valid = 1'b1;
+                @(negedge clk);
+                file_valid = 1'b0;
+            end
+            // 等 write_req_ack(S_READ 已进入)再吐像素, 模拟真实 SPI 节奏
+            wait (write_req_ack == 1'b1);
+            @(posedge clk);
+            // 吐像素字节(offset 54 .. FILE_LEN-1)
+            for (g = 54; g < FILE_LEN; g = g + 1) begin
+                @(negedge clk);
+                file_byte  = file_byte_at(g);
+                file_valid = 1'b1;
+                @(negedge clk);
+                file_valid = 1'b0;
+            end
+            // file_done
+            @(posedge clk);
+            file_done = 1'b1;
+            @(posedge clk);
+            file_done = 1'b0;
+        end
+    endtask
 
     //---------------- 输出像素捕获 -----------------
     //   bmp_data_wr_en 与 bmp_data 由同一 always 块在同一拍赋值, 故同一沿读到的
@@ -253,8 +269,9 @@ module tb_bmp_2x_decim;
         rst = 1'b1; sd_init_done = 1'b0;
         key_trigger = 1'b0; key_prev = 1'b0; slide_en = 1'b1;
         slide_interval = 32'd10_000_000;
-        zone_start = IMG_2X; zone_wrap = Z_WRAP; zone_max_img = 32'd1;
+        zone_cluster0 = 32'd30000; zone_size0 = FILE_LEN; zone_max_img = 32'd1;
         zone_load = 1'b0; reload_req = 1'b0;
+        file_valid = 1'b0; file_byte = 8'd0; file_done = 1'b0; file_error = 8'd0;
 
         $display("========================================================");
         $display(" tb_bmp_2x_decim : 1280×960 → 640×480 2×1 抽取降采样验证");
@@ -263,7 +280,19 @@ module tb_bmp_2x_decim;
         repeat (10) @(posedge clk);
         rst = 1'b0;
         @(posedge clk);
+        // 加载簇号表
+        zone_load = 1'b1;
+        @(posedge clk);
+        zone_load = 1'b0;
+        @(posedge clk);
         sd_init_done = 1'b1;
+
+        // 后台吐文件流(阻塞式 task, 用 fork 让主流程继续)
+        fork
+            begin : feeder
+                feed_file;
+            end
+        join_none
 
         // 等"整帧真正读完"= 进入 S_HOLD(state_code=5)
         //   ※ 不能只等 out_n 满 640: 最后一个输出像素来自第 0 行 dcol=1279

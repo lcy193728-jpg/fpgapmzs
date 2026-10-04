@@ -36,6 +36,7 @@ if {![batch_mode]} {
     add wave /tb_display_adjust/bmp_busy
     add wave -radix unsigned /tb_display_adjust/bri_level
     add wave -radix unsigned /tb_display_adjust/vol_level
+    add wave -radix unsigned /tb_display_adjust/con_level
     add wave -radix unsigned /tb_display_adjust/res_level
     add wave /tb_display_adjust/pic_manual
     add wave -radix unsigned /tb_display_adjust/ui_mode
@@ -54,6 +55,8 @@ if {![batch_mode]} {
     add wave -radix unsigned /tb_display_adjust/u_disp/fsm
     add wave -radix unsigned /tb_display_adjust/u_disp/alpha
     add wave -radix unsigned /tb_display_adjust/u_disp/bar_cnt
+    add wave -radix unsigned /tb_display_adjust/u_disp/con_s
+    add wave -radix unsigned /tb_display_adjust/u_disp/con_cnt
     add wave -radix hex /tb_display_adjust/u_disp/fo
 
     add wave -divider "统计"

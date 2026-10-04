@@ -104,68 +104,23 @@ parameter ADDR_BITS             = 21  ;            //external memory user interf
 parameter BUSRT_BITS            = 10  ;            //external memory user interface burst width
 
 //--------------------------------------------------------------
-// 场景素材分区表(卡内扇区区间): 四个场景 = 四个互不相同的独立分区,
-// 拨码切场景时按此表查得分区 → zone_load 重载 bmp 扫描, 各播各自区域的图.
-// ⚠ 扇区口径 = 【物理扇区】: FPGA 的 CMD17 地址原样下发(sd_card_sec_read_write.v
-//   L228 cmd <= {8'd17,sec_addr,8'hff}), 不含分区偏移。
-//   本卡(新 TF 卡 G:) = MBR + FAT32, 分区物理偏移仅 64 扇区; 而 tools/find_bmp.py
-//   读 \\.\G: 拿到的是【卷内扇区】(= 物理 - 64)。用 --base 64 让工具直接输出物理值。
-//   校准锚点: 会议配置 "MTG1" 固定在物理扇区 200000, 与 mtg_start_sector 一致。
-//
-// 数据来源: tools/find_bmp.py --drive G --start 2048 --base 64
-//   卡上 10 张 BMP 全部 8 扇区对齐; 物理顺序(find_bmp.py --drive G --base 64 实测):
-//     第1张 8512  = 1_meet.bmp    (640×480)
-//     第2张 10368 = 2_quiz.bmp    (640×480)
-//     第3张 12224 = 3_extra.bmp   (640×480, 备用未入区)
-//     第4张 14080 = 4_extra.bmp   (640×480, 备用未入区)
-//     第5张 15936 = w1_320a.bmp   (320×240)
-//     第6张 16448 = w2_640a.bmp   (640×480)
-//     第7张 18304 = w3_1024a.bmp  (1024×768)
-//     第8张 22976 = w4_320b.bmp   (320×240)
-//     第9张 23488 = w5_640b.bmp   (640×480)
-//     第10张 25344= w6_1024b.bmp  (1024×768)
-//   分区划分:
-//     迎新区/菜单区 = 第5~10张(320/640/1024 各2张; 分辨率变化时右上角自动弹字幕)
-//     会议区 = 第1张 | 抢答区 = 第2张 | 应急区 = 复用抢答区底图
-//   ⚠ 换卡/重排素材后必须重跑该工具并同步本表(扇区值会变), 否则扫不到图.
-//   ★2026-10-02 口径修正(关键根因): 旧表误用 find_bmp.py 的默认 --base 2048
-//     (即假设分区 1MB 对齐), 而本卡实际分区偏移仅 64 扇区 → 全部 Z_* 偏大
-//     1984 扇区。板子按旧地址扫, 迎新区会跳过错位后的前两张(w1/w2), 上电菜单态
-//     即显示错图。现按 --base 64 重算(各值 = 卷内扇区 + 64), 与卡实测逐张吻合。
+// 场景素材(FAT32 正规化): 不再用"卡内扇区区间"表。scanner(fat32_volume_scanner)
+//   开机扫目录拿 12 文件的簇号+大小, 场景→资源号映射在 sd_card_bmp 内部完成:
+//     latch_sw 0菜单/1迎新 → 资源 4..9 (W1~W6, 6 张)
+//     latch_sw 2会议       → 资源 0   (1_MEET.BMP)
+//     latch_sw 3抢答/4应急 → 资源 1   (2_QUIZ.BMP)
+//   换卡/重排素材无需改代码(目录项自动重扫), 不再依赖 find_bmp.py 的扇区表。
 //--------------------------------------------------------------
-localparam [31:0] Z_MENU_START  = 32'd15936;    // 菜单区(=迎新区; 菜单全屏 OSD 自绘)
-localparam [31:0] Z_MENU_WRAP   = 32'd25352;    // 菜单区扫描上限(=末张起点 + 8)
-localparam [31:0] Z_MENU_IMGS   = 32'd6;        // 菜单区张数
-localparam [31:0] Z_WEL_START   = 32'd15936;    // 迎新区起点(第 5 张 w1_320a)
-localparam [31:0] Z_WEL_WRAP    = 32'd25352;    // 迎新区扫描上限(=末张起点 + 8)
-localparam [31:0] Z_WEL_IMGS    = 32'd6;        // 迎新区张数(320a,640a,1024a,320b,640b,1024b)
-localparam [31:0] Z_MEET_START  = 32'd8512;     // 会议区起点(1_meet.bmp)
-localparam [31:0] Z_MEET_WRAP   = 32'd10368;    // 会议区扫描上限(=下一区起点)
-localparam [31:0] Z_MEET_IMGS   = 32'd1;        // 会议区张数
-localparam [31:0] Z_QUIZ_START  = 32'd10368;    // 抢答区起点(2_quiz.bmp)
-localparam [31:0] Z_QUIZ_WRAP   = 32'd12224;    // 抢答区扫描上限(=下一张 3_extra)
-localparam [31:0] Z_QUIZ_IMGS   = 32'd1;        // 抢答区张数
-localparam [31:0] Z_ALARM_START = 32'd10368;    // 应急区: 复用抢答区底图(无专属素材)
-localparam [31:0] Z_ALARM_WRAP  = 32'd12224;    // 应急区扫描上限(=抢答区上限)
-localparam [31:0] Z_ALARM_IMGS  = 32'd1;        // 应急区张数(=抢答区)
 
 //--------------------------------------------------------------
-// TF 卡背景音乐素材区(裸 PCM: 48 kHz/16 bit 有符号/小端/单声道, 无文件头):
-//   由 PC 端工具生成并整段写到卡的固定扇区上(不放进文件系统, 扇区天然连续):
-//     python audio_final/tools/make_audio_corpus.py 你的歌.wav --name wel_music
-//   工具会打印下面两行 localparam 与写卡命令, 直接把输出盖到此处即可。
-//   素材区必须避开已占用区间: BMP 8512~34111 / 会议配置 200000~200002。
-//
-//   WAV_SECTORS = 0 表示"尚未准备音乐": 此时迎新技术场景**自动退回片内
-//     DDS 合成音**(与改造前完全一致, 不会静音); 填上真实扇区数后, 迎新
-//     场景即刻改播 TF 卡上的歌(见下方 sel_wav)。其余场景(会议/抢答/应急)
-//     一律保持片内合成音不变。
+// TF 卡背景音乐素材(FAT32 化): 音乐改为 WEL.BIN 文件放进 FAT32 文件系统,
+//   由 scanner 扫目录拿到簇号+大小(scanner 资源 11 = WEL.BIN)。不再需要
+//   "整段写到固定扇区"的 WAV_START_LBA/WAV_SECTORS 常量。
+//   PC 端把任意 WAV 转成裸 PCM(48kHz/16bit 小端/单声道)后命名 WEL.BIN 放卡根
+//   目录即可, 工具见 audio_final/tools/make_audio_corpus.py。
+//   若卡上没有 WEL.BIN(scanner 扫不到), 顶层 wav_file_ready=0 → 迎新场景
+//   自动退回片内 DDS 合成音(与改造前"未准备音乐"行为一致)。
 //--------------------------------------------------------------
-localparam [31:0] WAV_START_LBA = 32'd300000;   // 音乐区起始扇区
-//   素材: "Carefree" Kevin MacLeod (incompetech.com), CC BY 4.0, 3:25, 205.14 s
-//    由 tools/make_audio_corpus.py 生成, 裸 PCM 18.78 MB = 38464 扇区
-//    sha256 = 0d463ec052a46c5d16e125d348aa64301ec9c394b8b5810b75ef02712d1d5222
-localparam [31:0] WAV_SECTORS   = 32'd38464;    // 音乐区总扇区数(0=未准备, 走 DDS)
 
     wire			vga_out_de;
 
@@ -199,42 +154,10 @@ wire                            menu_active;   // 菜单态标志(1=SW1..3 无�
 wire [2:0]                      latch_sw;      // 内容源/素材分区号(0菜单 1迎新 2会议 3抢答 4应急)
 wire                            scene_change_pulse; // 菜单↔场景/场景间切换事件 → 触发 bmp 分区重载
 
-//场景分区重载: scene_control 查表输出目标分区, zone_load 脉冲随切换事件给出
-//(四场景 = 四个独立分区; 应急=独立第 4 分区, 与其它场景同等重载)
-reg  [31:0]                     zone_start_l;   // 目标分区起点扇区
-reg  [31:0]                     zone_wrap_l;    // 目标分区扫描上限
-reg  [31:0]                     zone_max_l;     // 目标分区图片张数
+//场景分区重载(FAT32 化): 不再查 Z_* 扇区表, 直接把 latch_sw(场景号)传给
+//   sd_card_bmp, 由它在内部按场景查 scanner 扫出的簇号表(见 sd_card_bmp 的
+//   "场景→资源号→簇号映射")。zone_load 脉冲随切换事件给出。
 wire                            zone_load_l;    // 分区重载请求(=scene_change_pulse)
-
-always @(*) begin
-    case (latch_sw)
-        3'd0: begin // 菜单(全屏 OSD 自绘, 底层预载迎新区一张)
-            zone_start_l = Z_MENU_START;
-            zone_wrap_l  = Z_MENU_WRAP;
-            zone_max_l   = Z_MENU_IMGS;
-        end
-        3'd1: begin // 迎新
-            zone_start_l = Z_WEL_START;
-            zone_wrap_l  = Z_WEL_WRAP;
-            zone_max_l   = Z_WEL_IMGS;
-        end
-        3'd2: begin // 会议
-            zone_start_l = Z_MEET_START;
-            zone_wrap_l  = Z_MEET_WRAP;
-            zone_max_l   = Z_MEET_IMGS;
-        end
-        3'd3: begin // 抢答
-            zone_start_l = Z_QUIZ_START;
-            zone_wrap_l  = Z_QUIZ_WRAP;
-            zone_max_l   = Z_QUIZ_IMGS;
-        end
-        default: begin // 应急(第 4 分区)
-            zone_start_l = Z_ALARM_START;
-            zone_wrap_l  = Z_ALARM_WRAP;
-            zone_max_l   = Z_ALARM_IMGS;
-        end
-    endcase
-end
 assign zone_load_l = scene_change_pulse;
 
 //OSD 叠加底座(插入 video_delay → hdmi_tx 之间)相关信号
@@ -305,14 +228,21 @@ wire [1:0]                      img_res;       // 当前显示图源分辨率码
 wire                            img_v2x;       // 当前图源高=240(只出 240 行, 交 bmp_scale 纵向 2×)
 
 //人机交互(ui_key_ctrl)输出
-wire [2:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率/3轮播周期/4会议计时/5音量
+//  ★ui_mode = 展示模式码(hud_mode): 0图片/1亮度/2分辨率/3轮播周期/4会议计时/
+//    5音量/6对比度。6 是 ui_key_ctrl 的"对比度复用槽"上报(迎新场景模式4 /
+//    应急场景模式2), 见 src/ui_key_ctrl.v 文件头。display_adjust 按本码
+//    判断, 故复用槽调节时会弹"对比度条"而非缩放条/不弹。
+//  ★数码管"模式号"位不用 ui_mode(会显示标记码 6), 而用 ui_mode_raw(真实模式)。
+wire [2:0]  ui_mode;        // 展示模式码(ui_key_ctrl.hud_mode) 0..6 → display_adjust / 参数值选择
+wire [2:0]  ui_mode_raw;    // ui_key_ctrl 内部真实模式 0..5 → 数码管"模式号"位(第5位)
 wire [3:0]  ui_vol;         // 音量档 0..15(模式5可调, 默认8=×1.0)
+wire [3:0]  ui_con;         // 对比度档 0..15(复用槽可调, 默认8=×1.0; 2026-10-02)
 wire [3:0]  res_level;      // 分辨率档 0..7
 wire [7:0]  pic_param;      // 图片参数(0=轮播 / N=手动第N张)
 wire [7:0]  ui_period_sec;  // 批次4 轮播间隔档(秒: 2/3/5/10/30)
 wire [31:0] ui_period_cyc;  // 批次4 轮播间隔(时钟周期) → sd_card_bmp
 wire        ui_disp_hold;   // 批次4 参数强显保持中(2 秒)
-wire [2:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时的 ui_mode)
+wire [2:0]  ui_disp_sel;    // 批次4 保持期"参数来源"模式码(产生动作时的 hud_mode, 含 6)
 wire        pic_manual;     // 1=手动单张(冻结自动轮播)
 wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
 wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
@@ -518,12 +448,15 @@ ui_key_ctrl #(
     .key4                (key4                ),
     .control_lock        (meeting_key_owner    ),  // 仅会议接管; 应急不冻结(模式0=告警切换)
     .alarm_scene         (alarm_en             ),  // 应急场景标志
+    .scene_id            (scene_id             ),  // 场景码 → 对比度复用槽分派(2026-10-02)
     .alarm_type          (alarm_type           ),  // 应急模式0 输出的告警类型
     .img_no              (img_no               ),
     .scene_chg           (scene_change_pulse   ),
-    .mode                (ui_mode              ),
+    .mode                (ui_mode_raw          ),  // 内部模式 0..5(仅诊断)
+    .hud_mode            (ui_mode              ),  // ★展示模式码(含 6=对比度) → 显示/数码管
     .bri_level           (bri_level            ),
     .vol_level           (ui_vol               ),
+    .con_level           (ui_con               ),  // 对比度档(复用槽; 2026-10-02)
     .res_level           (res_level            ),
     .period_sec          (ui_period_sec        ),
     .period_cycles       (ui_period_cyc        ),
@@ -624,6 +557,7 @@ wire signed[15:0] wav_right;
 wire             sel_wav;
 wire             audio_rate_tick;
 wire             wav_primed;      //WAV 播放器已攒够起播水位(读侧信号)
+wire             wav_file_ready;  //WEL.BIN 已扫到(sd_card_clk 域; 顶层同步到 video_clk 后用)
 assign wav_right = wav_left;      // 单声道素材 → 左右声道同源
 
 sd_card_bmp  sd_card_bmp_m0(
@@ -635,13 +569,10 @@ sd_card_bmp  sd_card_bmp_m0(
 	.key_prev                   (key_prev_pl              ),
 	.slide_en                   (bmp_slide_en             ),
 	.slide_interval             (ui_period_cyc            ),  //批次4 周期档(2/3/5/10/30s)
-	.zone_start                 (zone_start_l             ),
-	.zone_wrap                  (zone_wrap_l              ),
-	.zone_max_img               (zone_max_l               ),
-	.zone_load                  (zone_load_l              ),
+	.latch_sw                   (latch_sw                ),
+	.zone_load                  (zone_load_l             ),
 	.reload_req                 (res_chg_pl               ),
-	// ---- 会议议程配置(TF 卡固定扇区 200000, MTG1 字节流; 开机独占读 3 扇区) ----
-	.mtg_start_sector           (32'd200000                ),
+	// ---- 会议议程配置(FAT32 化: MTG1.CFG 文件, 簇号由 scanner 扫出) ----
 	.mtg_ram_we                 (mtg_ram_we               ),
 	.mtg_ram_addr               (mtg_ram_addr             ),
 	.mtg_ram_data               (mtg_ram_data             ),
@@ -658,17 +589,16 @@ sd_card_bmp  sd_card_bmp_m0(
 	.bmp_error                  (bmp_error                ),
 	.img_res                    (img_res                  ),  //源分辨率码四档(2026-10-02)
 	.img_v2x                    (img_v2x                  ),  //源高=240 → bmp_scale 纵向 2×
-	// ---- WAV 背景音乐(裸 PCM; 读侧 video_clk 域, 播放器在本模块内) ----
+	// ---- WAV 背景音乐(FAT32 化: WEL.BIN 文件; 读侧 video_clk 域) ----
 	.audio_clk                  (video_clk                ),
 	.audio_rst_n                (rst_n_vid                ),
 	.wav_play_en                (sel_wav                  ),
-	.wav_start_lba              (WAV_START_LBA            ),
-	.wav_sectors                (WAV_SECTORS              ),
 	.wav_sample_tick            (audio_rate_tick          ),
 	.wav_sample_ready           (wav_ready                ),
 	.wav_sample                 (wav_left                 ),
 	.wav_sample_valid           (wav_valid                ),
 	.wav_primed                 (wav_primed               ),
+	.wav_file_ready             (wav_file_ready           ),
 	.SD_nCS                     (sd_ncs                   ),
 	.SD_DCLK                    (sd_dclk                  ),
 	.SD_MOSI                    (sd_mosi                  ),
@@ -708,19 +638,30 @@ bmp_scale bmp_scale_m0(
 //   第2~4位 = 当前模式参数(3位十进制, 前导零熄灭)
 //             模式0: 0=轮播 / N=手动第N张; 模式1: 亮度 0..15;
 //             模式2: 档位 0..7;            模式3: 轮播间隔秒数 2/3/5/10/30
-//             模式5: 音量 0..15
+//             模式5: 音量 0..15;           6(对比度复用槽): 对比度 0..15(2026-10-02)
 //             (批次4: 参数刚被改动 → 该值强制保持显示 2 秒后自动返回,
 //              见 ui_key_ctrl 的 disp_hold/disp_sel; 默认观感与之前一致)
-//   第5位 = 功能模式号(0图片/1亮度/2分辨率/3周期/4会议计时/5音量) → seg_data_4
+//   第5位 = 功能模式号(真实 0..5: 0图片/1亮度/2缩放/3周期/4会议计时/5音量)
+//             ★对比度复用槽显示**真实槽号**(迎新=4 / 应急=2), 不显示内部标记码 6
+//               —— 否则与 KEY1 循环对不上(2026-10-02 用户反馈修正) → seg_data_4
 //   第6、7位 = 固定横线 "-" 分隔符      → seg_data_5/6
 //             (批次3: bmp_error≠0 时改为显示 "E" + 错误码 十六进制数字,
 //              即加载出错时第6位=E、第7位=1~3, 正常无错恢复横线。)
 //   第8位 = A=自动轮播 / H=手动单张      → seg_data_7
 //============================================================
-// 参数强显保持: 保持期内用"动作发生时的模式"取值, 否则用当前模式
-//   (disp_sel 只会是 1/2/3/5 之一 —— 只有模式1/2/3/5 会产生参数动作)
-//   ★宽度必须 3 位: ui_mode 上限已到 5(音量档), 截成 2 位会把模式4/5 折回 0/1。
+// 参数值来源选择: 保持期内用"动作发生时的模式", 否则用当前模式
+//   (disp_sel 只会是 1/2/3/5/6 之一 —— 只有模式1/2/3/5 与对比度复用槽
+//    会产生参数动作; 6 = MODE_CON 由 ui_key_ctrl 在复用槽动作时锁存)
+//   ★宽度必须 3 位: ui_mode 上限已到 6(对比度), 截成 2 位会把模式4/5/6 折回 0/1/2。
 wire [2:0] disp_mode = ui_disp_hold ? ui_disp_sel : ui_mode;
+
+// ★模式号显示源(第5位): 必须是"真实模式号 0..5" —— 直接用 ui_key_ctrl 的
+//   mode 输出(ui_mode_raw)。hud_mode(=ui_mode) 的 6 只是"对比度复用槽"的
+//   内部标记码, 直接当模式号显示会让用户看到 6 而不是真实的 4(迎新模式4)/
+//   2(应急模式2), 与 KEY1 循环对不上(2026-10-02 用户实际观察到的 bug)。
+//   ※ 保持期(disp_hold)内本信号跟随实时 mode: 模式号位表示"现在在哪一档",
+//     与第2~4位(锁存参数值)短暂不同步是可接受的, 且不再新增寄存器/跨域位。
+wire [2:0] disp_digit = ui_mode_raw;
 
 // 当前模式对应的参数值(0..255)
 reg [7:0] param_val;
@@ -730,6 +671,7 @@ always @(*) begin
         3'd2:    param_val = {4'd0, res_level};   // 分辨率档 0..7
         3'd3:    param_val = ui_period_sec;       // 轮播间隔秒 2/3/5/10/30
         3'd5:    param_val = {4'd0, ui_vol};      // 音量档 0..15
+        3'd6:    param_val = {4'd0, ui_con};      // 对比度档 0..15(2026-10-02)
         default: param_val = pic_param;           // 0=轮播 / N=手动第N张
     endcase
 end
@@ -749,7 +691,7 @@ seg_decoder u_dec_scene (.bin_data({2'b0, scene_id}), .seg_data(dec_scene));
 seg_decoder u_dec_h     (.bin_data(p_h              ), .seg_data(dec_h    ));
 seg_decoder u_dec_t     (.bin_data(p_t              ), .seg_data(dec_t    ));
 seg_decoder u_dec_o     (.bin_data(p_o              ), .seg_data(dec_o    ));
-seg_decoder u_dec_mode  (.bin_data({1'b0, ui_mode }), .seg_data(dec_mode ));
+seg_decoder u_dec_mode  (.bin_data({1'b0, disp_digit}), .seg_data(dec_mode ));
 
 // meeting_osd 已由 meeting_fmt 算好 MMSS BCD；这里只做稳定快照跨时钟域，
 // 避免在数码管域重复综合除法/BCD逻辑。
@@ -1177,6 +1119,7 @@ audio_viz_overlay u_audio_viz(
 	    .bmp_busy     (img_busy),
 	    .bri_level    (bri_level),
 	    .vol_level    (ui_vol),
+	    .con_level    (ui_con),          // 对比度档(2026-10-02; 复用槽)
 	    .res_level    (res_level),
     .img_res      (img_res),
     .pic_manual   (pic_manual),
@@ -1208,9 +1151,13 @@ wire dds_valid,dds_ready;wire signed [15:0] dds_left,dds_right;wire [8:0] dds_ga
 // ---- TF 卡 WAV 背景音乐(仅迎新场景; 播放器在 sd_card_bmp 内) ----
 //   wav_valid / wav_ready / wav_left / wav_right 已在 sd_card_bmp 例化前声明。
 // 迎新(SW1 场景 0)且非菜单/非应急, 并且音乐素材已准备好 → 走 WAV;
-//   否则退回 DDS。三个输入都在 video_clk 域(sync_2ff 后), 纯组合选择。
+//   否则退回 DDS。输入都在 video_clk 域(sync_2ff 后), 纯组合选择。
+//   FAT32 化: "音乐素材已准备好" = scanner 扫到 WEL.BIN(wav_file_ready),
+//   由 sd_card_clk 域经 sync_2ff 同步到 video_clk 域。
+wire wav_file_ready_sync;
+sync_2ff u_wav_file_ready_sync(.clk(video_clk),.async_in(wav_file_ready),.sync_out(wav_file_ready_sync));
 assign sel_wav = (audio_scene_sync == 2'd0) & ~audio_menu_sync &
-                 (WAV_SECTORS != 32'd0);
+                 wav_file_ready_sync;
 sync_2ff u_audio_menu_sync(.clk(video_clk),.async_in(menu_active),.sync_out(audio_menu_sync));
 sync_2ff u_audio_emergency_sync(.clk(video_clk),.async_in(emergency),.sync_out(audio_emergency_sync));
 sync_2ff u_audio_scene0_sync(.clk(video_clk),.async_in(scene_id[0]),.sync_out(audio_scene_sync[0]));

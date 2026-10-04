@@ -11,8 +11,9 @@ vlib work
 vmap work work
 
 # 2. 编译源文件(单模块, 无 include 依赖, 不会重复定义)
-vlog ../src/bmp_read_auto.v
-vlog ../tb/tb_bmp_2x_decim.v
+#   -sv: 让 fork...join_none 等 SystemVerilog 语法可用(FAT32 化后 tb 用了 join_none)
+vlog -sv ../src/bmp_read_auto.v
+vlog -sv ../tb/tb_bmp_2x_decim.v
 
 # 3. 启动仿真
 vsim -t 1ps work.tb_bmp_2x_decim
@@ -25,7 +26,8 @@ add wave /tb_bmp_2x_decim/sd_init_done
 
 add wave -divider "状态"
 add wave -radix unsigned /tb_bmp_2x_decim/state_code
-add wave -radix unsigned /tb_bmp_2x_decim/sd_sec_read_addr
+add wave /tb_bmp_2x_decim/file_start
+add wave -radix unsigned /tb_bmp_2x_decim/file_cluster
 add wave /tb_bmp_2x_decim/img_res
 add wave /tb_bmp_2x_decim/img_v2x
 add wave -radix unsigned /tb_bmp_2x_decim/bmp_error

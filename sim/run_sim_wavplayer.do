@@ -25,17 +25,18 @@ if {![batch_mode]} {
     add wave -divider "写域(100MHz)"
     add wave /tb_wav_stream_player/wr_clk
     add wave /tb_wav_stream_player/play_enable
-    add wave -radix hex /tb_wav_stream_player/start_lba
-    add wave -radix unsigned /tb_wav_stream_player/total_sectors
-    add wave /tb_wav_stream_player/sd_req
-    add wave -radix hex /tb_wav_stream_player/sd_lba
-    add wave /tb_wav_stream_player/sd_valid
-    add wave -radix hex /tb_wav_stream_player/sd_byte
-    add wave /tb_wav_stream_player/sd_done
+    add wave /tb_wav_stream_player/loop_en
+    add wave -radix hex /tb_wav_stream_player/start_cluster
+    add wave -radix unsigned /tb_wav_stream_player/file_size
+    add wave /tb_wav_stream_player/file_start
+    add wave -radix hex /tb_wav_stream_player/file_cluster
+    add wave /tb_wav_stream_player/file_valid
+    add wave -radix hex /tb_wav_stream_player/file_byte
+    add wave /tb_wav_stream_player/file_done
+    add wave /tb_wav_stream_player/allow_req
     add wave -radix unsigned /tb_wav_stream_player/dut/wstate
     add wave -radix unsigned /tb_wav_stream_player/dut/level_wr
     add wave -radix unsigned /tb_wav_stream_player/dut/wr_ptr
-    add wave -radix unsigned /tb_wav_stream_player/dut/sectors_read
 
     add wave -divider "读域(25MHz)"
     add wave /tb_wav_stream_player/rd_clk

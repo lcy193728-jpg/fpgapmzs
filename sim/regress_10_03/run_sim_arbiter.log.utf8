@@ -1,0 +1,25 @@
+Reading D:/Quat/modelsim_ase/tcl/vsim/pref.tcl 
+
+# 10.1d
+
+# do run_sim_arbiter.do 
+# Modifying modelsim.ini
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module audio_sd_arbiter
+# 
+# Top level modules:
+# 	audio_sd_arbiter
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module tb_audio_sd_arbiter
+# 
+# Top level modules:
+# 	tb_audio_sd_arbiter
+# vsim -t 1ps work.tb_audio_sd_arbiter 
+# Loading work.tb_audio_sd_arbiter
+# Loading work.audio_sd_arbiter
+# ====================================================
+# tb_audio_sd_arbiter: checks=16 fails=0
+# RESULT: PASS
+# ====================================================
+# ** Note: $finish    : ../sim/tb/tb_audio_sd_arbiter.v(226)
+#    Time: 130855 ns  Iteration: 1  Instance: /tb_audio_sd_arbiter

@@ -1,0 +1,25 @@
+Reading D:/Quat/modelsim_ase/tcl/vsim/pref.tcl 
+
+# 10.1d
+
+# do run_sim_srcsel.do 
+# Modifying modelsim.ini
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module audio_src_sel
+# 
+# Top level modules:
+# 	audio_src_sel
+# Model Technology ModelSim ALTERA vlog 10.1d Compiler 2012.11 Nov  2 2012
+# -- Compiling module tb_audio_src_sel
+# 
+# Top level modules:
+# 	tb_audio_src_sel
+# vsim -t 1ps work.tb_audio_src_sel 
+# Loading work.tb_audio_src_sel
+# Loading work.audio_src_sel
+# ====================================================
+# tb_audio_src_sel: checks=20 fails=0
+# RESULT: PASS
+# ====================================================
+# ** Note: $finish    : ../sim/tb/tb_audio_src_sel.v(102)
+#    Time: 7 ns  Iteration: 0  Instance: /tb_audio_src_sel

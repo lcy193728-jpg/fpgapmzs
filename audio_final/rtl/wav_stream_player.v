@@ -53,13 +53,17 @@ module wav_stream_player #(
 	input  wire        wr_rst_n,
 	input  wire        play_enable,        // 电平: 选中 WAV 期间为 1
 	input  wire        loop_en,            // 电平: 1=播完自动回绕续播(背景音乐)
-	input  wire [31:0] start_lba,          // 音频数据首扇区(卡上裸 PCM 起点)
-	input  wire [31:0] total_sectors,      // 音频数据总扇区数
-	output wire        sd_req,             // 扇区读请求(→ audio_sd_arbiter 的 b_req)
-	output wire [31:0] sd_lba,             // 扇区地址(→ 仲裁器 b_addr)
-	input  wire        sd_valid,           // 字节有效(仲裁器只回授权方)
-	input  wire [7:0]  sd_byte,
-	input  wire        sd_done,            // 扇区读完(单拍)
+	input  wire [31:0] start_cluster,      // 音频文件(WEL.BIN)起始簇号(scanner 扫出)
+	input  wire [31:0] file_size,          // 音频文件大小(字节)
+	// ---- FAT32 文件流接口(对接 fat32_file_streamer) ----
+	output wire        file_start,         // 文件读取启动(单周期脉冲)
+	output wire [31:0] file_cluster,       // 起始簇号
+	output wire [31:0] file_len_out,       // 文件大小(字节)
+	input  wire        file_valid,         // 文件字节有效
+	input  wire [7:0]  file_byte,          // 文件字节
+	input  wire        file_done,          // 文件读完(单拍)
+	input  wire [7:0]  file_error,         // 文件读取错误码(0=无)
+	output wire        allow_req,          // 流控: 1=允许 adapter 发扇区请求(水位<HIGH_WATER)
 	// ---- 读侧: video_clk 域 ----
 	input  wire        rd_clk,
 	input  wire        rd_rst_n,
@@ -123,17 +127,24 @@ module wav_stream_player #(
 
 	// ---------------- 写侧状态机 ----------------
 	localparam [1:0] WS_IDLE  = 2'd0;
-	localparam [1:0] WS_RUN   = 2'd1;   // 持有请求, 收字节
-	localparam [1:0] WS_PAUSE = 2'd2;   // 缓冲已够, 让出总线
-	localparam [1:0] WS_END   = 2'd3;   // 全部扇区读完
+	localparam [1:0] WS_RUN   = 2'd1;   // 收文件字节流(streamer 跨扇区连续读)
+	localparam [1:0] WS_END   = 2'd3;   // 文件读完(file_done)
 	reg [1:0]  wstate;
-	reg [31:0] cur_lba;
-	reg [31:0] sectors_read;
+	reg        fstart_r;      // file_start 脉冲(本 always 驱动)
+	reg [31:0] fcluster_r;    // 锁存的起始簇号
+	reg [31:0] fsize_r;       // 锁存的文件大小
 	reg [7:0]  lo_byte;
 	reg        lo_pending;
 
-	assign sd_req = (wstate == WS_RUN);
-	assign sd_lba = cur_lba;
+	// FAT32 化: file_start/file_cluster/file_len_out 由写状态机在启动/回绕时给出。
+	//   file_cluster/file_len_out 用寄存器锁存, 在 file_start 当拍就已稳定。
+	assign file_start    = fstart_r;
+	assign file_cluster  = fcluster_r;
+	assign file_len_out  = fsize_r;
+	// 水位流控: 只有水位低于 HIGH_WATER 才允许 adapter 发扇区请求。
+	//   (adapter 的 allow_req=0 会"假装忙", streamer 停在 ST_DATA_REQ 等待,
+	//    不会死锁 —— 见 sd_sector_adapter 头注释)
+	assign allow_req     = (level_wr < HIGH_WATER);
 
 	// play_enable 由 video_clk 域的场景选择给出(sel_wav), 写侧在 sd_card_clk
 	//   域 → 两级同步后再用于写状态机。它是准静态电平(切场景才变), 加同步
@@ -152,8 +163,9 @@ module wav_stream_player #(
 	always @(posedge wr_clk or negedge wr_rst_n) begin
 		if(!wr_rst_n) begin
 			wstate       <= WS_IDLE;
-			cur_lba      <= 32'd0;
-			sectors_read <= 32'd0;
+			fstart_r     <= 1'b0;
+			fcluster_r   <= 32'd0;
+			fsize_r      <= 32'd0;
 			wr_ptr       <= {ADDR_WIDTH{1'b0}};
 			lo_pending   <= 1'b0;
 			lo_byte      <= 8'd0;
@@ -166,55 +178,60 @@ module wav_stream_player #(
 			rd_gray_sync1 <= rd_gray;
 			rd_gray_sync2 <= rd_gray_sync1;
 
+			fstart_r <= 1'b0;   // 默认拉低(单拍脉冲)
+
 			case(wstate)
 			WS_IDLE: begin
 				wr_ptr     <= {ADDR_WIDTH{1'b0}};
 				lo_pending <= 1'b0;
-				if(play_en_sync && total_sectors != 32'd0) begin
-					cur_lba      <= start_lba;
-					sectors_read <= 32'd0;
-					wstate       <= WS_RUN;
+				if(play_en_sync && file_size != 32'd0) begin
+					// 发 file_start 启动文件流读取
+					fcluster_r <= start_cluster;
+					fsize_r    <= file_size;
+					fstart_r   <= 1'b1;
+					wstate     <= WS_RUN;
 				end
 			end
 			WS_RUN: begin
-				// 字节拼样本: TF 先低字节后高字节 → 小端序
-				if(sd_valid) begin
-					if(!lo_pending) begin
-						lo_byte    <= sd_byte;
-						lo_pending <= 1'b1;
-					end else begin
-						buffer[wr_ptr] <= {sd_byte, lo_byte};
-						wr_ptr         <= wr_ptr + 1'b1;
-						lo_pending     <= 1'b0;
+				// 取消选中(切场景)立即退出收字节, 回 WS_IDLE 清 lo_pending。
+				//   ★2026-10-02 FAT32 化疏漏修复: 旧版扇区接口下取消选中靠
+				//     sd_req 撤请求 + 扇区读完自然退出; 改成 file 接口后 streamer
+				//     是连续字节流, WS_RUN 若不在 play_en_sync 变 0 时退出, 会一直
+				//     停在 WS_RUN 等 file_done(loop 模式下可能永远等不到, 或占用
+				//     SD 总线继续读), 且下次重新选中时 wstate 仍=WS_RUN 不会重新
+				//     file_start → 音频永久停摆。
+				if(!play_en_sync) begin
+					lo_pending <= 1'b0;
+					wstate     <= WS_IDLE;
+				end else begin
+					// 字节拼样本: 文件字节先低后高 → 小端序(与旧版 sd_byte 一致)
+					if(file_valid) begin
+						if(!lo_pending) begin
+							lo_byte    <= file_byte;
+							lo_pending <= 1'b1;
+						end else begin
+							buffer[wr_ptr] <= {file_byte, lo_byte};
+							wr_ptr         <= wr_ptr + 1'b1;
+							lo_pending     <= 1'b0;
+						end
+					end
+					if(file_done) begin
+						// 文件读完(streamer 跨扇区读完整文件)
+						lo_pending <= 1'b0;
+						wstate     <= WS_END;
 					end
 				end
-				if(sd_done) begin
-					// 扇区边界对齐(512 字节为偶数, 正常 lo_pending 已是 0)
-					lo_pending   <= 1'b0;
-					sectors_read <= sectors_read + 1'b1;
-					cur_lba      <= cur_lba + 1'b1;
-					if(sectors_read + 1'b1 >= total_sectors)
-						wstate <= WS_END;
-					else if(level_wr < HIGH_WATER)
-						wstate <= WS_RUN;      // 背靠背请求下一个扇区
-					else
-						wstate <= WS_PAUSE;    // 水位够高, 让出总线给图片
-				end
-			end
-			WS_PAUSE: begin
-				if(!play_en_sync)            wstate <= WS_IDLE;
-				else if(level_wr < HIGH_WATER) wstate <= WS_RUN;
 			end
 			WS_END: begin
-				// 播完最后一扇区。loop_en=0 → 停在 WS_END 等取消选中(sd_req=0);
-				//   loop_en=1 → 水位腾出空间后立即回绕到 start_lba 无缝续播。
-				//   水位门限与 WS_PAUSE 同一条(见上方回绕算术说明), 保证缓冲
-				//   占用不会超过 HIGH_WATER + 1 个扇区。
+				// 播完整个文件。loop_en=0 → 停在 WS_END 等取消选中;
+				//   loop_en=1 → 水位腾出空间后立即重新 file_start 无缝回绕续播。
+				//   (streamer 每次 file_start 都从头读文件, 回绕 = 重新起读)
 				if(!play_en_sync)            wstate <= WS_IDLE;
 				else if(loop_en && (level_wr < HIGH_WATER)) begin
-					cur_lba      <= start_lba;
-					sectors_read <= 32'd0;
-					wstate       <= WS_RUN;
+					fcluster_r <= start_cluster;
+					fsize_r    <= file_size;
+					fstart_r   <= 1'b1;
+					wstate     <= WS_RUN;
 				end
 			end
 			default: wstate <= WS_IDLE;

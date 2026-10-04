@@ -12,14 +12,21 @@
 //        │                                    ├→ audio_src_mux → audio_left
 //   wav_stream_player → audio_src_sel ────────┘
 //        ▲
-//   audio_sd_arbiter(B 优先) ← 本 TB 的"扇区服务器"(模拟 sd_card_sec_read_write)
+//   fat32_file_streamer ← sd_sector_adapter ← 本 TB 的"扇区服务器"
 //
 // 与顶层一致的关键点(逐条对齐 top_final.v):
 //   · video_clk 25MHz / sd_card_clk 100MHz
 //   · audio_pcm_ready = audio_rate_tick(单拍)
 //   · sel_wav 常量电平(= 迎新场景)
 //   · wav_sample_ready = wav_ready(= audio_src_sel 回给 WAV 的 media_ready)
-//   · 扇区数据前 288 个样本为 0(源曲 576 字节静音前奏), 之后非零
+//   · 文件数据前 288 个样本为 0(源曲 576 字节静音前奏), 之后非零
+//
+// FAT32 化差异(相对旧扇区接口版):
+//   · wav_stream_player 现在是 file 接口(start_cluster/file_size/file_*),
+//     由 fat32_file_streamer 读文件字节流, 经 sd_sector_adapter 桥接到
+//     扇区服务器(模拟 sd_card_sec_read_write)。
+//   · 本 TB 的"扇区服务器"额外模拟一张 FAT 表 + 数据簇, 使 streamer 能
+//     正常遍历簇链读到完整文件(单簇链: 每簇 FAT 项=下一簇号, 末簇=EOC)。
 //
 // 判读: 打印 primed / wav_left 首次非零 / audio_left 首次非零 的时刻,
 //   哪一级一直是 0 就是断点。
@@ -63,10 +70,6 @@ module tb_audio_chain_e2e;
 	wire [8:0]        media_gain;
 
 	// ---- 静音 test 源(与 top_final.v 修复后一致: 恒有效、恒零) ----
-	//   [根因] 原实现是 audio_pcm_tone(#(.PROFILE(0)), .enable(1'b0)), 其
-	//   sample_valid=(count!=0) 在 48kHz 节拍那一拍恰为 0 → audio_src_mux 的
-	//   launch(→media_ready→wav_ready) 无法与节拍同拍 → 播放器永不推进。
-	//   改成恒有效静音后 tick&&wav_ready = 576, 通路打通。
 	wire             zero_ready;
 	wire             zero_valid   = 1'b1;
 	wire signed[15:0] zero_left   = 16'sd0;
@@ -99,39 +102,42 @@ module tb_audio_chain_e2e;
 		.accepted_pairs(mux_pairs));
 
 	//====================================================================
-	// SD 仲裁器 + WAV 播放器 + 扇区服务器
+	// FAT32 文件流: streamer + adapter + 扇区服务器
+	//   链: wav(file_*) → fat32_file_streamer(sector_*) → sd_sector_adapter
+	//       → 扇区服务器(sd_sec_*, 模拟 sd_card_sec_read_write)
 	//====================================================================
-	wire        sd_sec_read;
-	wire [31:0] sd_sec_read_addr;
-	wire        sd_sec_read_data_valid, sd_sec_read_end;
-	wire [7:0]  sd_sec_read_data;
+	// WAV 文件参数(scanner 目录项给出; 本 TB 直接硬编码)
+	localparam [31:0] WAV_CLUSTER   = 32'd100;    // 起始簇号(任意合法值)
+	//   单簇文件(首簇即 EOC): file_size 取 4096 字节 = 2048 样本, 一簇刚好装下,
+	//   简化 FAT 链模型(streamer 只读 1 个数据簇即 file_done)。
+	//   ⚠ 前 288 样本(576 字节)为静音前奏, 之后非零 → 非零样本约 1472 个。
+	localparam [31:0] WAV_FILE_SIZE = 32'd4096;
 
-	wire        wav_sec_req_raw;
-	wire [31:0] wav_sec_req_addr;
-	wire        wav_sec_data_valid, wav_sec_end;
+	// streamer FAT 参数
+	localparam [7:0]  SPC        = 8'd8;         // 每簇 8 扇区
+	localparam [31:0] FAT_START  = 32'd32;       // FAT 表起始扇区(模拟)
+	localparam [31:0] DATA_START = 32'd64;       // 数据区起始扇区(模拟)
+	localparam [31:0] MAX_CLU    = 32'd1000;
 
-	wire        a_sec_req = 1'b0;
-	wire [31:0] a_sec_addr = 32'd0;
-	wire        a_sec_data_valid, a_sec_end;
-
-	audio_sd_arbiter u_sd_arbiter(
-		.clk(sd_clk), .rst(rst_sd),
-		.sd_sec_read(sd_sec_read), .sd_sec_read_addr(sd_sec_read_addr),
-		.sd_sec_read_data_valid(sd_sec_read_data_valid), .sd_sec_read_end(sd_sec_read_end),
-		.a_req(a_sec_req), .a_addr(a_sec_addr),
-		.a_data_valid(a_sec_data_valid), .a_end(a_sec_end),
-		.b_req(wav_sec_req_raw), .b_addr(wav_sec_req_addr),
-		.b_data_valid(wav_sec_data_valid), .b_end(wav_sec_end));
-
-	localparam [31:0] WAV_START_LBA  = 32'd300000;
-	localparam [31:0] WAV_SECTORS    = 32'd38464;
+	// ---- WAV → streamer 的 file 接口 ----
+	wire        wav_file_start;
+	wire [31:0] wav_file_cluster;
+	wire [31:0] wav_file_len;
+	wire        wav_allow_req;
+	wire        wav_file_valid;
+	wire [7:0]  wav_file_byte;
+	wire        wav_file_done;
+	wire [7:0]  wav_file_error;
 
 	wav_stream_player #(.ADDR_WIDTH(11), .SAMPLES_PER_SECTOR(256), .PREFILL(1024)) u_wav_player(
 		.wr_clk(sd_clk), .wr_rst_n(~rst_sd),
 		.play_enable(sel_wav), .loop_en(1'b1),
-		.start_lba(WAV_START_LBA), .total_sectors(WAV_SECTORS),
-		.sd_req(wav_sec_req_raw), .sd_lba(wav_sec_req_addr),
-		.sd_valid(wav_sec_data_valid), .sd_byte(sd_sec_read_data), .sd_done(wav_sec_end),
+		.start_cluster(WAV_CLUSTER), .file_size(WAV_FILE_SIZE),
+		.file_start(wav_file_start), .file_cluster(wav_file_cluster),
+		.file_len_out(wav_file_len),
+		.file_valid(wav_file_valid), .file_byte(wav_file_byte),
+		.file_done(wav_file_done), .file_error(wav_file_error),
+		.allow_req(wav_allow_req),
 		.rd_clk(video_clk), .rd_rst_n(rst_n_vid),
 		.sample_tick(audio_rate_tick), .sample_ready(wav_ready),
 		.sample_out(wav_left), .sample_valid(wav_valid),
@@ -139,10 +145,58 @@ module tb_audio_chain_e2e;
 
 	assign wav_right = wav_left;
 
+	// ---- streamer 的 sector 接口 → adapter ----
+	wire        str_sector_req;
+	wire [31:0] str_sector_lba;
+	wire        str_sector_busy;
+	wire        str_sector_valid;
+	wire [7:0]  str_sector_byte;
+	wire [8:0]  str_sector_byte_index;
+	wire        str_sector_done;
+	wire [7:0]  str_sector_error;
+
+	fat32_file_streamer #(.MAX_VISITED_CLUSTERS(8192)) u_streamer(
+		.clk(sd_clk), .rst_n(~rst_sd),
+		.file_start(wav_file_start), .first_cluster(wav_file_cluster),
+		.file_size(wav_file_len),
+		.sectors_per_cluster(SPC),
+		.sectors_per_cluster_shift(3'd3),   // SPC=8 → log2(8)=3
+		.fat_start_lba(FAT_START), .data_start_lba(DATA_START),
+		.max_cluster(MAX_CLU),
+		.file_busy(), .file_done(wav_file_done),
+		.file_valid(wav_file_valid), .file_byte(wav_file_byte),
+		.file_byte_offset(), .fs_error(wav_file_error),
+		.sector_req(str_sector_req), .sector_lba(str_sector_lba),
+		.sector_busy(str_sector_busy),
+		.sector_valid(str_sector_valid), .sector_byte(str_sector_byte),
+		.sector_byte_index(str_sector_byte_index),
+		.sector_done(str_sector_done), .sector_error(str_sector_error));
+
+	// ---- adapter 的 sd_sec 侧 → 扇区服务器 ----
+	wire        sd_sec_read;
+	wire [31:0] sd_sec_read_addr;
+	wire        sd_sec_read_data_valid, sd_sec_read_end;
+	wire [7:0]  sd_sec_read_data;
+
+	sd_sector_adapter u_adapter(
+		.clk(sd_clk), .rst_n(~rst_sd),
+		.allow_req(wav_allow_req),
+		.sector_req(str_sector_req), .sector_lba(str_sector_lba),
+		.sector_busy(str_sector_busy),
+		.sector_valid(str_sector_valid), .sector_byte(str_sector_byte),
+		.sector_byte_index(str_sector_byte_index),
+		.sector_done(str_sector_done), .sector_error(str_sector_error),
+		.sd_sec_read(sd_sec_read), .sd_sec_read_addr(sd_sec_read_addr),
+		.sd_sec_read_data_valid(sd_sec_read_data_valid),
+		.sd_sec_read_data(sd_sec_read_data),
+		.sd_sec_read_end(sd_sec_read_end));
+
 	//====================================================================
-	// 扇区服务器: 模拟 sd_card_sec_read_write 的对外时序
+	// 扇区服务器: 模拟 sd_card_sec_read_write 的对外时序 + FAT/数据区内容
 	//   IDLE → (sd_sec_read 有效) 锁存地址 → CMD 延迟 → 逐拍吐 512 字节
 	//        → 单拍 sd_sec_read_end → 回 IDLE
+	//   内容: FAT 表扇区给出簇链(FAT 项 = 下一簇号 / 末簇 EOC);
+	//         数据区扇区给出 WAV 样本字节。
 	//====================================================================
 	localparam integer CMD_LAT = 32;   // 模拟 CMD17 开销(拍, sd_clk)
 	localparam [1:0] SRV_IDLE = 2'd0, SRV_CMD = 2'd1, SRV_DATA = 2'd2, SRV_END = 2'd3;
@@ -159,17 +213,56 @@ module tb_audio_chain_e2e;
 	assign sd_sec_read_end        = srv_end;
 	assign sd_sec_read_data       = srv_data;
 
-	// 样本字节: 前 288 个样本(576 字节)为 0(静音前奏), 之后非零
-	function [7:0] sec_byte;
-		input [31:0] lba;
-		input integer off;              // 0..511
+	// ---- 文件内样本: 前 288 个样本(576 字节)为 0(静音前奏), 之后非零 ----
+	//   file_off = 文件内字节偏移(0 起, 跨扇区连续)
+	function [7:0] file_byte_at;
+		input [31:0] file_off;
 		integer idx;
 		reg [15:0] sval;
 		begin
-			idx = ((lba - WAV_START_LBA) * 256) + (off >> 1);
+			idx = file_off >> 1;   // 样本号
 			if(idx < 288) sval = 16'd0;
 			else          sval = 16'sd2000 + (idx & 16'h3FFF);
-			sec_byte = off[0] ? sval[15:8] : sval[7:0];
+			file_byte_at = file_off[0] ? sval[15:8] : sval[7:0];
+		end
+	endfunction
+
+	// 扇区字节: 区分 FAT 扇区与数据扇区
+	function [7:0] sec_byte_at;
+		input [31:0] lba;     // 绝对扇区号
+		input integer off;    // 0..511 扇区内字节偏移
+		integer fat_idx;      // FAT 表项序号 = 簇号
+		integer clu;          // 数据区对应的簇号
+		reg [31:0] fatval;
+		begin
+			// ---- FAT 表扇区: 每个 FAT 项 4 字节(FAT32), 值 = 下一簇号或 EOC ----
+			//   fat_idx = (扇区内字节偏移 / 4)。簇 100 起单链: 100→101→...→EOC。
+			if(lba >= FAT_START && lba < DATA_START) begin
+				fat_idx = (lba - FAT_START) * 128 + (off >> 2);   // 每扇区 128 个 FAT 项
+				if(fat_idx == WAV_CLUSTER)
+					fatval = 32'h0FFFFFFF;   // 单簇文件: 首簇即末簇(EOC)
+				else
+					fatval = 32'd0;          // 空闲簇
+				// 小端输出 4 字节 FAT 项
+				case(off[1:0])
+					2'd0: sec_byte_at = fatval[7:0];
+					2'd1: sec_byte_at = fatval[15:8];
+					2'd2: sec_byte_at = fatval[23:16];
+					default: sec_byte_at = fatval[31:24];
+				endcase
+			end
+			// ---- 数据区扇区: 文件字节 ----
+			else begin
+				// 数据区扇区 LBA = DATA_START + (clu-2)*SPC + 扇区内偏移
+				//   → 反解簇号: clu = (lba - DATA_START)/SPC + 2
+				clu = (lba - DATA_START) / SPC + 32'd2;
+				// 只有簇 100(文件首簇)有数据, 其余填 0。
+				// 文件内字节偏移 = (lba - 数据区起始扇区)*512 + off。
+				if(clu == WAV_CLUSTER)
+					sec_byte_at = file_byte_at((lba - (DATA_START + (WAV_CLUSTER - 2) * SPC)) * 512 + off);
+				else
+					sec_byte_at = 8'd0;
+			end
 		end
 	endfunction
 
@@ -200,9 +293,7 @@ module tb_audio_chain_e2e;
 			end
 			SRV_DATA: begin
 				srv_valid <= 1'b1;
-				srv_data  <= sec_byte(srv_addr, srv_cnt);
-				if(srv_addr == WAV_START_LBA + 32'd1 && srv_cnt >= 60 && srv_cnt <= 68)
-					$display("[srv] lba=%0d off=%0d byte=%0d", srv_addr, srv_cnt, sec_byte(srv_addr, srv_cnt));
+				srv_data  <= sec_byte_at(srv_addr, srv_cnt);
 				if(srv_cnt == 10'd511) srv_state <= SRV_END;
 				else                   srv_cnt   <= srv_cnt + 1'b1;
 			end
@@ -220,7 +311,7 @@ module tb_audio_chain_e2e;
 	//====================================================================
 	integer t_primed = -1, t_wavnz = -1, t_pcmnz = -1;
 	integer n_wavnz = 0, n_pcmnz = 0, n_launch = 0, n_wready = 0;
-	integer n_ticks = 0, n_pcmvalid = 0, n_sectors = 0;
+	integer n_ticks = 0, n_pcmvalid = 0;
 	integer n_tick_and_ready = 0, n_adv_cond = 0;
 	reg     d_primed = 0, d_out_nz = 0, d_pcm_nz = 0, d_send = 0, d_bytes = 0;
 
@@ -244,31 +335,30 @@ module tb_audio_chain_e2e;
 
 	// 诊断: 记录播放器把样本写到 buffer 的哪几个关键下标
 	always @(posedge sd_clk) begin
-		if(!rst_sd && wav_sec_data_valid && u_wav_player.lo_pending &&
+		if(!rst_sd && wav_file_valid && u_wav_player.lo_pending &&
 		   (u_wav_player.wr_ptr==11'd0 || u_wav_player.wr_ptr==11'd1 ||
 		    u_wav_player.wr_ptr==11'd256 || u_wav_player.wr_ptr==11'd288 ||
 		    u_wav_player.wr_ptr==11'd512))
 			$display("[wr] t=%0t wr_ptr=%0d sample=%0d",
-				$time, u_wav_player.wr_ptr, {sd_sec_read_data, u_wav_player.lo_byte});
+				$time, u_wav_player.wr_ptr, {wav_file_byte, u_wav_player.lo_byte});
 	end
 
-	// 诊断: 状态变化追踪(sd_sec_read / owner / 写状态机 / cur_lba / 服务器)
+	// 诊断: 状态变化追踪(sd_sec_read / streamer state / 写状态机 / 服务器)
 	reg        tr_sdread;
-	reg [1:0]  tr_owner, tr_wstate;
-	reg [31:0] tr_lba;
+	reg [3:0]  tr_strst, tr_wstate;
 	reg [1:0]  tr_srv;
 	integer    tr_n = 0;
-	initial begin tr_sdread = 0; tr_owner = 2'd0; tr_wstate = 2'd0; tr_lba = 32'd0; tr_srv = 2'd0; end
+	initial begin tr_sdread = 0; tr_strst = 4'd0; tr_wstate = 2'd0; tr_srv = 2'd0; end
 	always @(posedge sd_clk) begin
 		if(!rst_sd && tr_n < 120 &&
-		   (sd_sec_read !== tr_sdread || u_sd_arbiter.owner !== tr_owner ||
-		    u_wav_player.wstate !== tr_wstate || u_wav_player.cur_lba !== tr_lba ||
+		   (sd_sec_read !== tr_sdread || u_streamer.state !== tr_strst ||
+		    u_wav_player.wstate !== tr_wstate ||
 		    srv_state !== tr_srv)) begin
-			$display("[tr] t=%0t sd_read=%b owner=%0d wstate=%0d cur_lba=%0d srvst=%0d srv_cnt=%0d wr_ptr=%0d",
-				$time, sd_sec_read, u_sd_arbiter.owner, u_wav_player.wstate,
-				u_wav_player.cur_lba, srv_state, srv_cnt, u_wav_player.wr_ptr);
-			tr_sdread <= sd_sec_read; tr_owner <= u_sd_arbiter.owner;
-			tr_wstate <= u_wav_player.wstate; tr_lba <= u_wav_player.cur_lba;
+			$display("[tr] t=%0t sd_read=%b strst=%0d wstate=%0d srvst=%0d srv_cnt=%0d wr_ptr=%0d",
+				$time, sd_sec_read, u_streamer.state, u_wav_player.wstate,
+				srv_state, srv_cnt, u_wav_player.wr_ptr);
+			tr_sdread <= sd_sec_read; tr_strst <= u_streamer.state;
+			tr_wstate <= u_wav_player.wstate;
 			tr_srv    <= srv_state;
 			tr_n      <= tr_n + 1;
 		end
@@ -313,7 +403,7 @@ module tb_audio_chain_e2e;
 	always @(posedge sd_clk) begin
 		if(!rst_sd) begin
 			if(sd_sec_read_end)  d_send = 1'b1;      // 粘滞: 曾收到扇区结束
-			if(wav_sec_data_valid) d_bytes = 1'b1;   // 粘滞: 曾收到数据字节
+			if(wav_file_valid)   d_bytes = 1'b1;     // 粘滞: 曾收到数据字节
 		end
 	end
 
@@ -333,7 +423,7 @@ module tb_audio_chain_e2e;
 		// 进入迎新场景: 选中 WAV
 		sel_wav = 1'b1;
 
-		// 跑 12 ms: 起播 ≈ 4 扇区(极快) + 288 个静音样本 ≈ 6 ms
+		// 跑 12 ms: 起播 + 288 个静音样本 ≈ 6 ms, 之后出现非零
 		#12_000_000;
 
 		$display("----------------------------------------------------");
@@ -351,11 +441,12 @@ module tb_audio_chain_e2e;
 		$display("player wr_ptr/rd_ptr  : %0d / %0d", u_wav_player.wr_ptr, u_wav_player.rd_ptr);
 		$display("player wstate         : %0d", u_wav_player.wstate);
 		$display("level_rd / level_wr   : %0d / %0d", u_wav_player.level_rd, u_wav_player.level_wr);
+		$display("streamer state        : %0d", u_streamer.state);
 		$display("----------------------------------------------------");
-		$display("调试字节(与板上同编码) D[7:0]={primed1,pcm_nz,out_nz,send,bytes,req,sel_wav,primed}");
+		$display("调试字节 D[7:0]={primed1,pcm_nz,out_nz,send,bytes,req,sel_wav,primed}");
 		$display("  = {%b,%b,%b,%b,%b,%b,%b,%b}",
 			d_primed, d_pcm_nz, d_out_nz, d_send, d_bytes,
-			wav_sec_req_raw, sel_wav, wav_primed);
+			wav_file_start, sel_wav, wav_primed);
 		$display("----------------------------------------------------");
 		if(t_pcmnz >= 0) $display("RESULT: PASS  (末端 PCM 出现非零 → 音频链在仿真中打通)");
 		else             $display("RESULT: FAIL  (末端 PCM 恒 0 → 复现了板上故障, 断点在上述各级)");
@@ -370,7 +461,7 @@ module tb_audio_chain_e2e;
 			#1_000_000;
 			$display("[hb t=%0t ns] primed=%b wav_left=%0d audio_left=%0d rd_ptr=%0d lvl_rd=%0d srv=%0d req=%b",
 				$time, wav_primed, wav_left, audio_left,
-				u_wav_player.rd_ptr, u_wav_player.level_rd, srv_state, wav_sec_req_raw);
+				u_wav_player.rd_ptr, u_wav_player.level_rd, srv_state, sd_sec_read);
 			$fflush;
 		end
 	end

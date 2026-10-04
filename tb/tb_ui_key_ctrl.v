@@ -14,13 +14,19 @@
 //                  输出 period_cycles = 秒数×CLK_FREQ_HZ
 //     模式5 音量 : 0..15(默认8=×1.0), 到边界钳位; 仅输出电平 vol_level
 //   参数强显保持: 任一参数动作 → disp_hold 拉高 DISP_HOLD_CYCLES,
-//                 disp_sel 锁存动作时的模式(顶层据此强显该参数值)
+//                 disp_sel 锁存动作时的 hud_mode(顶层据此强显该参数值)
+//   ★disp_sel 在对比度复用槽 = 6(标记码), 只能用来选"参数值来源";
+//     顶层数码管"模式号"位必须取真实 mode(ui_mode_raw = 4/2), 否则用户
+//     会看到 6(2026-10-02 实测 bug)。第11段用契约断言锁定"可区分"关系。
 //   KEY4 : 会议场景=当前项重新计时(由顶层跨域送 meeting_ctrl);
 //          本 TB 恒置"释放"(高)且 control_lock=0, 不参与本用例。
 //   ★2026-10-01 应急场景(本 TB 第10段): alarm_scene=1 时按键语义与迎新场景
 //     完全一致(KEY1 调模式 / KEY2,3 调参数), 唯一区别是**模式0 改为四类告警
 //     环绕切换**(KEY3 下一类 0→1→2→3→0 / KEY2 上一类 0→3→2→1→0), 且该模式下
 //     不再产生切图脉冲、不进入手动单张。
+//   ★2026-10-02 对比度复用槽(本 TB 第11段): 新增 scene_id 输入, 迎新(0) 的
+//     模式4 与应急(3) 的模式2 复用为对比度档(0..15, 默认 8=×1.0), 对外以
+//     hud_mode=6 上报; 其余场景/模式保持原语义(已用对照段 (c)(d)(e) 覆盖)。
 // 说明   : 消抖 10ms 对仿真太慢, 用 defparam 把 3 个消抖计数器缩到 100 拍;
 //          保持时长 2s 同样用 defparam 缩到 500 拍, 否则远超仿真超时。
 //          按键统一"上拉高、按下低", 一次按键一个下降沿脉冲。
@@ -37,16 +43,19 @@ module tb_ui_key_ctrl;
     reg  [7:0]  img_no;
     reg         scene_chg;
     reg         alarm_scene;         // 1=应急场景
+    reg  [1:0]  scene_id;            // 场景码 0迎新/1会议/2抢答/3应急(第11段对比度槽用)
 
     wire [2:0]  mode;
+    wire [2:0]  hud_mode;            // 展示模式码(含 6=对比度复用槽, 2026-10-02)
     wire [1:0]  alarm_type;          // 应急告警类型(模式0 可调)
     wire [3:0]  bri_level;
     wire [3:0]  vol_level;
+    wire [3:0]  con_level;           // 对比度档 0..15(复用槽可调, 2026-10-02)
     wire [3:0]  res_level;
     wire [7:0]  period_sec;
     wire [31:0] period_cycles;
     wire        disp_hold;
-    wire [2:0]  disp_sel;
+    wire [2:0]  disp_sel;            // 保持期"参数来源"码(含 6=对比度复用槽)
     wire        pic_manual;
     wire [7:0]  pic_param;
     wire        key_next_pl;
@@ -68,12 +77,15 @@ module tb_ui_key_ctrl;
         .key4       (1'b1),            // 会议重新计时键(本 TB 不按: 恒释放/高)
         .control_lock(1'b0),           // 不接管: 全局UI参数正常生效
         .alarm_scene(alarm_scene),     // 应急场景标志(第10段测试)
+        .scene_id   (scene_id),        // 场景码(第11段对比度复用槽测试)
         .alarm_type (alarm_type),      // 应急告警类型输出
         .img_no     (img_no),
         .scene_chg  (scene_chg),
         .mode       (mode),
+        .hud_mode   (hud_mode),        // 展示模式码(含 6=对比度)
         .bri_level  (bri_level),
         .vol_level  (vol_level),
+        .con_level  (con_level),       // 对比度档
         .res_level  (res_level),
         .period_sec (period_sec),
         .period_cycles(period_cycles),
@@ -114,8 +126,8 @@ module tb_ui_key_ctrl;
             end
             else begin
                 fail_cnt = fail_cnt + 1;
-                $display("t=%0t  [FAIL] %0s  (mode=%0d bri=%0d vol=%0d res=%0d prd=%0ds alarm=%0d manual=%0b param=%0d)",
-                         $time, msg, mode, bri_level, vol_level, res_level, period_sec, alarm_type, pic_manual, pic_param);
+                $display("t=%0t  [FAIL] %0s  (mode=%0d hud=%0d dsel=%0d bri=%0d vol=%0d con=%0d res=%0d prd=%0ds alarm=%0d manual=%0b param=%0d)",
+                         $time, msg, mode, hud_mode, disp_sel, bri_level, vol_level, con_level, res_level, period_sec, alarm_type, pic_manual, pic_param);
             end
         end
     endtask
@@ -153,6 +165,7 @@ module tb_ui_key_ctrl;
         img_no    = 8'd0;
         scene_chg = 1'b0;
         alarm_scene = 1'b0;
+        scene_id    = 2'd0;            // 上电默认迎新场景(真实系统菜单/迎新为 0)
         repeat (5) @(posedge clk);
         rst = 1'b0;
         repeat (20) @(posedge clk);
@@ -386,6 +399,7 @@ module tb_ui_key_ctrl;
         //   唯一区别: 模式0 不再切图, 改为 alarm_type 四类环绕 ——
         //     KEY3 = 下一类(0→1→2→3→0), KEY2 = 上一类(0→3→2→1→0)。
         check(mode == 3'd0, "应急前状态: 处于模式0(承接上一段)");
+        scene_id    = 2'd3;                 // 应急场景码(与 alarm_scene 一致)
         alarm_scene = 1'b1; settle(5);
         check(alarm_type == 2'd0, "进入应急 -> 告警类型第0类(火灾, 默认)");
 
@@ -411,10 +425,88 @@ module tb_ui_key_ctrl;
         check(mode == 3'd0, "应急场景 KEY1×5 -> 回到模式0");
 
         // 退出应急: 模式0 恢复为"切图"
-        alarm_scene = 1'b0; settle(5);
+        alarm_scene = 1'b0; scene_id = 2'd0; settle(5);
         clear_flags; press3;
         check(next_seen && pic_manual == 1'b1,
               "退出应急 -> 模式0 恢复切图(KEY3 产生下一张脉冲并转手动)");
+
+        //-------- 11. 对比度复用槽(2026-10-02 新增) --------
+        //   设计: 迎新(scene_id=0) 的**模式4**、应急(scene_id=3) 的**模式2**
+        //   在本场景原本无任何可见作用, 复用为对比度档, 对外上报 hud_mode=6。
+        //   其余场景/模式一律不变(会议模式4 仍是会议计时; 抢答模式2 仍是缩放)。
+        //   (a) 迎新场景 模式4 → 调对比度
+        check(con_level == 4'd8, "对比度上电默认档 = 8(×1.0, 直通)");
+        clear_flags; repeat (4) press1;      // 0→1→2→3→4
+        check(mode == 3'd4, "迎新模式4: 内部 mode 仍是 4(KEY1 循环档位不变)");
+        check(hud_mode == 3'd6, "迎新模式4 -> hud_mode=6(对比度复用槽)");
+        clear_flags; press3;
+        check(con_level == 4'd9 && hud_mode == 3'd6,
+              "迎新模式4 KEY3 -> 对比度 8→9");
+        check(disp_hold == 1'b1 && disp_sel == 3'd6,
+              "对比度动作 -> 参数强显保持, disp_sel=6(数码管强显对比度值)");
+        // ★复用槽契约(2026-10-02 修"数码管显示 6"的 bug): hud_mode=6 只是
+        //   "参数来源标记", 顶层数码管模式号位必须取真实 mode(ui_mode_raw),
+        //   否则用户看到 6 而不是 4。此处锁定"标记码与真实模式号可区分"。
+        check(hud_mode == 3'd6 && mode == 3'd4,
+              "★复用槽契约: hud_mode=6(标记码) 与真实模式号 4 必须可区分");
+        check(bri_level == 4'd11 && res_level == 4'd6,
+              "调对比度 -> 亮度/缩放档均不变");
+        check(~next_seen && ~prev_seen && ~rchg_seen,
+              "迎新模式4 调对比度 -> 不切图、不触发缩放重载");
+        repeat (6) press3;                   // 9+6 -> 15
+        check(con_level == 4'd15, "对比度连按 KEY3 -> 上限钳位 15(≈×1.875)");
+        press3;
+        check(con_level == 4'd15, "对比度上限再按 KEY3 -> 保持 15");
+        repeat (16) press2;                  // 15-16 -> 0
+        check(con_level == 4'd0, "对比度连按 KEY2 -> 下限钳位 0(恒全灰)");
+        press2;
+        check(con_level == 4'd0, "对比度下限再按 KEY2 -> 保持 0");
+        repeat (8) press3;                   // 回到 8
+        check(con_level == 4'd8, "对比度 KEY3×8 -> 回到 8(×1.0 直通)");
+
+        //   (b) 应急场景 模式2 → 调对比度(原缩放槽被占用, 不得再动 res_level)
+        clear_flags; repeat (4) press1;      // 4→5→0→1→2
+        check(mode == 3'd2, "应急场景: 内部 mode 到 2");
+        scene_id = 2'd3; alarm_scene = 1'b1; settle(5);
+        check(hud_mode == 3'd6, "应急模式2 -> hud_mode=6(对比度复用槽)");
+        res_save = res_level;                // 记下当前缩放档(应为 6)
+        clear_flags; press3;
+        check(con_level == 4'd9 && res_level == res_save && ~rchg_seen,
+              "应急模式2 KEY3 -> 调对比度 8→9; 缩放档不变且不发 res_chg_pl");
+        press2;
+        check(con_level == 4'd8, "应急模式2 KEY2 -> 对比度 9→8");
+        check(res_level == res_save, "应急模式2 全程不动缩放档(槽已让给对比度)");
+        check(hud_mode == 3'd6 && mode == 3'd2,
+              "★应急复用槽契约: hud_mode=6(标记码) 与真实模式号 2 必须可区分");
+
+        //   (c) 对照: 会议场景模式2 仍是正常"缩放"(槽未被占用)
+        scene_id = 2'd1; alarm_scene = 1'b0; settle(5);
+        check(hud_mode == 3'd2, "会议场景模式2 -> hud_mode=2(未被复用)");
+        clear_flags; press3;
+        check(res_level == res_save + 4'd1 && rchg_seen && con_level == 4'd8,
+              "会议场景模式2 KEY3 -> 正常调缩放(对比度不受影响)");
+        clear_flags; press2;
+        check(res_level == res_save, "会议场景模式2 KEY2 -> 缩放还原");
+        check(hud_mode == 3'd2 && mode == 3'd2,
+              "会议场景模式2(普通缩放槽) -> mode/hud 均为 2, 无标记码 6 泄漏");
+
+        //   (d) 对照: 迎新场景模式2 仍是正常"缩放"
+        scene_id = 2'd0; settle(5);
+        check(hud_mode == 3'd2, "迎新场景模式2 -> hud_mode=2(未被复用)");
+        clear_flags; press3;
+        check(res_level == res_save + 4'd1 && rchg_seen && con_level == 4'd8,
+              "迎新场景模式2 KEY3 -> 正常调缩放");
+        clear_flags; press2;
+        check(res_level == res_save && rchg_seen, "迎新场景模式2 KEY2 -> 缩放还原(有效变化, 发 res_chg_pl)");
+
+        //   (e) 对照: 会议场景模式4 仍是"会议计时"(hud_mode=4, 无参数动作)
+        scene_id = 2'd1; settle(5);
+        clear_flags; repeat (2) press1;      // 2→3→4
+        check(mode == 3'd4 && hud_mode == 3'd4,
+              "会议场景模式4 -> hud_mode=4(会议计时, 不是对比度槽)");
+        press3;
+        check(con_level == 4'd8,
+              "会议场景模式4 按 KEY3 -> 对比度不被误触(无参数动作)");
 
         $display("=== ui_key_ctrl 仿真结束,失败数=%0d ===", fail_cnt);
         if (fail_cnt == 0) $display("=== [ALL PASS] ===");

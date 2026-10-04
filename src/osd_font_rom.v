@@ -59,7 +59,9 @@ module osd_font_rom #(
 );
 
     // 单端口只读 BRAM(官方 afifo 同款推断注释)
-    reg [31:0] mem [0:DEPTH-1]; /* fehdl force_ram=1, ram_style="bram" */
+    // 2026-10-03 P2: ram_style 改 bram_32k → 5856×32bit 字模落 32K BRAM(约6块),
+    //   替代原 25 块 9K, 释放 ~20 块 9K(bram9k 63→~43, 为后续功能腾空间)。
+    reg [31:0] mem [0:DEPTH-1]; /* fehdl force_ram=1, ram_style="bram_32k" */
 
     integer i;
     initial begin

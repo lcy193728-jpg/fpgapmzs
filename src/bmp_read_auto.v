@@ -63,17 +63,9 @@ module bmp_read_auto #(
                                                         // (仅当 slide_interval 输入非法时使用)
     // ---- 批次4 运行时可配轮播间隔(小鹅通第三讲 §3.2 period_cfg 接口) ----
     parameter [31:0] MIN_PERIOD_CYCLES = 32'd50_000_000, // 间隔下限 0.5s@100MHz(课程 §3.2)
-    //   ※ 2026-10-02 换卡(老 F: exFAT → 新 G: FAT32): 原默认 126000/400000/5
-    //     是老卡地址, 新卡该区间实测【无任何 BMP】, 而顶层 zone_load 只在
-    //     scene_change_pulse(latch_sw 变化)时才发 → 上电菜单态没有脉冲,
-    //     底层会按老地址空扫 → 上电花屏。这里改为新卡菜单区
-    //     (= 顶层 Z_MENU_*: 15936/25352/6, 即第 5~10 张 wel 素材)。
-    //   ⚠ 2026-10-02 修正: 上面这些值必须是【卡物理 LBA】= 卷内扇区 + 64
-    //     (本卡 G: 分区偏移仅 64 扇区, 见 top_final.v 口径说明)。曾误用
-    //     find_bmp.py 的默认 --base 2048 输出(+2048 口径), 使所有 Z_* 偏大
-    //     1984 扇区 → 上电按老地址扫不到本图、跳过错位后的前几张。
-    parameter [31:0] ZONE_START_SECTOR = 32'd15936,      // 复位默认分区起点(菜单区=迎新区)
-    parameter [31:0] ZONE_WRAP_SECTOR  = 32'd25352,      // 复位默认分区上限(回卷,=末张起点+8)
+    //   ※ FAT32 正规化(小鹅通第七讲): 不再用"扫扇区找 BM 魔数"的分区地址,
+    //     而是由 scanner 目录项给出每张图的簇号+大小, 经 zone_load 传入簇号表。
+    //     ZONE_START_SECTOR/ZONE_WRAP_SECTOR 两个扇区地址参数已删除。
     parameter [31:0] ZONE_MAX_IMAGES   = 32'd6,          // 复位默认分区图片张数
     // ---- 批次3 容错参数(小鹅通第五讲 §2.4/§2.6 参数集中化) ----
     parameter [31:0] BMP_PIXEL_BYTES   = 32'd921600,     // 640×480 基准像素字节数(仿真可用小子集覆盖)
@@ -111,11 +103,25 @@ module bmp_read_auto #(
     //   满足条件切下一张 —— 语义等同"改完间隔马上生效", 不额外引入挂起态。
     input       [31:0] slide_interval,             // 轮播间隔(时钟周期)
     // ---- 分区重载(场景切换用, sd_card_clk 同域) ----
-    // zone_load=1 的当拍锁存以下三参数; 在安全边界(S_IDLE/S_HOLD)重启扫描
-    input       [31:0] zone_start,                 // 新分区扫描起点扇区
-    input       [31:0] zone_wrap,                  // 新分区扫描上限(超过回卷到起点)
+    // zone_load=1 的当拍锁存以下簇号数组; 在安全边界(S_IDLE/S_HOLD)重启读取
+    input       [31:0] zone_start,                 // 保留兼容位(未用; FAT32 化后不再扫扇区)
+    input       [31:0] zone_wrap,                  // 保留兼容位(未用)
     input       [31:0] zone_max_img,               // 新分区图片张数(轮播一圈张数)
     input               zone_load,                 // 分区重载请求(单周期脉冲)
+    // ---- FAT32 文件簇号表(zone_load 当拍锁存; 上层从 scanner 结果查表给出) ----
+    //   最多 6 个文件(迎新区 6 张; 会议/抢答/应急各 1 张), 未用槽填 0。
+    input       [31:0] zone_cluster0,              // 第 1 个文件起始簇号
+    input       [31:0] zone_cluster1,
+    input       [31:0] zone_cluster2,
+    input       [31:0] zone_cluster3,
+    input       [31:0] zone_cluster4,
+    input       [31:0] zone_cluster5,
+    input       [31:0] zone_size0,                 // 第 1 个文件大小(字节)
+    input       [31:0] zone_size1,
+    input       [31:0] zone_size2,
+    input       [31:0] zone_size3,
+    input       [31:0] zone_size4,
+    input       [31:0] zone_size5,
     // ---- 原地重读请求(缩放档变化用, sd_card_clk 同域) ----
     // reload_req: 当前显示图的缩放大/小档变化后, 立即重读"同一张图",
     //   使新档位马上生效(不切图、不改变图序号)。任意时刻到达都置挂起标志,
@@ -125,11 +131,14 @@ module bmp_read_auto #(
     input      [15:0]   bmp_width,                 // BMP 图像宽度(固定 640)
     output reg          write_req,                 // 写帧请求(启动写 SDRAM)
     input               write_req_ack,             // 写帧响应(写通路已就绪)
-    output reg          sd_sec_read,               // SD 卡扇区读请求
-    output reg  [31:0]  sd_sec_read_addr,          // SD 卡扇区读地址
-    input      [7:0]    sd_sec_read_data,          // SD 卡扇区读数据(字节)
-    input               sd_sec_read_data_valid,    // 扇区读数据有效
-    input               sd_sec_read_end,           // 扇区读结束(512 字节读完)
+    // ---- FAT32 文件流读取接口(对接 fat32_file_streamer, 替代原 sd_sec 扇区读) ----
+    output reg          file_start,                // 文件读取启动(单周期脉冲)
+    output reg  [31:0]  file_cluster,              // 起始簇号
+    output reg  [31:0]  file_len_out,              // 文件大小(字节)
+    input               file_valid,                // 文件字节有效
+    input      [7:0]    file_byte,                 // 文件字节
+    input               file_done,                 // 文件读完(单拍)
+    input      [7:0]    file_error,                // 文件读取错误码(0=无)
     output reg          bmp_data_wr_en,            // BMP 像素数据写使能
     output reg  [23:0]  bmp_data,                  // BMP 像素数据(24bit RGB)
     output      [7:0]   img_no,                    // 当前显示图序号(1..N; 0=空闲/未就绪)
@@ -168,7 +177,7 @@ module bmp_read_auto #(
     // 内部寄存器
     //--------------------------------------------------------------
     reg [3:0]   state;
-    reg [9:0]   rd_cnt;          // 扇区内字节计数(找图阶段)
+    reg [9:0]   rd_cnt;          // 文件内字节计数(找图阶段, 解析 BMP 头)
     reg [7:0]   header_0;        // 文件头第 0 字节(应为 'B')
     reg [7:0]   header_1;        // 文件头第 1 字节(应为 'M')
     reg [31:0]  file_len;        // BMP 文件总长度(从头信息读取)
@@ -235,36 +244,30 @@ module bmp_read_auto #(
     reg         asm_we;          // 源像素有效(1 拍脉冲)
     reg         hdr_passed;      // 打拍: 已越过文件头(= bmp_len_cnt >= pixel_offset)
     reg         pixel_full;      // 打拍: 像素数已达标(= pixel_cnt >= BMP_PIXEL_COUNT)
-    reg [31:0]  sd_timeout_cnt;  // SD 无进展计时(周期, §2.4)
+    reg [31:0]  sd_timeout_cnt;  // 读卡无进展计时(周期, §2.4)
     reg [3:0]   retry_cnt;       // 本张图已重试次数(§2.2)
-    reg [31:0]  file_base_addr;  // 命中文件所在簇地址(出错重试/跳过用)
-    reg [31:0]  skip_lat;        // 坏图快跳步长(打拍, §2.3)
-    reg [31:0]  wrap_lim;        // 坏图快跳的回卷阈值 = z_wrap - skip_lat(打拍)
     reg [31:0]  bmp_len_cnt;     // 读图阶段的字节计数器
-    reg         found;           // 命中标志(找到 "BM" + 宽度匹配)
+    reg         found;           // 命中标志(文件头 9 项校验通过)
     reg [1:0]   bmp_len_cnt_tmp; // RGB 三字节计数(0/1/2)
     reg [31:0]  hold_cnt;        // 轮播间隔计数器
     reg [31:0]  period_cyc;      // 生效的轮播间隔(寄存器版: 合法性过滤后的 slide_interval)
-    reg [31:0]  img_cnt;         // 当前分区已找到的图片计数(达到 z_max 后回卷)
+    reg [31:0]  img_cnt;         // 当前显示图序号(1..z_max; 达到 z_max 后回卷)
 
-    // 手动"上一张"的按序号目标扫描(由于分区素材连续排布, 从分区起点重扫,
-    // 依次命中各图并跳过, 直到第 scan_tgt 号图):
-    reg         scan_tgt_en;     // 1=本次扫描以 scan_tgt 号图为目标
-    reg [31:0]  scan_tgt;        // 目标图序号(0 基: 第 N 张 => scan_tgt=N-1)
-    reg [31:0]  pass_cnt;        // 已跳过的命中图计数(抵达目标前计数)
+    // 命中标志清除(FAT32 化后: 找到即读, 读完后清 found, 无需"逐簇跳过"计数)
     reg         found_clr;       // 本张"命中"已处理, 请求清 found 标志
 
     // 当前生效分区(复位=默认/菜单分区; 仅 S_IDLE 应用时更新)
-    reg [31:0]  z_start;
-    reg [31:0]  z_wrap;
-    reg [31:0]  z_max;
-    // 请求分区(zone_load 当拍捕获)
-    reg [31:0]  req_start;
-    reg [31:0]  req_wrap;
-    reg [31:0]  req_max;
+    reg [31:0]  z_max;           // 分区图片张数(轮播一圈张数)
+    // FAT32 文件簇号表(zone_load 当拍锁存; 最多 6 张, 未用槽填 0)
+    reg [31:0]  clu0, clu1, clu2, clu3, clu4, clu5;  // 各图起始簇号
+    reg [31:0]  siz0, siz1, siz2, siz3, siz4, siz5;  // 各图文件大小
+    // (资源优化 2026-10-03: 删除 req_max/req_clu0..5/req_siz0..5 中间快照层。
+    //   原 zone_load 当拍锁存外部 zone_cluster*/zone_size* 到 req_*, 再在 S_IDLE
+    //   应用时拷贝到 clu/siz —— 两层相邻拍锁存同一份数据。上层 sd_card_bmp 已用
+    //   zone_clu/siz 寄存 scanner 结果, 且 zone_load 后 zone_cluster* 保持稳定,
+    //   故 S_IDLE 应用时直接读输入即可, 省 13×32bit=416 FF ≈ 208 mslice)
     reg         zone_pend;       // 1=有未应用的分区请求(等待安全边界)
     reg         reload_pend;     // 1=有未应用的"原地重读当前图"请求(缩放档变化)
-    reg         skip_pend;       // 1=重试耗尽需跳过本图, 跳过地址延到 S_IDLE 计算(§时序)
 
     //--------------------------------------------------------------
     // BMP 头严格校验(小鹅通第五讲 §2.1, 9 项)
@@ -330,42 +333,11 @@ module bmp_read_auto #(
                         len_ok;
 
     //--------------------------------------------------------------
-    // 坏图快跳步长(§2.3): 把 file_len 折算成"能覆盖整个文件的最小 8 扇区(4KB 簇)倍数"
-    //   等价式: ceil(file_len/512) 再上取整到 8 的倍数
-    //         ≡ ceil(file_len/4096) × 8 = ((file_len + 4095) >> 12) << 3
-    //   ※ 用等价式是为了"只做一次 32bit 加法": 原写法 (+511)>>9 再 +7 再掩码 是
-    //     三级 32bit 运算, 综合实测把 file_len→sd_sec_read_addr 拉成 12.8ns 长链
-    //     (48 个 FEPS 违例)。移位是纯连线, 不占逻辑级。
-    //   ※ 下限 8 扇区: file_len 极小、或 +4095 溢出(>0xFFFFF000) 都会把步长算成 0,
-    //     那时地址原地不动 → 每次超时后重扫同一地址(永久打转), 故 0 一律退回 8。
+    // (FAT32 化后删除: 原"坏图快跳步长"逻辑。旧版按 file_len 折算成簇数跳过
+    //  整个坏文件; 现在找图由 scanner 的目录项给出精确文件簇号+大小, 每张图
+    //  都是"按文件读", 不存在"扫扇区逐簇跳找 BM 魔数"的概念, 故整个 skip_lat/
+    //  wrap_lim/skip_step 机制一并删除。)
     //--------------------------------------------------------------
-    wire [31:0] skip_step_raw = ((file_len + 32'd4095) >> 12) << 3;
-    wire [31:0] skip_next     = (skip_step_raw == 32'd0) ? 32'd8 : skip_step_raw;
-
-    //--------------------------------------------------------------
-    // 步长/回卷阈值 打拍(§2.3 时序): 文件头读齐后(file_len 锁存完成)分两拍存好
-    //   · 第 1 拍(rd_cnt==6): 算步长  skip_lat = ((file_len+4095)>>12)<<3
-    //   · 第 2 拍(rd_cnt==7): 算阈值  wrap_lim = z_wrap - skip_lat
-    //     (用 "addr >= z_wrap-skip" 等价判定 "addr+skip >= z_wrap", 让加法与比较
-    //      并联而不是串联 —— 否则又是一条 加法→比较 的 10ns 链)
-    //   为什么必须打拍: 若在扫描分支里现算, path = file_len→加法→比较→再加地址→
-    //     再比较→地址 mux, 实测 12.8ns > 10ns 周期。打拍后扫描分支只剩
-    //     "寄存器比较 ∥ 寄存器加法 → mux", 与原 "+8 扇区" 分支同级。
-    //   安全性: 两个值都在"解析本扇区文件头"时刷新, 而使用点(坏图分支/S_READ 出错
-    //     分支)最早也在本扇区读完(sd_sec_read_end)之后, 远晚于 rd_cnt==7;
-    //     分区(z_wrap)只在 S_IDLE 应用, 应用后必先重扫到某个文件头才可能用到。
-    //--------------------------------------------------------------
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            skip_lat <= 32'd8;
-            wrap_lim <= 32'd0;
-        end
-        else if (state == S_FIND && sd_sec_read_data_valid) begin
-            if (rd_cnt == 10'd6) skip_lat <= skip_next;
-            if (rd_cnt == 10'd7)
-                wrap_lim <= (z_wrap < skip_lat) ? 32'd0 : (z_wrap - skip_lat);
-        end
-    end
 
     // BMP 像素数据有效：已越过文件头(hdr_passed, 按 pixel_offset)、
     //   不超过文件长度(bmp_len_cnt<file_len)、且未读满期望像素数(!pixel_full)
@@ -375,7 +347,7 @@ module bmp_read_auto #(
     //     "bmp_len_cnt>=file_len" 一起汇入主状态机的整块使能锥, post-route
     //     实测 11.602ns > 11.517ns(Setup -85ps / 8 FEPS)。打拍后比较结果只
     //     驱动一个寄存器, 长链被截断; 逐字节行为与组合判定完全一致。
-    wire bmp_data_valid = (sd_sec_read_data_valid &&
+    wire bmp_data_valid = (file_valid              &&
                            hdr_passed               &&
                            bmp_len_cnt < file_len   &&
                            ~pixel_full);
@@ -399,17 +371,33 @@ module bmp_read_auto #(
             hdr_passed <= 1'b0;
             pixel_full <= 1'b0;
         end
-        else if (state != S_READ) begin
-            // 离开读图态即复位两个标志(与 bmp_len_cnt/pixel_cnt 的清零时机一致)
+        else if (state == S_IDLE) begin
+            // 发新图前复位两个标志(与 bmp_len_cnt/pixel_cnt 的清零时机一致)
             hdr_passed <= 1'b0;
             pixel_full <= 1'b0;
         end
-        else begin
-            if (sd_sec_read_data_valid)
+        else if (state == S_FIND) begin
+            // 读头阶段: 头读齐(bmp_len_cnt 越过 pixel_offset)即置位 hdr_passed。
+            //   ★FAT32 化关键修正(off-by-one 丢首像素): 原写法"state != S_READ 即清零"
+            //     会让 hdr_passed 在 S_READ_WAIT(等 write_req_ack)期间被清 0, 而
+            //     streamer 是连续字节流, S_READ 第 1 拍的像素 B(offset 54)到达时
+            //     hdr_passed 还是 0 → 首像素 B 被 bmp_data_valid 挡住丢弃, 整帧
+            //     RGB 错位、pixel_cnt 少 1(实测 pcnt=39 / blc=174)。
+            //     修正: hdr_passed 在 S_FIND 末尾头读完即置 1, S_READ_WAIT/S_READ
+            //     期间**保持**(不再清零), S_READ 第 1 拍像素 B 即被正确消费。
+            if (file_valid)
+                hdr_passed <= (bmp_len_cnt + 32'd1 >= pixel_offset);
+            pixel_full <= 1'b0;
+        end
+        else if (state == S_READ) begin
+            if (file_valid)
                 hdr_passed <= (bmp_len_cnt + 32'd1 >= pixel_offset);
             if (bmp_pixel_out)
                 pixel_full <= (pixel_cnt + 32'd1 >= pix_cnt_tgt);
         end
+        // S_READ_WAIT / S_HOLD 期间保持(无赋值分支):
+        //   · S_READ_WAIT 时 hdr_passed 已在 S_FIND 末尾置 1, 保持即可;
+        //   · S_HOLD 时标志值不再被消费(下一张图在 S_IDLE 复位)。
     end
 
     assign ready = (state == S_IDLE);
@@ -422,35 +410,22 @@ module bmp_read_auto #(
     assign img_no = img_cnt[7:0];
 
     //--------------------------------------------------------------
-    // zone_load 捕获(独立于主状态机, 只锁存目标分区参数):
-    //   req_* 由本 always 唯一驱动; zone_pend 挂起标志改由主状态机
-    //   always 唯一驱动(见下)——避免同一 reg 被两个 always 写(多重驱动)
+    // (资源优化 2026-10-03: zone_load 捕获 req_* 层已删除。上层 sd_card_bmp 的
+    //   zone_clu/siz 已寄存 scanner 结果, 且 zone_load 后保持稳定, 主状态机
+    //   S_IDLE 应用时直接读 zone_cluster*/zone_size* 输入即可。)
     //--------------------------------------------------------------
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            req_start <= ZONE_START_SECTOR;
-            req_wrap  <= ZONE_WRAP_SECTOR;
-            req_max   <= ZONE_MAX_IMAGES;
-        end
-        else if (zone_load) begin
-            req_start <= zone_start;
-            req_wrap  <= zone_wrap;
-            req_max   <= zone_max_img;
-        end
-    end
 
     //--------------------------------------------------------------
-    // 找图阶段字节计数(rd_cnt)
+    // 文件头阶段字节计数(rd_cnt): FAT32 化后, S_FIND = "读文件头"阶段,
+    //   file_valid 时 +1 计数 0~53 字节做 BMP 头解析(不再扫扇区找 BM 魔数)。
     //--------------------------------------------------------------
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             rd_cnt <= 10'd0;
         end
         else if (state == S_FIND) begin
-            if (sd_sec_read_data_valid)
+            if (file_valid)
                 rd_cnt <= rd_cnt + 10'd1;
-            else if (sd_sec_read_end)
-                rd_cnt <= 10'd0;
         end
         else begin
             rd_cnt <= 10'd0;
@@ -481,45 +456,45 @@ module bmp_read_auto #(
             //   HDL-8007「net is constantly driven from multiple places」。
             img_v2x      <= 1'b0;
         end
-        else if (state == S_FIND && sd_sec_read_data_valid) begin
-            if (rd_cnt == 10'd0)  header_0        <= sd_sec_read_data;
-            if (rd_cnt == 10'd1)  header_1        <= sd_sec_read_data;
+        else if (state == S_FIND && file_valid) begin
+            if (rd_cnt == 10'd0)  header_0        <= file_byte;
+            if (rd_cnt == 10'd1)  header_1        <= file_byte;
             // 文件长度(小端, 第 2~5 字节)
-            if (rd_cnt == 10'd2)  file_len[7:0]   <= sd_sec_read_data;
-            if (rd_cnt == 10'd3)  file_len[15:8]  <= sd_sec_read_data;
-            if (rd_cnt == 10'd4)  file_len[23:16] <= sd_sec_read_data;
-            if (rd_cnt == 10'd5)  file_len[31:24] <= sd_sec_read_data;
+            if (rd_cnt == 10'd2)  file_len[7:0]   <= file_byte;
+            if (rd_cnt == 10'd3)  file_len[15:8]  <= file_byte;
+            if (rd_cnt == 10'd4)  file_len[23:16] <= file_byte;
+            if (rd_cnt == 10'd5)  file_len[31:24] <= file_byte;
             // 像素数据起始偏移(小端, 第 10~13 字节; §2.1 新增校验用)
-            if (rd_cnt == 10'd10) pixel_offset[7:0]   <= sd_sec_read_data;
-            if (rd_cnt == 10'd11) pixel_offset[15:8]  <= sd_sec_read_data;
-            if (rd_cnt == 10'd12) pixel_offset[23:16] <= sd_sec_read_data;
-            if (rd_cnt == 10'd13) pixel_offset[31:24] <= sd_sec_read_data;
+            if (rd_cnt == 10'd10) pixel_offset[7:0]   <= file_byte;
+            if (rd_cnt == 10'd11) pixel_offset[15:8]  <= file_byte;
+            if (rd_cnt == 10'd12) pixel_offset[23:16] <= file_byte;
+            if (rd_cnt == 10'd13) pixel_offset[31:24] <= file_byte;
             // DIB 头大小(小端, 第 14~17 字节)
-            if (rd_cnt == 10'd14) dib_size[7:0]   <= sd_sec_read_data;
-            if (rd_cnt == 10'd15) dib_size[15:8]  <= sd_sec_read_data;
-            if (rd_cnt == 10'd16) dib_size[23:16] <= sd_sec_read_data;
-            if (rd_cnt == 10'd17) dib_size[31:24] <= sd_sec_read_data;
+            if (rd_cnt == 10'd14) dib_size[7:0]   <= file_byte;
+            if (rd_cnt == 10'd15) dib_size[15:8]  <= file_byte;
+            if (rd_cnt == 10'd16) dib_size[23:16] <= file_byte;
+            if (rd_cnt == 10'd17) dib_size[31:24] <= file_byte;
             // 图像宽度(小端, 第 18~21 字节)
-            if (rd_cnt == 10'd18) width[7:0]      <= sd_sec_read_data;
-            if (rd_cnt == 10'd19) width[15:8]     <= sd_sec_read_data;
-            if (rd_cnt == 10'd20) width[23:16]    <= sd_sec_read_data;
-            if (rd_cnt == 10'd21) width[31:24]    <= sd_sec_read_data;
+            if (rd_cnt == 10'd18) width[7:0]      <= file_byte;
+            if (rd_cnt == 10'd19) width[15:8]     <= file_byte;
+            if (rd_cnt == 10'd20) width[23:16]    <= file_byte;
+            if (rd_cnt == 10'd21) width[31:24]    <= file_byte;
             // 图像高度(小端, 第 22~25 字节)
-            if (rd_cnt == 10'd22) height[7:0]     <= sd_sec_read_data;
-            if (rd_cnt == 10'd23) height[15:8]    <= sd_sec_read_data;
-            if (rd_cnt == 10'd24) height[23:16]   <= sd_sec_read_data;
-            if (rd_cnt == 10'd25) height[31:24]   <= sd_sec_read_data;
+            if (rd_cnt == 10'd22) height[7:0]     <= file_byte;
+            if (rd_cnt == 10'd23) height[15:8]    <= file_byte;
+            if (rd_cnt == 10'd24) height[23:16]   <= file_byte;
+            if (rd_cnt == 10'd25) height[31:24]   <= file_byte;
             // 平面数(小端, 第 26~27 字节; §2.1 新增校验用)
-            if (rd_cnt == 10'd26) planes[7:0]     <= sd_sec_read_data;
-            if (rd_cnt == 10'd27) planes[15:8]    <= sd_sec_read_data;
+            if (rd_cnt == 10'd26) planes[7:0]     <= file_byte;
+            if (rd_cnt == 10'd27) planes[15:8]    <= file_byte;
             // 色深(小端, 第 28~29 字节)
-            if (rd_cnt == 10'd28) bit_cnt[7:0]    <= sd_sec_read_data;
-            if (rd_cnt == 10'd29) bit_cnt[15:8]   <= sd_sec_read_data;
+            if (rd_cnt == 10'd28) bit_cnt[7:0]    <= file_byte;
+            if (rd_cnt == 10'd29) bit_cnt[15:8]   <= file_byte;
             // 压缩方式(小端, 第 30~33 字节; §2.1 新增校验用)
-            if (rd_cnt == 10'd30) compression[7:0]   <= sd_sec_read_data;
-            if (rd_cnt == 10'd31) compression[15:8]  <= sd_sec_read_data;
-            if (rd_cnt == 10'd32) compression[23:16] <= sd_sec_read_data;
-            if (rd_cnt == 10'd33) compression[31:24] <= sd_sec_read_data;
+            if (rd_cnt == 10'd30) compression[7:0]   <= file_byte;
+            if (rd_cnt == 10'd31) compression[15:8]  <= file_byte;
+            if (rd_cnt == 10'd32) compression[23:16] <= file_byte;
+            if (rd_cnt == 10'd33) compression[31:24] <= file_byte;
             // 长度一致性校验打拍(§时序 / BOARD_CHECKLIST C9, 多分辨率 2026-10-02):
             //   校验项 = file_len ≥ pixel_offset + pix_bytes_sel
             //   · 最初在 rd_cnt==54 一拍现算 → sd_card_clk SWNS=-1.392ns;
@@ -543,7 +518,14 @@ module bmp_read_auto #(
             //     m_hup2  : 源宽 = 320      → 横向复制输出 2 次
             //     m_vdown : 源高 > 480      → 纵向隔行抽取到 480 行
             //     m_v2x   : 源高 = 240      → 本模块只出 240 行, 由 bmp_scale 补 2×
-            if (rd_cnt == HEADER_SIZE && header_match) begin
+            //   ★FAT32 化修正: found 在 rd_cnt==53(头最后一个字节)当拍判定, 而非
+            //     原扇区版的 rd_cnt==54。原因: streamer 是连续字节流, 第 54 字节
+            //     (offset 53)已是头的末尾, 第 55 字节(offset 54)是第 1 个像素 B。
+            //     若仍按 rd_cnt==54 判定, 会先消耗掉第 55 字节(像素 B)才进
+            //     S_READ → 每帧第 1 像素的 B 丢失, 整帧 RGB 错位(颜色错乱)。
+            //     header_match 依赖的字段(compression 在 rd_cnt==33 锁存)在
+            //     rd_cnt==53 时早已稳定, 提前判定语义不变。
+            if (rd_cnt == (HEADER_SIZE - 10'd1) && header_match) begin
                 found       <= 1'b1;
                 res_r       <= res_code;        // 本帧分辨率码(0..3)
                 src_w_r     <= src_w_all;       // 本帧源宽
@@ -555,11 +537,8 @@ module bmp_read_auto #(
                 pix_cnt_tgt <= pix_cnt_sel;     // 本帧期望【源】像素个数(完整性校验用)
                 // ★img_v2x 必须在此处(而不是 S_READ 收尾)更新:
                 //   下游 bmp_scale 在**本帧** write_req_ack(=fs_pulse)那拍锁存它,
-                //   而 write_req 在本扇区读完(rd_cnt 满 512)就拉起了 —— 若等到
-                //   S_READ 收尾才写, 迟到整整一帧: 该帧 bmp_scale 拿到的是上一张图
-                //   的值 → 320x240 图会被当成 640x480 直通(只写 240 行, 下半屏残留
-                //   旧图)闪一帧。头部锁存在 rd_cnt==54(扇区中段), 早于 write_req
-                //   至少 450 拍, 时间富余。
+                //   若等到 S_READ 收尾才写, 迟到整整一帧 → 320x240 图会被当成
+                //   640x480 直通(只写 240 行, 下半屏残留旧图)闪一帧。
                 //   ※ img_res 仍留在 S_READ 收尾写: 它只喂右上角字幕(迟一帧不可见),
                 //     而放在这里会让"回看扫描"途中掠过的每张图都改一次值 → 字幕乱跳。
                 img_v2x     <= (height < 32'd480);
@@ -571,14 +550,21 @@ module bmp_read_auto #(
     end
 
     //--------------------------------------------------------------
-    // 读图阶段字节计数器(bmp_len_cnt)
+    // 文件字节计数器(bmp_len_cnt): FAT32 化后 streamer 是**连续字节流**,
+    //   S_FIND 阶段收文件头(offset 0~53), S_READ 阶段收像素字节(offset 54 起),
+    //   两者是同一个 file_start 触发的同一趟读取。故 bmp_len_cnt 必须在两个
+    //   阶段都计数, 使其始终等于"文件内绝对字节偏移"(等价 streamer 的
+    //   file_byte_offset)。这样 hdr_passed 判断(bmp_len_cnt>=pixel_offset=54)
+    //   与 frame_read_done(bmp_len_cnt>=file_len) 才能正确。
+    //   ⚠ 若只让 S_READ 计数, bmp_len_cnt 从 0 起数像素字节、永远到不了 54,
+    //     hdr_passed 永不置位 → 像素数据完全不输出(花屏/黑屏)。
     //--------------------------------------------------------------
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             bmp_len_cnt <= 32'd0;
         end
-        else if (state == S_READ) begin
-            if (sd_sec_read_data_valid)
+        else if (state == S_FIND || state == S_READ) begin
+            if (file_valid)
                 bmp_len_cnt <= bmp_len_cnt + 32'd1;
         end
         else if (state == S_HOLD || state == S_IDLE) begin
@@ -614,15 +600,15 @@ module bmp_read_auto #(
         else if (state == S_READ) begin
             if (bmp_len_cnt_tmp == 2'd2 && bmp_data_valid) begin
                 asm_we          <= 1'b1;
-                asm_data[23:16] <= sd_sec_read_data;   // R
+                asm_data[23:16] <= file_byte;   // R
             end
             else if (bmp_len_cnt_tmp == 2'd1 && bmp_data_valid) begin
                 asm_we          <= 1'b0;
-                asm_data[15:8]  <= sd_sec_read_data;   // G
+                asm_data[15:8]  <= file_byte;   // G
             end
             else if (bmp_len_cnt_tmp == 2'd0 && bmp_data_valid) begin
                 asm_we          <= 1'b0;
-                asm_data[7:0]   <= sd_sec_read_data;   // B
+                asm_data[7:0]   <= file_byte;   // B
             end
             else begin
                 asm_we <= 1'b0;
@@ -855,7 +841,10 @@ module bmp_read_auto #(
         if (rst) begin
             sd_timeout_cnt <= 32'd0;
         end
-        else if ((state != S_FIND && state != S_READ) || sd_sec_read_end) begin
+        else if ((state != S_FIND && state != S_READ) || file_done || file_valid) begin
+            // FAT32 化后: 文件读完(file_done)或任一字节有效(file_valid)都视为"有进展"
+            //   —— streamer 自动跨扇区读完整文件, 不再有每 512B 的扇区结束信号,
+            //      故用 file_valid 作为"读卡有进展"的判据(每字节 = 一次进展)。
             sd_timeout_cnt <= 32'd0;
         end
         else begin
@@ -866,12 +855,36 @@ module bmp_read_auto #(
 
     //--------------------------------------------------------------
     // 读图阶段"整帧读完"与"致命错误"判定(供 S_READ 单点判决)
-    //   frame_read_done: 扇区边界且已读够 file_len 字节
+    //   frame_read_done: FAT32 化后由 streamer 的 file_done 给出(文件级结束),
+    //     不再依赖"扇区边界 + 读够 file_len"(streamer 已跨扇区读完整文件)。
+    //   ★2026-10-03 修正(320 档行尾丢 2 列): file_done 是 streamer 的单拍脉冲,
+    //     而 320 档(横向线性插值)行尾最后一个源像素要连发 3 列(up_st 小状态机
+    //     需 4 拍走完 1→2→3→4)。若 file_done 在 up_st 未收尾时到来就立即退
+    //     S_READ, `state != S_READ` 分支会复位 up_st → 最后 2 列丢失(实测
+    //     320 档少 2 像素: 153598 vs 153600)。故:
+    //       · filedone_latch 锁存 file_done(单拍脉冲), 退出 S_READ 时清 0;
+    //       · frame_read_done = filedone_latch && up_idle(等行尾补列发射收尾)。
     //   load_fatal     : 读超时, 或整帧读完但像素数不足(截断)
     //--------------------------------------------------------------
-    wire frame_read_done = (state == S_READ) && sd_sec_read_end && (bmp_len_cnt >= file_len);
+    reg         filedone_latch;              // file_done 锁存(等 up_st 收尾)
+    wire        up_idle = (up_st == 3'd0);   // 320 档行尾补列发射已收尾
+    wire frame_read_done = (state == S_READ) && filedone_latch && up_idle;
     wire load_fatal      = (state == S_READ) &&
                            (sd_timeout || (frame_read_done && ~pixel_full));
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            filedone_latch   <= 1'b0;
+        end
+        else if (state == S_READ) begin
+            // S_READ 期间锁存 file_done(单拍脉冲); 一旦置位保持到退出 S_READ
+            if (file_done)
+                filedone_latch <= 1'b1;
+        end
+        else begin
+            filedone_latch <= 1'b0;   // 离开 S_READ 清 0, 准备下一次读图
+        end
+    end
 
     //--------------------------------------------------------------
     // 轮播间隔寄存器(批次4, §3.2): 只在输入合法(≥下限 0.5s)时更新
@@ -910,171 +923,150 @@ module bmp_read_auto #(
     //--------------------------------------------------------------
     // 主状态机
     //--------------------------------------------------------------
+    // 簇号表查询(组合逻辑): 按图序号(img_cnt, 1..z_max)选择当前图起始簇号与大小。
+    //   索引 = img_cnt - 1 (0 基): 第 1 张 → clu0/siz0 ... 第 6 张 → clu5/siz5。
+    //   仅供 S_HOLD 的"原地重读"(reload_pend)查当前图簇号用。
+    reg  [31:0] cur_clu, cur_siz;   // 当前应读的图(由 img_cnt 索引)
+    always @* begin
+        case (img_cnt - 32'd1)
+            32'd0: begin cur_clu = clu0; cur_siz = siz0; end
+            32'd1: begin cur_clu = clu1; cur_siz = siz1; end
+            32'd2: begin cur_clu = clu2; cur_siz = siz2; end
+            32'd3: begin cur_clu = clu3; cur_siz = siz3; end
+            32'd4: begin cur_clu = clu4; cur_siz = siz4; end
+            32'd5: begin cur_clu = clu5; cur_siz = siz5; end
+            default: begin cur_clu = clu0; cur_siz = siz0; end
+        endcase
+    end
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             state            <= S_IDLE;
-            sd_sec_read      <= 1'b0;
-            sd_sec_read_addr <= {ZONE_START_SECTOR[31:3], 3'd0};
+            file_start       <= 1'b0;
+            file_cluster     <= 32'd0;
+            file_len_out     <= 32'd0;
             write_req        <= 1'b0;
             state_code       <= 4'd0;
-            img_cnt          <= 32'd0;
-            z_start          <= ZONE_START_SECTOR;
-            z_wrap           <= ZONE_WRAP_SECTOR;
+            img_cnt          <= 32'd1;
             z_max            <= ZONE_MAX_IMAGES;
+            clu0             <= 32'd0;
+            clu1             <= 32'd0;
+            clu2             <= 32'd0;
+            clu3             <= 32'd0;
+            clu4             <= 32'd0;
+            clu5             <= 32'd0;
+            siz0             <= 32'd0;
+            siz1             <= 32'd0;
+            siz2             <= 32'd0;
+            siz3             <= 32'd0;
+            siz4             <= 32'd0;
+            siz5             <= 32'd0;
             zone_pend        <= 1'b0;
             reload_pend      <= 1'b0;
-            skip_pend        <= 1'b0;
-            scan_tgt_en      <= 1'b0;
-            scan_tgt         <= 32'd0;
-            pass_cnt         <= 32'd0;
             found_clr        <= 1'b0;
             bmp_error        <= ERR_NONE;
             retry_cnt        <= 4'd0;
-            file_base_addr   <= 32'd0;
             img_res          <= 2'd1;      // 复位默认 640x480(与基线行为一致)
             // 注意: img_v2x 不在此复位 —— 它由头部解析 always 块单一驱动(见该块复位段)
         end
         else begin
             // 命中标志清除请求默认拉低(本 always 唯一驱动点)
             found_clr <= 1'b0;
+            file_start <= 1'b0;            // 文件启动默认拉低(脉冲)
 
             // 分区请求挂起标志(与主状态机同 always 的单一驱动点):
-            //   zone_load 任意时刻置位(含 SD 初始化等待期);
-            //   当拍 S_IDLE 真正应用新分区时清位(需 sd_init_done, 与 case 应用对齐).
-            //   · 同一拍 zone_load + S_IDLE 应用: 置位优先(新请求挂起), 而应用读的
-            //     是 req_* 旧值 → 旧请求仍被应用, 新请求留待下次应用, 不丢不重.
-            //   · 挂起请求经 S_FIND 扇区读间隙 / S_HOLD 边界回 S_IDLE 统一应用.
             if (zone_load)
                 zone_pend <= 1'b1;
             else if (zone_pend && sd_init_done && (state == S_IDLE))
                 zone_pend <= 1'b0;
 
             // 原地重读挂起标志(本 always 唯一驱动点):
-            //   reload_req 任意时刻置位; 在 S_HOLD 边界真正应用时清位.
-            //   (与 S_HOLD 分支同拍: 分支读旧值 1 → 本拍仍执行重读, 不丢)
             if (reload_req)
                 reload_pend <= 1'b1;
             else if (reload_pend && (state == S_HOLD))
                 reload_pend <= 1'b0;
 
             if (sd_init_done == 1'b0) begin
-                // SD 卡尚未初始化完成, 回到空闲等待(分区应用点, 不扫不读)
                 state       <= S_IDLE;
-                sd_sec_read <= 1'b0;
+                file_start  <= 1'b0;
                 state_code  <= 4'd0;
             end
             else begin
                 case (state)
                 //------------------------------------------------
-                // 空闲: 若请求了新分区则应用并从头扫描; 否则直接开始
+                // 空闲: 若请求了新分区则应用簇号表; 然后发起当前图读取
                 //------------------------------------------------
                 S_IDLE: begin
                     state_code <= 4'd1;
-                    // 任何进入空闲的路径都取消"按序号目标扫描"
-                    scan_tgt_en <= 1'b0;
-                    pass_cnt    <= 32'd0;
-                    skip_pend   <= 1'b0;
                     if (zone_pend) begin
-                        // 应用请求分区, 重置计数后从头扫描
+                        // 应用请求簇号表, 重置计数(直接读上层已稳定的 zone_* 输入,
+                        //   省掉 req_* 中间快照层)
                         // (zone_pend 清位由上方挂起逻辑当拍完成, 此处只读不写)
-                        // 分区优先于"跳坏图": 换区即从新起点重扫, 跳过已无意义
-                        z_start          <= req_start;
-                        z_wrap           <= req_wrap;
-                        z_max            <= req_max;
-                        sd_sec_read_addr <= {req_start[31:3], 3'd0};
-                        img_cnt          <= 32'd0;
-                    end
-                    else if (skip_pend) begin
-                        // ---- 跳过本张坏图(§2.2 重试耗尽)的落点地址 ----
-                        // 地址在这里算而不是在 S_READ 里算(§时序): S_READ 的
-                        // load_fatal 由 bmp_len_cnt 32bit 比较组合产生, 若它去选
-                        // sd_sec_read_addr 的地址 mux, 实测 10.412ns > 10ns 周期
-                        // (11 个 FEPS 违例)。这里 file_base_addr/skip_lat/wrap_lim/
-                        // z_start 全是寄存器 → 只有 加法∥比较 → mux 一级组合。
-                        sd_sec_read_addr <= (file_base_addr >= wrap_lim) ?
-                                            z_start : (file_base_addr + skip_lat);
+                        z_max  <= zone_max_img;
+                        clu0   <= zone_cluster0;
+                        clu1   <= zone_cluster1;
+                        clu2   <= zone_cluster2;
+                        clu3   <= zone_cluster3;
+                        clu4   <= zone_cluster4;
+                        clu5   <= zone_cluster5;
+                        siz0   <= zone_size0;
+                        siz1   <= zone_size1;
+                        siz2   <= zone_size2;
+                        siz3   <= zone_size3;
+                        siz4   <= zone_size4;
+                        siz5   <= zone_size5;
+                        img_cnt <= 32'd1;      // 换区后从第 1 张起播
+                        // ★换区当拍 clu0 还是旧值(非阻塞下一拍才生效), 故这里
+                        //   直接用 zone_cluster0 发第 1 张, 不能走 cur_clu(读旧 clu0)。
+                        file_cluster <= zone_cluster0;
+                        file_len_out <= zone_size0;
                     end
                     else begin
-                        // 扫描地址 8 对齐(4KB 簇边界)
-                        sd_sec_read_addr <= {sd_sec_read_addr[31:3], 3'd0};
+                        // 正常切图/重读: 按当前 img_cnt 查簇号表
+                        //   (img_cnt 已在 S_HOLD 切图分支更新, 本拍 cur_clu 反映新值)
+                        file_cluster <= cur_clu;
+                        file_len_out <= cur_siz;
                     end
-                    state <= S_FIND;
+                    file_start   <= 1'b1;
+                    state        <= S_FIND;
                 end
 
                 //------------------------------------------------
-                // 扫描找图: 逐扇区(每 8 扇区跳)检查文件头
-                // 分区切换只允许在扇区读间隙(读途中不撤请求, 不脏数据)
+                // 读文件头: 由 streamer 吐字节, 读齐 54 字节做 9 项校验
+                //   (不再逐扇区扫 BM 魔数; 簇号/大小已由 scanner 目录项给出)
                 //------------------------------------------------
                 S_FIND: begin
                     state_code <= 4'd2;
                     if (sd_timeout) begin
-                        // ---- 扫描期超时(§2.4): 连续 500ms 无扇区读完 ----
-                        // 报 ERR_TIMEOUT 后回 S_IDLE 重新起请求(地址保持,
-                        // S_IDLE 会 8 对齐后重扫)。显示通路不受影响。
-                        bmp_error   <= ERR_TIMEOUT;
-                        sd_sec_read <= 1'b0;
-                        state       <= S_IDLE;
+                        // ---- 读头超时(§2.4) ----
+                        bmp_error  <= ERR_TIMEOUT;
+                        file_start <= 1'b0;
+                        state      <= S_IDLE;
                     end
-                    else if (sd_sec_read_end) begin
+                    else if (rd_cnt >= HEADER_SIZE) begin
+                        // 头 54 字节读齐后再等一拍: found 在 rd_cnt==53(头末字节)当拍
+                        // 置位(非阻塞, 下一拍生效), 故 rd_cnt>=54 时 found 已稳定可判。
+                        // (FAT32 化后 found 提前到 rd_cnt==53 判定, 见头解析块说明)
                         state_code <= 4'd3;
-                        if (zone_pend) begin
-                            // 扇区读间隙(本扇区已读完, SD 控制器已回 idle)
-                            // 收到分区请求: 立即回 S_IDLE 应用, 防止分区内
-                            // 无图/扫描漫长时切换请求被无限挂起
-                            sd_sec_read <= 1'b0;
-                            state       <= S_IDLE;
-                        end
-                        else if (found) begin
+                        if (found) begin
                             found_clr <= 1'b1;      // 本张命中已处理, 清命中标志
-                            if (scan_tgt_en && (pass_cnt != scan_tgt)) begin
-                                // ---- 按序号目标扫描: 当前命中不是目标图 ----
-                                // 跳过本图, 从下一簇继续扫描(区素材连续排布)
-                                pass_cnt <= pass_cnt + 32'd1;
-                                if (sd_sec_read_addr >= z_wrap)
-                                    sd_sec_read_addr <= z_start;
-                                else
-                                    sd_sec_read_addr <= sd_sec_read_addr + 32'd8;
-                                state        <= S_FIND;
-                                sd_sec_read  <= 1'b0;
-                            end
-                            else begin
-                                // ---- 命中即读取(普通顺序下一张 / 目标图) ----
-                                state          <= S_READ_WAIT;
-                                sd_sec_read    <= 1'b0;
-                                write_req      <= 1'b1;   // 启动写帧
-                                file_base_addr <= sd_sec_read_addr; // 记录本图起始簇
-                                if (scan_tgt_en) begin
-                                    // 目标图: 图序号 = 目标序号 + 1
-                                    img_cnt     <= scan_tgt + 32'd1;
-                                    pass_cnt    <= 32'd0;
-                                    scan_tgt_en <= 1'b0;
-                                end
-                                else
-                                    img_cnt <= img_cnt + 32'd1;
-                            end
-                        end
-                        else if (header_0 == "B" && header_1 == "M") begin
-                            // ---- 坏图快跳(§2.3): 有 BMP 签名但 9 项校验不过 ----
-                            // 判为"坏 BMP 文件"→ 报 ERR_HEADER(持久性错误, 重试
-                            // 必然复现, 故不重试), 并按 file_len 折算簇数跳过整个
-                            // 文件(原来只 +8 扇区, 900KB 的坏图要扫 225 次)。
-                            // 阈值用打拍值 wrap_lim(=z_wrap-skip_lat)避免 加法→比较 串联
-                            bmp_error <= ERR_HEADER;
-                            if (sd_sec_read_addr >= wrap_lim)
-                                sd_sec_read_addr <= z_start;
-                            else
-                                sd_sec_read_addr <= sd_sec_read_addr + skip_lat;
+                            // 命中: 启动写帧, 进读图等待
+                            state     <= S_READ_WAIT;
+                            write_req <= 1'b1;
                         end
                         else begin
-                            // 未命中: 地址 +8 继续扫描, 越界则回卷分区起点
-                            if (sd_sec_read_addr >= z_wrap)
-                                sd_sec_read_addr <= z_start;
+                            // ---- 坏图(头 9 项校验不过, 持久性错误) ----
+                            // FAT32 化后: 直接跳过本张(不再有"扫下一簇"概念),
+                            //   报 ERR_HEADER 后推进 img_cnt 跳到下一张, 回 S_IDLE。
+                            //   ⚠ 必须推进 img_cnt(与 S_HOLD 切图同款回卷逻辑),
+                            //   否则回 S_IDLE 会按原 img_cnt 重读同一张坏图 → 死循环。
+                            bmp_error <= ERR_HEADER;
+                            if (img_cnt >= z_max)
+                                img_cnt <= 32'd1;      // 分区最后一张坏图 → 回卷
                             else
-                                sd_sec_read_addr <= sd_sec_read_addr + 32'd8;
+                                img_cnt <= img_cnt + 32'd1;
+                            state     <= S_IDLE;
                         end
-                    end
-                    else begin
-                        sd_sec_read <= 1'b1;   // 持续发读请求
                     end
                 end
 
@@ -1089,41 +1081,32 @@ module bmp_read_auto #(
                 end
 
                 //------------------------------------------------
-                // 读图数据: 持续读扇区直到文件读完
+                // 读图数据: 持续收 file 字节流直到文件读完(file_done)
                 // (帧写一旦开始不中断, 分区切换排队到 S_HOLD)
                 //------------------------------------------------
                 S_READ: begin
                     state_code <= 4'd4;
-                    if (sd_sec_read_end)
-                        sd_sec_read_addr <= sd_sec_read_addr + 32'd1;  // 顺序读下一扇区
-                    // ---- 单点判决: 超时 或 整帧读完 ----
+                    // ---- 单点判决: 超时 或 文件读完 ----
                     if (sd_timeout || frame_read_done) begin
-                        sd_sec_read <= 1'b0;
                         if (load_fatal) begin
                             // ==== 出错(§2.2): 报错误码 → 重试 1 次 → 仍失败跳过 ====
-                            //  超时: 读卡中途卡住(帧可能已写一半, 单缓冲无法回滚)
-                            //  截断: 文件像素不足 640×480(继续显示会半新半旧撕裂)
                             bmp_error <= sd_timeout ? ERR_TIMEOUT : ERR_TRUNCATED;
                             if (retry_cnt < MAX_RETRIES) begin
-                                // 重试: 复用"原地重读当前图"机制(reload_pend),
-                                //   从分区起点重扫到本张 → 图序号不变,
-                                //   且经 S_HOLD 清掉 bmp_len_cnt/pixel_cnt 计数。
                                 retry_cnt   <= retry_cnt + 4'd1;
                                 reload_pend <= 1'b1;
                                 state       <= S_HOLD;
                             end
                             else begin
-                                // 重试已用尽 → 跳过本张: 图序号回退 1(本张未显示,
-                                //   保持用户看到的序号连续), 越过整个坏文件继续扫;
-                                //   经 S_IDLE 清计数, 并让分区挂起请求优先应用。
-                                //   ※ 跳过落点地址不在此处算(§时序): 该赋值的选择项
-                                //     由 load_fatal 决定, 而 load_fatal 源自
-                                //     bmp_len_cnt 32bit 比较 → 会把地址 mux 拉成
-                                //     10.412ns 长链(11 FEPS)。改为置 skip_pend,
-                                //     由 S_IDLE 用纯寄存器值算(见 S_IDLE 分支)。
+                                // 重试用尽 → 跳过本张继续下一张(图序号 +1 回卷, 与坏图一致)
+                                //   ★FAT32 化修正: 原"img_cnt-1 回退上一张"在 img_cnt=1 时
+                                //     下溢到 0 → S_IDLE 查簇号表 default 读 clu0 → 死循环。
+                                //     统一改为"img_cnt+1 回卷跳过"(课程 §2.2 语义: 跳过本张
+                                //     继续往后扫), 与坏图分支一致。
                                 retry_cnt <= 4'd0;
-                                img_cnt   <= img_cnt - 32'd1;
-                                skip_pend <= 1'b1;
+                                if (img_cnt >= z_max)
+                                    img_cnt <= 32'd1;
+                                else
+                                    img_cnt <= img_cnt + 32'd1;
                                 state     <= S_IDLE;
                             end
                         end
@@ -1131,82 +1114,51 @@ module bmp_read_auto #(
                             // ==== 整帧完整读完: 清错误码/重试计数, 进入显示保持 ====
                             bmp_error <= ERR_NONE;
                             retry_cnt <= 4'd0;
-                            // 本帧分辨率码 → 供右上角分辨率字幕比对(display_adjust)。
-                            //   (img_v2x 已在 S_FIND 头部锁存处更新, 见那边的说明: 它要
-                            //    赶在本帧 write_req_ack 之前就绪给 bmp_scale。)
                             img_res   <= res_r;
                             state     <= S_HOLD;
                         end
-                    end
-                    else begin
-                        sd_sec_read <= 1'b1;
                     end
                 end
 
                 //------------------------------------------------
                 // 显示保持: 保持当前图; 分区请求/手动上一张/手动下一张/
                 //            自动轮播计时到 都会切图
-                //   · 分区请求(zone_pend): 回 S_IDLE 立即应用新分区
-                //   · 手动上一张(key_prev): 按序号目标从分区起点重扫(支持回看)
-                //   · 手动下一张(key_trigger)/自动计时到: 顺序下一张,
-                //     本分区播满一圈(z_max)则回卷起点
-                //   ※ key_trigger/key_prev 由上层(ui_key_ctrl)在手动模式下
-                //     给出单周期脉冲; 手动模式 slide_en=0, 自动计时不会触发
                 //------------------------------------------------
                 S_HOLD: begin
                     state_code <= 4'd5;
                     if (zone_pend) begin
-                        // 分区切换: 回 S_IDLE 统一应用(清帧写计数已由
-                        // S_HOLD 清零逻辑完成), 避免在此复制应用逻辑
-                        state       <= S_IDLE;
-                        sd_sec_read <= 1'b0;
+                        state      <= S_IDLE;
+                        file_start <= 1'b0;
                     end
                     else if (reload_pend) begin
                         // ---- 原地重读当前这张图(缩放档变化, 图序号不变) ----
-                        // 第 1 张: 直接回分区起点重读(scan_tgt_en=0 即"命中即读")
-                        // 第 N 张: 复用"按序号目标扫描"跳到第 N-1 号(0 基)图
-                        sd_sec_read_addr <= z_start;
-                        img_cnt          <= 32'd0;
-                        pass_cnt         <= 32'd0;
-                        if (img_cnt <= 32'd1) begin
-                            scan_tgt_en <= 1'b0;
-                        end
-                        else begin
-                            scan_tgt_en <= 1'b1;
-                            scan_tgt    <= img_cnt - 32'd1;
-                        end
-                        state <= S_FIND;
+                        // 直接按当前 img_cnt 查簇号表重读同一张
+                        file_cluster <= cur_clu;
+                        file_len_out <= cur_siz;
+                        file_start   <= 1'b1;
+                        state        <= S_FIND;
                     end
                     else if (key_prev) begin
-                        // ---- 手动"上一张": 目标序号 = (当前序号-1) mod z_max ----
+                        // ---- 手动"上一张": img_cnt 回退(1 基, 回卷到 z_max) ----
                         if (z_max <= 32'd1) begin
-                            // 分区只有一张图: 直接回卷起点重读
-                            sd_sec_read_addr <= z_start;
-                            img_cnt          <= 32'd0;
+                            img_cnt <= 32'd1;
                         end
                         else begin
-                            scan_tgt_en      <= 1'b1;
-                            scan_tgt         <= (img_cnt <= 32'd1) ?
-                                                (z_max - 32'd1) : (img_cnt - 32'd2);
-                            pass_cnt         <= 32'd0;
-                            sd_sec_read_addr <= z_start;
-                            img_cnt          <= 32'd0;
+                            img_cnt <= (img_cnt <= 32'd1) ? z_max : (img_cnt - 32'd1);
                         end
-                        state <= S_FIND;
+                        // 下一拍 S_IDLE 会按新的 img_cnt 发簇号 —— 这里直接转 S_IDLE
+                        state <= S_IDLE;
                     end
                     else if (key_trigger ||
                              (slide_en && (hold_cnt >= period_cyc))) begin
                         // ---- 顺序下一张(手动按键 / 自动计时到) ----
                         if (img_cnt >= z_max) begin
-                            // 已播完一圈: 直接回卷分区起点
-                            sd_sec_read_addr <= z_start;
-                            img_cnt          <= 32'd0;
+                            img_cnt <= 32'd1;      // 播满一圈回卷
                         end
                         else begin
-                            // 对齐到下一个 8 扇区边界找本分区下一张图
-                            sd_sec_read_addr <= {sd_sec_read_addr[31:3] + 1'b1, 3'd0};
+                            img_cnt <= img_cnt + 32'd1;
                         end
-                        state <= S_FIND;
+                        state <= S_IDLE;
                     end
                 end
 

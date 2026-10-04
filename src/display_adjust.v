@@ -21,9 +21,12 @@
 //      · 音量条   : 2026-09-28 新增。档位变化 / 切到音量模式 → 左上 16 档图形条
 //                   (盒 x8..144, y56..63; 与亮度条完全同构, 仅行位不同,
 //                    已生效档位填充色为绿, 与亮度(金)/缩放(青)区分)
-//      四个提示区在 y 方向互不重叠, 可同时出现;
-//      优先级 亮度 > 缩放 > 音量 > 状态卡。
-//      提示色固定, 不随本帧亮度增益变化, 保证可读。
+//      · 对比度条 : 2026-10-02 新增。档位变化 / 切到"对比度复用槽"→ 左上 16 档条
+//                   (盒 x8..144, y64..71; 与亮度/音量条完全同构,
+//                    已生效档位填充色为品红, 与亮度(金)/缩放(青)/音量(绿)区分)
+//      五个提示区在 y 方向互不重叠, 可同时出现;
+//      优先级 亮度 > 缩放 > 音量 > 对比度 > 状态卡。
+//      提示色固定, 不随本帧亮度/对比度增益变化, 保证可读。
 //
 //   4. ★分辨率字幕(2026-10-02 新增, 配合 bmp_read_auto 多分辨率支持):
 //      当前显示图的**源**分辨率(320x240 / 640x480 / 1024x768 / 1280x960)
@@ -38,14 +41,26 @@
 //      · 字幕牌与其余 HUD 在 x/y 上互不重叠(右上 x≈564..631, y=6..17),
 //        凌驾于淡入淡出之上(与亮度条同层), 固定色不受亮度增益影响。
 //
+//   5. ★对比度调节(2026-10-02 新增, 补齐赛题扩展要求"亮度/对比度/OSD"):
+//      16 档(con_level 0..15, 默认 8 = ×1.0), 绕 8bit 中点 128 旋转斜率,
+//      与亮度(stage1, 整体增益)正交:
+//        d = pixel - 128;   out = clamp(pixel + ((d * (c-8)) >>> 3))
+//      c=8 → 系数 0 → 严格直通(无量化误差); c>8 反差增强; c<8 拉向中灰;
+//      c=0 → 系数 -8/8 = -1 → 恒输出 128(全灰, 极端档可见)。
+//      档位来自 sd 域 ui_key_ctrl 的"对比度复用槽"(迎新场景模式4 /
+//      应急场景模式2; 见 ui_key_ctrl 文件头), 本模块两级同步。
+//      有符号运算沿用 bmp_scale 的 $signed 写法(TD/ModelSim 均支持)。
+//      HUD: 左上第 5 行 y64..71 的 16 档对比度条(品红, 与亮度/音量条同构)。
+//
 // 混合公式 :
-//   stage1 亮度:  b1 = clamp((pix * g + 64) >> 7)
-//   stage2 淡入:  out = (b1 * alpha + 128) >> 8   (alpha 255=全显, 0=黑)
+//   stage1   亮度  : b1 = clamp((pix * g + 64) >> 7)
+//   stage1.5 对比度: b2 = clamp(b1 + ((b1-128) * (con-8) >>> 3))  (con=8 → 严格直通)
+//   stage2   淡入  : out = (b2 * alpha + 128) >> 8   (alpha 255=全显, 0=黑)
 //   提示 HUD 在 stage2 之后叠加(固定色)。
 // 数据管线 : 输入寄存 1 拍(da1/px1/sync1)后组合仲裁直接输出 →
 //            整体恒定延迟 1 clk, 与 hs/vs/de 严格同拍。
-// 控制输入 : menu_active/bmp_busy/bri_level/vol_level/res_level/pic_manual/ui_mode
-//            均来自 sd_card_clk(100MHz)域电平, 模块内两级同步器过域。
+// 控制输入 : menu_active/bmp_busy/bri_level/vol_level/con_level/res_level/
+//            pic_manual/ui_mode 均来自 sd_card_clk(100MHz)域电平, 模块内两级同步器过域。
 // 语言     : 纯 Verilog-2001(兼容 TD EDA 与 ModelSim)。
 //====================================================================
 
@@ -75,12 +90,17 @@ module display_adjust #(
     parameter [15:0] MAN_HOLD_FRAMES = 16'd30, // 轮播/手动状态卡保持帧数
     // ---- 音量条(2026-09-28 新增) ----
     parameter [15:0] VOL_HOLD_FRAMES = 16'd30, // 音量档变化后条保持帧数
+    // ---- 对比度条(2026-10-02 新增) ----
+    // ★须 ≤62: 内部 con_cnt 只保留 6 位(同其余 *_HOLD_FRAMES 前提)
+    parameter [15:0] CON_HOLD_FRAMES = 16'd30, // 对比度档变化后条保持帧数
     parameter [2:0]  MODE_PIC = 3'd0,    // 与 ui_key_ctrl 一致的模式编码
     parameter [2:0]  MODE_BRI = 3'd1,
     parameter [2:0]  MODE_RES = 3'd2,
     parameter [2:0]  MODE_PERIOD = 3'd3, // 批次4: 轮播周期档(不弹 HUD)
     parameter [2:0]  MODE_MEET = 3'd4,   // 会议计时档(2026-09-19: 不弹 HUD)
     parameter [2:0]  MODE_VOL  = 3'd5,   // 音量档(2026-09-28: 音量条 HUD)
+    parameter [2:0]  MODE_CON  = 3'd6,   // 对比度档(2026-10-02: 对比度条 HUD;
+                                         //   ui_key_ctrl 复用槽上报的 hud_mode)
     // ---- 分辨率字幕(2026-10-02, 配合 bmp_read_auto 多分辨率支持) ----
     // ★须 ≤62: 内部 resw_cnt 只保留 6 位(同其余 *_HOLD_FRAMES 前提)
     parameter [15:0] RESW_HOLD_FRAMES = 16'd60  // 分辨率变化后字幕保持帧数(≈1s @60fps)
@@ -98,12 +118,17 @@ module display_adjust #(
     input                bmp_busy,       // 底层 BMP 加载忙(1=扫描/读图中)
     input        [3:0]   bri_level,      // 亮度档 0..15(默认 8)
     input        [3:0]   vol_level,      // 音量档 0..15(默认 8, 模式5 调; 仅用于音量条 HUD)
+    input        [3:0]   con_level,      // 对比度档 0..15(默认 8=×1.0; 2026-10-02,
+                                         //   ui_key_ctrl 复用槽: 迎新模式4/应急模式2)
     input        [3:0]   res_level,      // 缩放档 0..7(默认 4=100%)
     input        [1:0]   img_res,        // 当前显示图源分辨率码 0=320x240 1=640x480
                                          //                    2=1024x768 3=1280x960
                                          // (2026-10-02 由 1bit img_2x 扩为 2bit 四档)
     input                pic_manual,     // 1=手动单张 / 0=自动轮播
-    input        [2:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放/3周期/4会议/5音量
+    input        [2:0]   ui_mode,        // 展示模式码(ui_key_ctrl 的 hud_mode):
+                                         //   0图片/1亮度/2缩放/3周期/4会议/5音量/6对比度
+                                         //   ★接 hud_mode 而非内部 mode, 否则复用槽
+                                         //     (迎新模式4/应急模式2)调节时会弹错 HUD
     // ---- 输出: 送 hdmi_tx ----
     output               hs_o, vs_o, de_o,
     output [DATA_W-1:0]  data_o
@@ -117,6 +142,7 @@ module display_adjust #(
     localparam [DATA_W-1:0] C_BAR_BG = 24'h10_14_18;  // 未生效档位(深灰) 两条共用
     localparam [DATA_W-1:0] C_RES_FG = 24'h22_D3_EE;  // 缩放已生效档位(青)
     localparam [DATA_W-1:0] C_VOL_FG = 24'h35_D6_7A;  // 音量已生效档位(绿, 2026-09-28)
+    localparam [DATA_W-1:0] C_CON_FG = 24'hB4_7C_FF;  // 对比度已生效档位(品红, 2026-10-02)
     localparam [DATA_W-1:0] C_CARD_BG= 24'h0A_10_18;  // 状态卡底(更深的蓝黑)
     localparam [DATA_W-1:0] C_AUTO   = 24'h22_C5_5E;  // 自动轮播: 卡边 + 播放三角(绿)
     localparam [DATA_W-1:0] C_MAN    = 24'hFF_A0_28;  // 手动单张: 卡边 + 暂停双条(橙)
@@ -129,8 +155,9 @@ module display_adjust #(
     reg  [3:0] l_s0, l_s1;
     reg  [3:0] r_s0, r_s1;      // 缩放(分辨率)档 0..7
     reg  [3:0] v_s0, v_s1;      // 音量档 0..15(2026-09-28)
+    reg  [3:0] c_s0, c_s1;      // 对比度档 0..15(2026-10-02)
     reg        p_s0, p_s1;      // 轮播(0)/手动(1)
-    reg  [2:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放/3周期/4会议/5音量
+    reg  [2:0] u_s0, u_s1;      // 展示模式码 0图片/1亮度/2缩放/3周期/4会议/5音量/6对比度
     reg  [1:0] x_s0, x_s1;      // 源分辨率码(2026-10-02; 原 1bit img_2x 扩为四档)
     wire menu_s  = m_s1;
     wire emerg_s = e_s1;
@@ -138,6 +165,7 @@ module display_adjust #(
     wire [3:0] lvl_s  = l_s1;
     wire [3:0] res_s  = r_s1;
     wire [3:0] vol_s  = v_s1;
+    wire [3:0] con_s  = c_s1;
     wire       man_s  = p_s1;
     wire [2:0] mode_s = u_s1;
     wire [1:0] imgres_s = x_s1;   // 过域后的源分辨率码(0..3)
@@ -151,6 +179,7 @@ module display_adjust #(
             b_s0<=1'b0; b_s1<=1'b0; l_s0<=4'd8; l_s1<=4'd8;
             r_s0<=4'd4; r_s1<=4'd4;
             v_s0<=4'd8; v_s1<=4'd8;
+            c_s0<=4'd8; c_s1<=4'd8;
             p_s0<=1'b0; p_s1<=1'b0;
             u_s0<=MODE_PIC; u_s1<=MODE_PIC;
             x_s0<=2'd1; x_s1<=2'd1;   // 复位默认 640×480(码1), 防上电假字幕
@@ -162,6 +191,7 @@ module display_adjust #(
             l_s0<=bri_level;   l_s1<=l_s0;
             r_s0<=res_level;   r_s1<=r_s0;
             v_s0<=vol_level;   v_s1<=v_s0;
+            c_s0<=con_level;   c_s1<=c_s0;
             p_s0<=pic_manual;  p_s1<=p_s0;
             u_s0<=ui_mode;     u_s1<=u_s0;
             x_s0<=img_res;     x_s1<=x_s0;
@@ -202,6 +232,8 @@ module display_adjust #(
     reg [5:0]  res_cnt;        // 缩放条剩余显示帧数(0=隐藏)
     reg [3:0]  vol_past;     // 上一拍音量档(变化 → 显示音量条, 2026-09-28)
     reg [5:0]  vol_cnt;        // 音量条剩余显示帧数(0=隐藏)
+    reg [3:0]  con_past;     // 上一拍对比度档(变化 → 显示对比度条, 2026-10-02)
+    reg [5:0]  con_cnt;        // 对比度条剩余显示帧数(0=隐藏)
     reg        man_past;      // 上一拍轮播/手动标志(变化 → 显示状态卡)
     reg [5:0]  man_cnt;        // 状态卡剩余显示帧数(0=隐藏)
     reg [2:0]  mode_past;     // 上一拍功能模式(切换 → 弹该模式的提示)
@@ -221,6 +253,8 @@ module display_adjust #(
             res_cnt    <= 6'd0;
             vol_past   <= 4'd8;
             vol_cnt    <= 6'd0;
+            con_past   <= 4'd8;
+            con_cnt    <= 6'd0;
             man_past   <= 1'b0;
             man_cnt    <= 6'd0;
             mode_past  <= MODE_PIC;
@@ -245,6 +279,10 @@ module display_adjust #(
                 vol_cnt <= VOL_HOLD_FRAMES[5:0];   // 音量档变化 → 显示音量条
             vol_past  <= vol_s;
 
+            if (con_s != con_past)
+                con_cnt <= CON_HOLD_FRAMES[5:0];   // 对比度档变化 → 显示对比度条
+            con_past  <= con_s;
+
             if (man_s != man_past)
                 man_cnt <= MAN_HOLD_FRAMES[5:0];   // 轮播↔手动 → 显示状态卡
             man_past  <= man_s;
@@ -265,6 +303,8 @@ module display_adjust #(
                     MODE_MEET:   ;                          // 会议计时档: 不弹 HUD
                                                             // (会议画面自带完整面板)
                     MODE_VOL:  vol_cnt <= VOL_HOLD_FRAMES[5:0]; // 切到音量模式 → 音量条
+                    MODE_CON:  con_cnt <= CON_HOLD_FRAMES[5:0]; // 切到对比度槽 → 对比度条
+                                                                // (2026-10-02)
                     default : man_cnt <= MAN_HOLD_FRAMES[5:0];  // 切到图片模式 → 轮播/手动卡
                 endcase
             end
@@ -278,6 +318,8 @@ module display_adjust #(
                     res_cnt <= res_cnt - 6'd1;
                 if (vol_cnt != 6'd0)
                     vol_cnt <= vol_cnt - 6'd1;
+                if (con_cnt != 6'd0)
+                    con_cnt <= con_cnt - 6'd1;
                 if (man_cnt != 6'd0)
                     man_cnt <= man_cnt - 6'd1;
                 if (resw_cnt != 6'd0)
@@ -383,9 +425,49 @@ module display_adjust #(
     wire [7:0]  g_b = (g_q > 9'd255) ? 8'd255 : g_q[7:0];
     wire [7:0]  b_b = (b_q > 9'd255) ? 8'd255 : b_q[7:0];
 
+    //--------------------------------------------------------------
+    // stage1.5: 对比度(2026-10-02 新增; 档位来自 ui_key_ctrl 复用槽)
+    //   out = clamp(in + ((in - 128) * (c - 8)) >>> 3)
+    //     · c = 8 → 系数 0 → 严格直通(out == in, 与未加对比度逐位相同)
+    //     · c > 8 → 绕中点 128 放大反差(斜率 >1, 暗部更暗/亮部更亮)
+    //     · c < 8 → 斜率 <1, 拉向中灰(反差变弱)
+    //     · c = 0 → 系数 -1 → 恒 128(全灰, 极端档, 用于直观确认"确实在作用")
+    //   与 stage1 亮度正交: 亮度是整体增益(整条曲线平移/缩放),
+    //   对比度是绕 128 的斜率旋转。两级串接顺序(先亮后对比)与 HUD 说明一致。
+    //   有符号运算沿用 bmp_scale 的 $signed 写法(TD/ModelSim 均支持)。
+    //   数值域: in-128 ∈ [-128,127]; c-8 ∈ [-8,+7]; 积 ∈ [-1024,896] (13bit 够);
+    //           >>>3 后 ∈ [-128,112]; 加回 in(0..255) → [-128,367],
+    //           10bit 有符号(±512)不溢出, 再饱和钳到 0..255。
+    //--------------------------------------------------------------
+    wire signed [8:0]  r_d = $signed({1'b0, r_b}) - 9'sd128;
+    wire signed [8:0]  g_d = $signed({1'b0, g_b}) - 9'sd128;
+    wire signed [8:0]  b_d = $signed({1'b0, b_b}) - 9'sd128;
+    // ★位宽必须 5 位: con_s∈[0,15] 是"无符号 4 位", 若直接 $signed(con_s)
+    //   会被当成 4 位有符号 → 8..15 变成 -8..-1, 档位整体错乱。
+    //   先零扩展成 5 位再取有符号, 才能正确覆盖 -8..+7。
+    wire signed [4:0]  con_off = $signed({1'b0, con_s}) - 5'sd8;   // -8..+7
+
+    wire signed [12:0] r_cp = r_d * con_off;
+    wire signed [12:0] g_cp = g_d * con_off;
+    wire signed [12:0] b_cp = b_d * con_off;
+    wire signed [12:0] r_cq = r_cp >>> 3;
+    wire signed [12:0] g_cq = g_cp >>> 3;
+    wire signed [12:0] b_cq = b_cp >>> 3;
+    wire signed [9:0]  r_cs = $signed({1'b0, r_b}) + r_cq[9:0];
+    wire signed [9:0]  g_cs = $signed({1'b0, g_b}) + g_cq[9:0];
+    wire signed [9:0]  b_cs = $signed({1'b0, b_b}) + b_cq[9:0];
+    wire [7:0]  r_c = (r_cs > 10'sd255) ? 8'd255 :
+                      (r_cs < 10'sd0)   ? 8'd0   : r_cs[7:0];
+    wire [7:0]  g_c = (g_cs > 10'sd255) ? 8'd255 :
+                      (g_cs < 10'sd0)   ? 8'd0   : g_cs[7:0];
+    wire [7:0]  b_c = (b_cs > 10'sd255) ? 8'd255 :
+                      (b_cs < 10'sd0)   ? 8'd0   : b_cs[7:0];
+
     // stage2: 淡入淡出 alpha 混合(乘加取整)
     //   alpha==255 时直通(此时 FIDLE 稳态/淡入完成), 避免 (x*255+128)>>8
-    //   对高亮像素产生 -1 量化误差, 保证平时显示与原像素完全一致
+    //   对高亮像素产生 -1 量化误差, 保证平时显示与"亮度+对比度后"像素逐位一致
+    //   (2026-10-02: 输入由 stage1 的 b 改为 stage1.5 的 c; α=255 时 c=8 档
+    //    仍严格等于原始像素, 故"不加对比度时观感与之前完全一致"成立)
     //
     //   面积优化(2026-09-21): FADE_STEP=64 时 alpha 每帧按 64 步进, 实际取值
     //   只有 8 个: {0,63,64,127,128,191,192,255}。对这 8 个值有恒等式
@@ -398,24 +480,24 @@ module display_adjust #(
     //   ★前提: FADE_STEP 必须为 64(见模块头注释)。
     wire [2:0]  am   = {1'b0, alpha[7:6]} + {2'b0, alpha[0]};   // 0..4
     wire        aodd = alpha[0];
-    // x_m = x_b * am (am≤4 → ≤1020, 10 位足够)
-    wire [9:0]  r_m = am[2] ? {r_b, 2'b00} :
-                      am[1] ? (am[0] ? ({r_b,1'b0} + {1'b0,r_b}) : {r_b,1'b0})
-                            : (am[0] ? {1'b0,r_b} : 10'd0);
-    wire [9:0]  g_m = am[2] ? {g_b, 2'b00} :
-                      am[1] ? (am[0] ? ({g_b,1'b0} + {1'b0,g_b}) : {g_b,1'b0})
-                            : (am[0] ? {1'b0,g_b} : 10'd0);
-    wire [9:0]  b_m = am[2] ? {b_b, 2'b00} :
-                      am[1] ? (am[0] ? ({b_b,1'b0} + {1'b0,b_b}) : {b_b,1'b0})
-                            : (am[0] ? {1'b0,b_b} : 10'd0);
-    // (x_m<<6) ≤ 1020*64 = 65280, 减 aodd*x_b 后再 +128 ≤ 65408 < 65536
-    // → 16 位中间量不溢出, 与 (x_b*alpha + 128)>>8 逐位相同
-    wire [15:0] r_f = (({6'b0,r_m} << 6) - (aodd ? {8'b0,r_b} : 16'd0) + 16'd128) >> 8;
-    wire [15:0] g_f = (({6'b0,g_m} << 6) - (aodd ? {8'b0,g_b} : 16'd0) + 16'd128) >> 8;
-    wire [15:0] b_f = (({6'b0,b_m} << 6) - (aodd ? {8'b0,b_b} : 16'd0) + 16'd128) >> 8;
-    wire [7:0]  r_o = (alpha == 8'd255) ? r_b : r_f[7:0];
-    wire [7:0]  g_o = (alpha == 8'd255) ? g_b : g_f[7:0];
-    wire [7:0]  b_o = (alpha == 8'd255) ? b_b : b_f[7:0];
+    // x_m = x_c * am (am≤4 → ≤1020, 10 位足够)
+    wire [9:0]  r_m = am[2] ? {r_c, 2'b00} :
+                      am[1] ? (am[0] ? ({r_c,1'b0} + {1'b0,r_c}) : {r_c,1'b0})
+                            : (am[0] ? {1'b0,r_c} : 10'd0);
+    wire [9:0]  g_m = am[2] ? {g_c, 2'b00} :
+                      am[1] ? (am[0] ? ({g_c,1'b0} + {1'b0,g_c}) : {g_c,1'b0})
+                            : (am[0] ? {1'b0,g_c} : 10'd0);
+    wire [9:0]  b_m = am[2] ? {b_c, 2'b00} :
+                      am[1] ? (am[0] ? ({b_c,1'b0} + {1'b0,b_c}) : {b_c,1'b0})
+                            : (am[0] ? {1'b0,b_c} : 10'd0);
+    // (x_m<<6) ≤ 1020*64 = 65280, 减 aodd*x_c 后再 +128 ≤ 65408 < 65536
+    // → 16 位中间量不溢出, 与 (x_c*alpha + 128)>>8 逐位相同
+    wire [15:0] r_f = (({6'b0,r_m} << 6) - (aodd ? {8'b0,r_c} : 16'd0) + 16'd128) >> 8;
+    wire [15:0] g_f = (({6'b0,g_m} << 6) - (aodd ? {8'b0,g_c} : 16'd0) + 16'd128) >> 8;
+    wire [15:0] b_f = (({6'b0,b_m} << 6) - (aodd ? {8'b0,b_c} : 16'd0) + 16'd128) >> 8;
+    wire [7:0]  r_o = (alpha == 8'd255) ? r_c : r_f[7:0];
+    wire [7:0]  g_o = (alpha == 8'd255) ? g_c : g_f[7:0];
+    wire [7:0]  b_o = (alpha == 8'd255) ? b_c : b_f[7:0];
 
     //--------------------------------------------------------------
     // 亮度条区域命中(左上角)
@@ -500,6 +582,33 @@ module display_adjust #(
                        (px1n == VOL_X0) || (px1n == VOL_R - 12'd1));
     wire vol_active = vol_region && ~vol_border &&
                       (px1n >= vol_inner_l) && (px1n < vol_fill_r);
+
+    //--------------------------------------------------------------
+    // 对比度条区域命中(左上第 5 行 y64..71; 与亮度条同构, 2026-10-02)
+    //   盒 [CON_X0, CON_R) × [CON_Y0, CON_Y0+CON_H); 内宽 = 15*9 = 135px
+    //   生效档右(不含) = 9*(con_s+1) (同亮度/音量条, 乘法退化为移位+加)
+    //   行位取 y64..71: 在音量条(y56..63)下方, 五块 HUD 互不重叠。
+    //   ★画布高度: 本 HUD 使覆盖区下探到 y71 → 对应 TB 画布高须 ≥72。
+    //--------------------------------------------------------------
+    localparam [11:0] CON_X0      = 12'd8;
+    localparam [11:0] CON_Y0      = 12'd64;
+    localparam [11:0] CON_H       = 12'd8;
+    localparam [11:0] CON_INNER_W = 12'd135;                        // (16-1)*9
+    localparam [11:0] CON_R       = CON_X0 + 12'd2 + CON_INNER_W;   // 145
+    localparam [11:0] con_inner_l = CON_X0 + 12'd1;                 // 9
+
+    wire [4:0]  con_p1 = {1'b0, con_s} + 5'd1;                  // 1..16
+    wire [8:0]  con_fill_r = {con_p1, 3'b000} + {4'b0, con_p1}; // = 9*(con_s+1)
+
+    wire con_show = (con_cnt != 6'd0);
+    wire con_region = con_show && de1 &&
+                      (py1n >= CON_Y0) && (py1n < CON_Y0 + CON_H) &&
+                      (px1n >= CON_X0) && (px1n < CON_R);
+    wire con_border = con_region &&
+                      ((py1n == CON_Y0) || (py1n == CON_Y0 + CON_H - 12'd1) ||
+                       (px1n == CON_X0) || (px1n == CON_R - 12'd1));
+    wire con_active = con_region && ~con_border &&
+                      (px1n >= con_inner_l) && (px1n < con_fill_r);
 
     //--------------------------------------------------------------
     // 轮播/手动 状态卡区域命中(左上第 3 行 y28..51; 40×24)
@@ -741,8 +850,9 @@ module display_adjust #(
                     (resw_bc < 3'd5) && resw_grow[resw_bidx];
 
     //--------------------------------------------------------------
-    // 输出仲裁: 亮度条 > 缩放条 > 音量条 > 状态卡 > 分辨率字幕 > 淡入×亮度像素
-    //   (五块 HUD 在 x/y 上互不重叠, 但用 if-else 链明确优先级, 顺序稳定)
+    // 输出仲裁: 亮度条 > 缩放条 > 音量条 > 对比度条 > 状态卡 > 分辨率字幕
+    //           > 淡入×亮度×对比度像素
+    //   (六块 HUD 在 x/y 上互不重叠, 但用 if-else 链明确优先级, 顺序稳定)
     //--------------------------------------------------------------
     reg [DATA_W-1:0] fo;
     always @* begin
@@ -767,6 +877,14 @@ module display_adjust #(
                 fo = C_BAR_BD;
             else if (vol_active)
                 fo = C_VOL_FG;                       // 音量已生效档位(绿)
+            else
+                fo = C_BAR_BG;
+        end
+        else if (con_region) begin
+            if (con_border)
+                fo = C_BAR_BD;
+            else if (con_active)
+                fo = C_CON_FG;                       // 对比度已生效档位(品红)
             else
                 fo = C_BAR_BG;
         end
