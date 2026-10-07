@@ -108,7 +108,14 @@ load_run_param -run phy_1
 #     seed 31 退化到 SWNS -0.001ns(1 违例端点), 复用 21:00 的 gate.db 重扫:
 #       37 -0.212 | 31 -0.001 | 17 +0.102(0 违例) | 29 -1.326
 #     → 固定 seed=17。
-set_param place seed 17
+#
+#   [2026-10-04 回退] 用户要求回到「10-4 版」= 10-03 14:20 的优化版
+#     （位流 artifacts/pic_sdram_audio_final_v10-4.bit, SHA beb34473, 697136 B）。
+#     该版 = e32809c + L1/P2/P4 四文件优化（meeting_glyph_rom / osd_font_rom /
+#     meeting_osd / seg_scan），优化后 LUT 80.06%、余量 +0.167ns，无重扫需求。
+#     10-03 该版固定 seed=7 → 现恢复为 7。
+#     （10-03 下午起的 FAT32 化、10-04 的图片化改动已全部撤销。）
+set_param place seed 7
 place
 route
 # 官方 DefaultFlow.tcl 的收尾步骤: route 之后跑一次 fix_hold 修保持时间,

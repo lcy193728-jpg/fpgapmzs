@@ -1,8 +1,16 @@
-# 烧录脚本: 迎新场景 TF 卡 WAV 音乐(裸 PCM, LBA 300000) + 音频可视化包络柱
-# 位流: audio_final/artifacts/pic_sdram_audio_final.bit
-# SHA-256: 5caa4c1e1030b57df66325fdba9c09bf9dcab7adf173354c4ed626530eac993f
-# 时序: SWNS +0.148ns / HWNS +0.020ns (0 违例, place seed=31)
-# 面积: LUT 86.57% / reg 36.06% / bram9k 63-64 / bram32k 3-16 / dsp 12-29
+# SPI Flash 固化脚本（上电自启）
+# 版本: 「10-4 版」= 2026-10-03 14:20 优化版（L1 字库迁 32K BRAM / P2 / P4），
+#       10-03 已 JTAG/SRAM 上板确认正常（图片+声音+数码管）。
+# 位流: audio_final/artifacts/pic_sdram_audio_final.bit (697136 B)
+# SHA-256: beb34473025b2e269ea22c2e034889cc2aff394113fba540a2273c0e503ffcc3
+# 时序: SWNS +0.167ns / HWNS +0.020ns (0 违例, place seed=7)
+# 面积: LUT 15691 (80.06%) / BRAM9K 41-64 / BRAM32K 10-16 / DSP 14
+# [2026-10-04 回退] 由「菜单/应急图片化」版回退到本版：撤销 10-03 下午起的
+#   FAT32 化 与 10-04 的图片化改动（源码见 src/meeting_glyph_rom|osd_font_rom|
+#   meeting_osd|seg_scan.v，位流换回 v10-4）。回退前的改动存档于 git stash。
+# 旧记录（10-02 版本，保留备查）:
+#   迎新场景 TF 卡 WAV 音乐(裸 PCM, LBA 300000) + 音频可视化包络柱
+#   SHA-256 5caa4c1e… / seed=31 / LUT 86.57%
 # [2026-10-02 三次改动] 修 1280×960 迎新图偏色: bmp_read_auto 的 2× 源水平均值
 #   原按 8bit 求和丢进位(200+200 得 72、255+255 得 127), 改为 9bit 求和取 [8:1];
 #   同时把 len_ok 长度校验拆成 rd_cnt 26/27/28 三级打拍, 消除 9.772ns/9 级长组合

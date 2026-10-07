@@ -24,7 +24,7 @@ module seg_scan(
 	input[7:0]      seg_data_6,
 	input[7:0]      seg_data_7
 );
-parameter SCAN_FREQ = 200;     //scan frequency
+parameter SCAN_FREQ = 120;     //scan frequency (2026-10-03 P4: 200→120, 省数码管扫描翻转, 整屏仍 15Hz 无可见闪烁)
 parameter CLK_FREQ = 50000000; //clock frequency
 
 parameter SCAN_COUNT = CLK_FREQ /(SCAN_FREQ * 8) - 1;

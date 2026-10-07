@@ -111,6 +111,13 @@ reg [23:0] p_color, p_bg;
 reg        hs_1, vs_1, de_1;
 reg [11:0] px_x_1, px_y_1;
 
+// ---- 第 2.5 级(寄存, L1 字库同步读对齐) ----
+reg [3:0]  p2_col;
+reg        p2_ink;
+reg [23:0] p2_color, p2_bg;
+reg        hs_2, vs_2, de_2;
+reg [11:0] px_x_2, px_y_2;
+
 //--------------------------------------------------------------------
 // 十进制格式化(串行引擎): 时:分:秒 各位 + 进度条宽度
 //   ※ uptime 用"帧起点锁存值"uptime_view, 与原版显示节拍一致
@@ -422,28 +429,35 @@ always @* begin
 end
 
 //--------------------------------------------------------------------
-// 第 2 级: 查字模 + 落墨 + 整体打拍输出(2 拍)
+// 第 2 级: 查字模 + 落墨 + 整体打拍输出(3 拍)
 //   字形 ID 来源: 取自配置 BRAM 的 cfg_byte(晚本拍一拍, 正好与上面寄存的
 //   几何同拍) / 常量串路径的 s_gb。
+//   ※ L1: meeting_glyph_rom 改同步读(bits 晚 rom_addr 一拍), 故把
+//     p_ink/p_col/p_color/p_bg 及同步信号再打一拍(p2_*/hs_2/...), 使
+//     composed 与 bits 同拍。输出整体延迟由 2 拍变 3 拍, 像素内容/位置不变。
 //--------------------------------------------------------------------
 wire [15:0] bits;
 wire [7:0]  p_glyph  = p_lcfg ? cfg_byte : p_gb;
 wire [11:0] rom_addr = {p_glyph, p_row};
-meeting_glyph_rom font(rom_addr, bits);
-wire [23:0] composed = (p_ink && bits[p_col]) ? p_color : p_bg;
+meeting_glyph_rom font(clk, rom_addr, bits);
+wire [23:0] composed = (p2_ink && bits[p2_col]) ? p2_color : p2_bg;
 
 always @(posedge clk) begin
  if(rst) begin
   p_gb<=0;p_row<=0;p_col<=0;p_ink<=0;p_lcfg<=0;p_color<=0;p_bg<=0;
   hs_1<=0;vs_1<=0;de_1<=0;px_x_1<=0;px_y_1<=0;
+  p2_col<=0;p2_ink<=0;p2_color<=0;p2_bg<=0;
+  hs_2<=0;vs_2<=0;de_2<=0;px_x_2<=0;px_y_2<=0;
   hs_o<=0;vs_o<=0;de_o<=0;data_o<=0;px_x_o<=0;px_y_o<=0;
  end
  else begin
   p_gb<=s_gb;p_row<=s_ly[3:0];p_col<=bit_column;p_ink<=ink_allowed;
   p_lcfg<=lcfg;p_color<=color;p_bg<=pixel;
   hs_1<=hs_i;vs_1<=vs_i;de_1<=de_i;px_x_1<=px_x;px_y_1<=px_y;
-  hs_o<=hs_1;vs_o<=vs_1;de_o<=de_1;data_o<=composed;
-  px_x_o<=px_x_1;px_y_o<=px_y_1;
+  p2_col<=p_col;p2_ink<=p_ink;p2_color<=p_color;p2_bg<=p_bg;
+  hs_2<=hs_1;vs_2<=vs_1;de_2<=de_1;px_x_2<=px_x_1;px_y_2<=px_y_1;
+  hs_o<=hs_2;vs_o<=vs_2;de_o<=de_2;data_o<=composed;
+  px_x_o<=px_x_2;px_y_o<=px_y_2;
  end
 end
 endmodule
