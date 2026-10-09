@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 // 时间序列"音量柱"柱阵。2026-09-24: 先由 160 根细柱改为 25 根宽柱, 再按用户
 //   要求把显示框(条带)拉高成两倍、柱数加到 50 根, 其余保持不变。
-// 隐藏条件不变: menu/会议场景不显示。
+// 2026-10-09b: 恢复条带到原位 y∈[362,437](10-09 的下移压住迎新字幕),
+//   保留 C8"有声音才出现、静音整条消失"。隐藏条件仍含 menu/会议场景。
 //--------------------------------------------------------------------
 // [C1] 分帧与滚动: 一根柱子 = 1024 个 48 kHz 样本(21.3 ms), 50 根柱正好覆盖
 //      1.07 s 的历史。写入时就把这根柱的"柱高"算好存进环形 BRAM, 读出时
@@ -31,11 +32,17 @@
 // [C5] 面积: 柱高已在 48 kHz 域算好写进 BRAM(8 bit), 像素域只剩
 //      "距柱底行数 dh <= 柱高" 的 9 位比较 + 一次列号加法。环形深度仍取
 //      256(模 256 = 8 位位截断, 不需要比较器+减法器), 实际只用 50 格。
-//   条带几何(本次拉高两倍, 柱底位置不变): y ∈ [362, 437] 共 76 行(原 38 行),
+//   条带几何(2026-10-09 恢复): y ∈ [362, 437] 共 76 行,
 //      上/下边框 y=362/437 为 accent, 内部底色 24'h101820;
 //      y=436 是基线(dh=0 恒 <= 柱高, 永久点亮)。
+//      ⚠ 2026-10-09 曾一度下移到 [404,479], 会压住迎新场景 OSD 的暗带字幕
+//        (osd_welcome.v 的 F_Y0/F_Y1 = 438/480), 按用户要求已恢复原位。
 // [C6] 应急场景(scene 3)不画条带框: 无内部底色、无上/下边框, 柱体直接叠在
 //      应急页背景上, 与应急画面融合; 场景 0/2 的条带框保持不变。
+// [C8] 2026-10-09 按用户要求: 整条可视化"**有声音才出现, 静音整条消失**"。
+//      门控 = !menu && 场景∈{0,2,3} && audio_live, 其中 audio_live 为当组
+//      写侧统计量非零(hgt_w 或 hgt_env)。静音时连底色/边框一起消失,
+//      不是留一条空框。具体见下方 audio_live 处注释。
 //--------------------------------------------------------------------
 module audio_viz_overlay(
  input wire clk,rst, input wire hs_i,vs_i,de_i,input wire [23:0] data_i,
@@ -51,6 +58,7 @@ module audio_viz_overlay(
  reg sgn_d;                     // 上一个 48 kHz 样本的符号位
  reg [24:0] mag_acc;            // [C7] 本组 |pcm| 累加(1024 x 15bit, 25 位恰好)
  reg [7:0] wp;                  // 环形写址; 深度 256 → 8 位自然回绕
+ reg [49:0] live_sr;            // [C8] 最近 50 根柱的"柱高非零"标志移位寄存器
  wire [14:0] abs_pcm=pcm[15]?(~pcm[14:0]+1'b1):pcm[14:0];
  wire [7:0] mag=abs_pcm[14:7];
  wire [24:0] mag_acc_nxt=mag_acc+{10'b0,abs_pcm};  // [C7] 含当前样本
@@ -75,8 +83,21 @@ module audio_viz_overlay(
  // [C7] 按场景分柱高来源: 迎新(sc0) = 包络音量; 抢答/应急 = 音高轮廓(过零率)。
  //   注意: 此处必须位于 sc1 声明之后(Verilog 要求先声明后使用)。
  wire [7:0] hgt_w=(sc1==2'd0)?hgt_env:hgt_pitch;
- reg hs_d,vs_d,de_d;reg [23:0] data_d;reg [11:0] x_d,y_d;
- wire show=!menu1&&(sc1==0||sc1==2||sc1==3);
+reg hs_d,vs_d,de_d;reg [23:0] data_d;reg [11:0] x_d,y_d;
+// [C8] 2026-10-09: 按用户要求, 音频可视化改为"**有声音才出现, 静音整条消失**"
+//   (含底色与上/下边框一起消失, 不是留一条空框)。
+//   实现: live_sr 是 50 位移位寄存器, 每写一根柱就左移 1 位, 最低位填入
+//   "这根柱是不是非零"(hgt_w!=0)。于是 live_sr != 0 ⟺ 最近 50 根柱里
+//   (即画面上这一整条柱阵)至少有一根非零 ⟺ "此刻有声音"。
+//   为什么不用写侧瞬态量(hgt_w)直接做门控: 组末清零后到下一组喂进来的
+//   空档里 hgt_w 会瞬时为 0, 若拿它当门控会让整条闪烁。live_sr 记录的是
+//   **已经落盘、观众正在看的那 50 根**, 与画面所见严格一致, 不会闪。
+//   静音持续 50 根柱(≈1.07s)后 live_sr 自然回 0 → 整条消失; 一声响起即在
+//   下一根柱写入时置位 → 整条立刻出现。资源只有 50 个 FF + 1 位比较。
+//   ⚠ 不改 [C3] 原有逐列门控: 它的作用是在"整条可见"的前提下, 让某一根柱
+//     在其对应组确实静音时归零(警报"鸣 6s/停 6s"的间歇能看出缺口)。
+wire show_not_full = (sc1==0||sc1==2||sc1==3);
+wire show=!menu1 && show_not_full && (live_sr != 50'd0);
  // 5*px_x: 有效像素 px_x<=639 → 5*px_x<=3195, 12 位足够, 无高位丢失。
  wire [11:0] px5=(px_x<<2)+px_x;
  wire [5:0] col=px5[11:6];      // 0..49 → 50 根柱
@@ -87,21 +108,22 @@ module audio_viz_overlay(
  // wp + col - 50; 常量 206 即 -50 的 8 位补码, 于是只需一次 8 位加法, 且上电
  // 后只要写过 50 根柱, 整排读址就都指向已写过的格子, 不用等环形填满。
  wire [7:0] ridx=wp+{2'b0,col}+8'd206;
- wire [8:0] dh=9'd436-y_d[8:0]; // 当前行距柱底的行数
+ wire [8:0] dh=9'd436-y_d[8:0]; // 当前行距柱底的行数(柱底/基线 = 436, 恢复原位)
  wire [8:0] hgt9={1'b0,hgt_q};
  wire [23:0] accent=sc1==3?24'hff3030:(sc1==2?24'h30e8ff:24'h44ff88);
- EG_LOGIC_BRAM #(
-  .DATA_WIDTH_A(8),.DATA_WIDTH_B(8),.ADDR_WIDTH_A(9),.ADDR_WIDTH_B(9),
-  .DATA_DEPTH_A(512),.DATA_DEPTH_B(512),.MODE("DP"),
-  .REGMODE_A("NOREG"),.REGMODE_B("NOREG"),.IMPLEMENT("9K")
- ) u_wave_bram (
-  .doa(),.dob(hgt_q),.dia(hgt_w),.dib(8'b0),
-  .cea(1'b1),.ocea(1'b1),.clka(clk),.wea(wave_we),.rsta(1'b0),.bea(1'b0),
-  .ceb(1'b1),.oceb(1'b1),.clkb(clk),.web(1'b0),.rstb(1'b0),.beb(1'b0),
-  .addra({1'b0,wp}),.addrb({1'b0,ridx})
- );
+EG_LOGIC_BRAM #(
+ .DATA_WIDTH_A(8),.DATA_WIDTH_B(8),.ADDR_WIDTH_A(9),.ADDR_WIDTH_B(9),
+ .DATA_DEPTH_A(512),.DATA_DEPTH_B(512),.MODE("DP"),
+ .REGMODE_A("NOREG"),.REGMODE_B("NOREG"),.IMPLEMENT("9K")
+) u_wave_bram (
+ .doa(),.dob(hgt_q),.dia(hgt_w),.dib(8'b0),
+ .cea(1'b1),.ocea(1'b1),.clka(clk),.wea(wave_we),.rsta(1'b0),.bea(1'b0),
+ .ceb(1'b1),.oceb(1'b1),.clkb(clk),.web(1'b0),.rstb(1'b0),.beb(1'b0),
+ .addra({1'b0,wp}),.addrb({1'b0,ridx})
+);
  always @(posedge clk) begin
   if(rst)begin wp<=0;gcnt<=0;env_max<=0;zc_cnt<=0;sgn_d<=0;menu0<=1;menu1<=1;sc0<=0;sc1<=0;
+   live_sr<=50'd0;
    hs_d<=0;vs_d<=0;de_d<=0;data_d<=0;x_d<=0;y_d<=0;
    hs_o<=0;vs_o<=0;de_o<=0;data_o<=0;px_x_o<=0;px_y_o<=0;end
   else begin
@@ -113,15 +135,24 @@ module audio_viz_overlay(
     if(wave_we)begin gcnt<=10'd0;zc_cnt<=10'd0;env_max<=8'd0;mag_acc<=25'd0;wp<=wp+1'b1;end
     else begin gcnt<=gcnt+1'b1;zc_cnt<=zc_next;env_max<=env_nxt;mag_acc<=mag_acc_nxt;end
    end
+   // [C8] 有声标志移位(与写柱同拍): 每写一根柱左移一位, 最低位填"新柱是否
+   //   非零"。50 位窗口与 50 根柱一一对应, 于是 live_sr != 0 就是
+   //   "画面上这条柱阵里至少有一根柱子"。
+   if(wave_we) begin
+    live_sr <= {live_sr[48:0], (hgt_w != 8'd0)};
+   end
    // 同步读使能 BRAM 推断成立(读址打拍), 整条视频流同步延迟 2 拍:
    //   本拍 data_i→data_d, 下一拍 dob(hgt_q)/x_d 才与 data_d 对齐。
    hs_d<=hs_i;vs_d<=vs_i;de_d<=de_i;data_d<=data_i;x_d<=px_x;y_d<=px_y;
    hs_o<=hs_d;vs_o<=vs_d;de_o<=de_d;px_x_o<=x_d;px_y_o<=y_d;data_o<=data_d;
-   // 条带 y ∈ [362,437](本次由 [400,437] 拉高两倍, 柱底不动); 上/下边框
-   //   y=362/437 全宽点亮, 内部底色 101820。
+   // [C5][C8] 条带 y ∈ [362,437](2026-10-09 恢复原位; 曾一度下移到 [404,479]
+   //   压住迎新字幕, 已回退)。高度 76 行, 柱底/基线 = 436。
+   //   上/下边框 y=362/437 全宽点亮, 内部底色 101820; y=436 是基线(dh=0 恒亮)。
    // [C6] 应急场景(sc1==3)去掉条带"框": 不画内部底色、也不画上/下边框,
    //   只保留柱体本身直接叠在应急页背景上 —— 即音频可视化与应急画面融合,
    //   不再是"贴上去的一整条色块"。其余场景(0 迎新 / 2 抢答)行为不变。
+   // [C8] 整条(含底色/边框)仅在 audio_live 时出现; 静音时本 if 不成立,
+   //   data_o 保持 data_d 透传, 画面上完全看不到可视化痕迹。
    if(de_d&&show&&y_d[8:0]>=9'd362&&y_d[8:0]<9'd438)begin
     if(sc1!=2'd3)begin
      data_o<=24'h101820;

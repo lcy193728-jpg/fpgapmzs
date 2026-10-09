@@ -1,21 +1,32 @@
 //====================================================================
-// 模块名 : osd_scene.v —— 会议 / 抢答 / 应急 三场景 OSD 叠加引擎
-// 来源   : 移植 dev_sim 分支 meeting_scene2 / quiz / emergency 三组仿真
-//          Overlay(色块占位版) → 按本项目决策改用**真汉字字库**
-//          (tools/gen_osd_font.py 生成, 与 osd_menu/osd_welcome 同库)。
+// 模块名 : osd_scene.v —— 抢答 / 应急 两场景 OSD 叠加引擎
 //
-// 三场景互斥(SW 单选), 故合并为单模块共用一片字形 ROM, 省资源/低功耗:
-//   · 会议(meeting_en): 顶部金线大标题条「校园会议信息公示」+
-//     右上"已运行 HH:MM:SS"运行时长面板(BRD 数字 + RTL 画冒号)+
-//     中部公告面板(4 页公告文字, 每 PAGE_FRAMES 帧自动翻页,
-//     金色页码数字 1~4)+ 底部滚动会务提示。
-//   · 抢答(quiz_en)  : 顶部标题条「抢答进行中」+ 中部状态面板
-//     (等待开始 / 抢答中 / 选手N号抢答成功 / 时间到无人抢答, 随
-//      quiz_ctrl.qstate 切换)+ 2× 倒计时数字与「秒」+ 底部滚动抢答须知。
+// 变更史 : v11(2026-10-07) 会议场景整体删除(用户决策: 丢会议主攻抢答)。
+//          删除内容 —— meeting_en 端口 / mt_ok 同步链 / ID_MT_* 四个图元 /
+//          MT_TY·MT_GX·MR_TY·MR_GX·MA_TY·MA_GX·MA_B0·MA_PG·MP_GX·
+//          MF_BASE·BAND_Y0..Y1 常量 / 公告翻页计数器(page,pfcnt) /
+//          运行时长数字窗(mdg_*) / 页码数字窗(mpg_*) / 会议滚动条与
+//          会议整套配色(C_MT_*) / run_hh·run_mm·run_ss 输入(只服务会议)。
+//          保留 —— 抢答与应急两路画面、滚动相位、三级流水骨架、共享字形
+//          ROM 接口(顶层仍一片 ROM 供 osd_menu/osd_welcome/osd_scene 复用)。
+//
+// 两场景互斥(SW 单选):
+//   · 抢答(quiz_en)  : 
+//     ★2026-10-09 按用户要求重构显示条件(原版"进场景即叠标题+状态+倒计时"
+//       会遮挡卡上题目图), 新规则:
+//       - 题目页(qstate==IDLE): **不叠任何字** —— 题干/选项全在卡上 QUIZ[题号]
+//         图里, 且图内自带「抢答题·第N/3题」标题; OSD 叠"抢答进行中"只有
+//         遮挡副作用, 故整页透传。
+//       - 抢答中(qstate==RUN): 只在**倒计时行**叠剩余秒(金色), 标题条亦不叠。
+//       - 已锁定(qstate==LOCK)/超时(TIMEUP): **不叠任何字** —— 队伍图本身
+//         已含队名与"N 号队伍·抢答成功", 再叠"选手N号抢答成功/抢答中"纯属
+//         重复遮挡(用户明确要求隐藏)。
+//       ⇒ 即: 抢答场景 OSD 只剩"倒计时秒数"一个动态元素, 其余全部透传。
 //   · 应急(alarm_en) : 顶部 52 行**闪烁**红条(4Hz)+ 红条内警示三角图标
 //     (RTL 绘制)+ 深红衬底标题「紧急情况 请立即疏散」+ 底部滚动疏散告警。
-//     (按项目决策: 只做画面告警, 不加蜂鸣器/LED 声光)
-//   OSD 区域以外像素**原样透传**; 三个使能全 0 时本模块纯透传。
+//     ※ 顶层实际把本层 alarm_en 接 1'b0 —— 四类应急画面由下级
+//       emergency_multi_overlay 统一绘制; 本层保留该通路以兼容独立仿真。
+//   OSD 区域以外像素**原样透传**; 两个使能全 0 时本模块纯透传。
 //
 // 数据管线(与 osd_menu / osd_welcome 同构):
 //   {sync,data,px} 输入视为已对齐 → 三级移位寄存器统一延迟 3 拍;
@@ -27,7 +38,7 @@
 // 几何/文案唯一数据源 = tools/gen_osd_font.py(改文案须两处同步并重跑
 //   生成, 再跑 tb_osd_scene.v 像素级回归)。
 // 时钟域 : 本模块 video_clk(≈25.175MHz); 各使能与 qstate/winner/
-//   t_tens/t_ones/run_* 来自 sd_card_clk(100MHz) 域, 内部两级同步。
+//   t_tens/t_ones 来自 sd_card_clk(100MHz) 域, 内部两级同步。
 // 语言   : 纯 Verilog-2001(兼容 TD EDA 前台与 ModelSim)。
 //====================================================================
 
@@ -37,8 +48,7 @@ module osd_scene #(
     parameter DATA_W     = 24,               // 像素位宽(RGB888)
     parameter H_ACT      = 640,              // 有效宽
     parameter V_ACT      = 480,              // 有效高
-    parameter [21:0] BLINK_DIV   = 22'd3_146_875,  // 125ms@25.175MHz(4Hz 闪烁)
-    parameter [11:0] PAGE_FRAMES = 12'd480         // 会议公告翻页周期(帧)
+    parameter [21:0] BLINK_DIV   = 22'd3_146_875  // 125ms@25.175MHz(4Hz 闪烁)
 )(
     input                video_clk,          // 像素时钟(≈25.175MHz)
     input                rst,                // 高有效复位
@@ -48,7 +58,6 @@ module osd_scene #(
     input  [11:0]        px_x,               // 与 data_i 同拍 x(0 基)
     input  [11:0]        px_y,               // 与 data_i 同拍 y(0 基)
     // ---- 场景使能(sd 域组合电平, 模块内两级同步) ----
-    input                meeting_en,         // 1=会议场景
     input                quiz_en,            // 1=抢答场景
     input                alarm_en,           // 1=应急中
     // ---- 抢答状态(quiz_ctrl 输出, sd 域) ----
@@ -56,15 +65,11 @@ module osd_scene #(
     input        [1:0]   winner,             // 胜者 0..3(屏显 +1)
     input        [3:0]   t_tens,             // 剩余秒 BCD 十位
     input        [3:0]   t_ones,             // 剩余秒 BCD 个位
-    // ---- 系统运行时长(BCD, sd 域) ----
-    input        [7:0]   run_hh,
-    input        [7:0]   run_mm,
-    input        [7:0]   run_ss,
-    // ---- 共享字形 ROM 接口(top 层统一例化一片, 三路 OSD 互斥使用) ----
+    // ---- 共享字形 ROM 接口(top 层统一例化一片, 各路 OSD 互斥使用) ----
     input  [31:0]        rom_q,              // ROM 读数据(晚 rom_addr_o 一拍)
     output               rom_en_o,           // ROM 读使能(本模块当拍读请求)
     output [12:0]        rom_addr_o,         // ROM 读地址
-    // ---- 输出: 送 display_adjust ----
+    // ---- 输出: 送 emergency_multi_overlay → display_adjust ----
     output               hs_o, vs_o, de_o,
     output [DATA_W-1:0]  data_o,
     output [11:0]        px_x_o,
@@ -74,15 +79,9 @@ module osd_scene #(
     //--------------------------------------------------------------
     // 颜色定义
     //--------------------------------------------------------------
-    localparam [DATA_W-1:0] C_MT_TITLE = 24'hFF_D2_4A;  // 会议大标题(金)
-    localparam [DATA_W-1:0] C_MT_RUN   = 24'h9D_CB_F2;  // "已运行"标签(浅钢蓝)
-    localparam [DATA_W-1:0] C_MT_DIG   = 24'hFF_D2_4A;  // 数字(金)
-    localparam [DATA_W-1:0] C_MT_ANN   = 24'hF5_FD_FF;  // 公告文字(近白)
-    localparam [DATA_W-1:0] C_MT_FOOT  = 24'hFF_7A_1F;  // 底部滚动字(橙)
     localparam [DATA_W-1:0] C_QZ_TITLE = 24'hFF_D2_4A;  // 抢答标题(金)
     localparam [DATA_W-1:0] C_QZ_TXT   = 24'hF5_FD_FF;  // 抢答状态字(近白)
     localparam [DATA_W-1:0] C_QZ_DIG   = 24'hFF_D2_4A;  // 倒计时/胜者号(金)
-    localparam [DATA_W-1:0] C_QZ_FOOT  = 24'hFF_7A_1F;  // 底部滚动字(橙)
     localparam [DATA_W-1:0] C_AL_BAR_A = 24'hFF_2A_2A;  // 应急红条(亮相)
     localparam [DATA_W-1:0] C_AL_BAR_B = 24'h8A_00_00;  // 应急红条(暗相)
     localparam [DATA_W-1:0] C_AL_ICO   = 24'hFF_D2_4A;  // 警示三角(黄)
@@ -97,22 +96,13 @@ module osd_scene #(
     //   ★V3 字库: 2× 带存 32×32 真字模(1:1 显示, 物理尺寸/几何全不变);
     //     1× 带存 16×16 字模。ROM 位宽 32bit, 深度 5856; 取位 2× 用
     //     rom_q[31-...], 1× 用 rom_q[15-...]。
-    //   会议: 标题2×(ty14,gx192,N8,base2512) / 公告1×(ty196,gx240,N10,
-    //         base 2768+page*160) / 运行标签1×(ty76,gx396,N3,base3408)
-    //         运行数字1×(NUM) / 页码1×(NUM) / 滚动(ty452,N20,base3456,周期320)
     //   抢答: 标题2×(ty20,gx240,N5,base3776) / 状态2×(ty96,base见下)
     //         / 倒计时数字2×(NUM) / 秒2×(ty180,gx336,base4640)
-    //         / 滚动(ty452,N20,base4672,周期320)
+    //         (原 滚动 ty452,N20,base4672 已于 2026-10-09 按用户要求移除)
     //   应急: 标题2×(ty82,gx160,N10,base4992) / 滚动(ty452,N24,base5312,周期384)
+    //   ※ 会议带(2512/2768/3408/3456)自 v11 起不再被本模块引用。
     //--------------------------------------------------------------
     localparam [12:0] NUM_BASE = 13'd5696;      // 数字带(N10, 1× 字模)
-
-    localparam [11:0] MT_TY = 12'd14,  MT_GX = 12'd192;   // 会议大标题(2×)
-    localparam [11:0] MR_TY = 12'd76,  MR_GX = 12'd396;   // "已运行"(1×,N3)
-    localparam [11:0] MA_TY = 12'd196, MA_GX = 12'd240;   // 公告文字(1×,N10)
-    localparam [12:0] MA_B0 = 13'd2768, MA_PG = 13'd160;  // 公告 4 页 base/步进
-    localparam [11:0] MP_GX = 12'd424;                    // 页码数字 x(1×)
-    localparam [12:0] MF_BASE = 13'd3456;                 // 会议滚动(1×,N20)
 
     localparam [11:0] QT_TY = 12'd20,  QT_GX = 12'd240;   // 抢答标题(2×,N5)
     localparam [11:0] QS_TY = 12'd96;                     // 状态行 ty(2×)
@@ -123,7 +113,7 @@ module osd_scene #(
     localparam [12:0] QN_BASE = 13'd4384;                 // 时间到无人抢答(N8)
     localparam [11:0] QC_TY = 12'd180;                    // 倒计时行 ty(2×)
     localparam [12:0] QSEC_BASE = 13'd4640;               // "秒"(N1,2×)
-    localparam [12:0] QF_BASE = 13'd4672;                 // 抢答滚动(1×,N20)
+    // QF_BASE(4672 抢答滚动 1×,N20) 已随"抢答底部滚动须知"一并移除(2026-10-09)
 
     localparam [11:0] AT_TY = 12'd82,  AT_GX = 12'd160;   // 应急标题(2×,N10)
     localparam [12:0] AF_BASE = 13'd5312;                 // 应急滚动(1×,N24)
@@ -131,48 +121,39 @@ module osd_scene #(
     localparam [11:0] AL_TBY0 = 12'd74, AL_TBY1 = 12'd122;// 应急标题衬底带行窗
     localparam [11:0] AL_TBX0 = 12'd140, AL_TBX1 = 12'd500;
     localparam [11:0] FOOT_Y0 = 12'd438, FOOT_Y1 = 12'd480; // 底部暗带行窗
-    localparam [11:0] BAND_Y0 = 12'd8,   BAND_Y1 = 12'd52;  // 会议标题衬底带
 
     //--------------------------------------------------------------
-    // 场景使能 / 抢答状态 / 运行时长 过域(各两级同步)
+    // 场景使能 / 抢答状态 过域(各两级同步)
     //   注: 这些量在 sd 域均为"慢变"(按键/1Hz 更新), 两级同步足够;
     //       数字为显示用途, 极端采样瞬间最多出现 1 帧非单调值。
     //--------------------------------------------------------------
-    reg mt_s0, qz_s0, al_s0, mt_s1, qz_s1, al_s1;
+    reg qz_s0, al_s0, qz_s1, al_s1;
     reg [1:0] qs_s0, qs_s1;
     reg [1:0] wn_s0, wn_s1;
     reg [3:0] tt_s0, tt_s1, to_s0, to_s1;
-    reg [7:0] hh_s0, hh_s1, mm_s0, mm_s1, ss_s0, ss_s1;
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
-            mt_s0 <= 1'b0; qz_s0 <= 1'b0; al_s0 <= 1'b0;
-            mt_s1 <= 1'b0; qz_s1 <= 1'b0; al_s1 <= 1'b0;
+            qz_s0 <= 1'b0; al_s0 <= 1'b0;
+            qz_s1 <= 1'b0; al_s1 <= 1'b0;
             qs_s0 <= 2'd0; qs_s1 <= 2'd0;
             wn_s0 <= 2'd0; wn_s1 <= 2'd0;
             tt_s0 <= 4'd0; tt_s1 <= 4'd0; to_s0 <= 4'd0; to_s1 <= 4'd0;
-            hh_s0 <= 8'd0; hh_s1 <= 8'd0;
-            mm_s0 <= 8'd0; mm_s1 <= 8'd0;
-            ss_s0 <= 8'd0; ss_s1 <= 8'd0;
         end
         else begin
-            mt_s0 <= meeting_en; qz_s0 <= quiz_en;    al_s0 <= alarm_en;
-            mt_s1 <= mt_s0;      qz_s1 <= qz_s0;     al_s1 <= al_s0;
+            qz_s0 <= quiz_en;    al_s0 <= alarm_en;
+            qz_s1 <= qz_s0;      al_s1 <= al_s0;
             qs_s0 <= qstate;     qs_s1 <= qs_s0;
             wn_s0 <= winner;     wn_s1 <= wn_s0;
             tt_s0 <= t_tens;     tt_s1 <= tt_s0;
             to_s0 <= t_ones;     to_s1 <= to_s0;
-            hh_s0 <= run_hh;     hh_s1 <= hh_s0;
-            mm_s0 <= run_mm;     mm_s1 <= mm_s0;
-            ss_s0 <= run_ss;     ss_s1 <= ss_s0;
         end
     end
 
-    wire        mt_ok = mt_s1, qz_ok = qz_s1, al_ok = al_s1;
+    wire        qz_ok = qz_s1, al_ok = al_s1;
     wire [1:0]  qstate_s = qs_s1;
     wire [1:0]  winner_s = wn_s1;
     wire [3:0]  t_tens_s = tt_s1, t_ones_s = to_s1;
-    wire [7:0]  hh_s = hh_s1, mm_s = mm_s1, ss_s = ss_s1;
 
     //--------------------------------------------------------------
     // 4Hz 闪烁基准(应急红条; 复位后为暗相)
@@ -193,13 +174,13 @@ module osd_scene #(
     end
 
     //--------------------------------------------------------------
-    // 滚动相位(每帧 vsync 上升沿 +1; 按当前场景带宽周期回卷,
-    //   会议/抢答周期 320px, 应急周期 384px)
+    // 滚动相位(每帧 vsync 上升沿 +1; 按当前场景带宽周期回卷。
+    //   v11 起只剩应急(384px)一种周期; 抢答滚动带已于 2026-10-09 移除)
     //--------------------------------------------------------------
     reg        vsd;
     reg [9:0]  phase;
     wire       vs_rise = vs_i & ~vsd;
-    wire [11:0] act_per = al_ok ? 12'd384 : 12'd320;
+    wire [11:0] act_per = 12'd384;
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
@@ -214,30 +195,6 @@ module osd_scene #(
                 else
                     phase <= phase + 10'd1;
             end
-        end
-    end
-
-    //--------------------------------------------------------------
-    // 会议公告页码(每 PAGE_FRAMES 帧 +1, 0..3; 仅会议场景计数)
-    //--------------------------------------------------------------
-    reg [11:0] pfcnt;
-    reg [1:0]  page;
-    always @(posedge video_clk or posedge rst) begin
-        if (rst) begin
-            pfcnt <= 12'd0;
-            page  <= 2'd0;
-        end
-        else if (!mt_ok) begin
-            pfcnt <= 12'd0;
-            page  <= 2'd0;
-        end
-        else if (vs_rise) begin
-            if (pfcnt >= (PAGE_FRAMES - 12'd1)) begin
-                pfcnt <= 12'd0;
-                page  <= (page == 2'd3) ? 2'd0 : (page + 2'd1);
-            end
-            else
-                pfcnt <= pfcnt + 12'd1;
         end
     end
 
@@ -272,16 +229,11 @@ module osd_scene #(
     //--------------------------------------------------------------
     localparam [3:0]
         ID_NONE     = 4'd0,
-        ID_MT_TITLE = 4'd1,
-        ID_MT_RUN   = 4'd2,
-        ID_MT_ANN   = 4'd3,
-        ID_MT_FOOT  = 4'd4,
-        ID_QZ_TITLE = 4'd5,
-        ID_QZ_STAT  = 4'd6,
-        ID_QZ_CNT   = 4'd7,
-        ID_QZ_FOOT  = 4'd8,
-        ID_AL_TITLE = 4'd9,
-        ID_AL_FOOT  = 4'd10;
+        ID_QZ_TITLE = 4'd1,
+        ID_QZ_STAT  = 4'd2,
+        ID_QZ_CNT   = 4'd3,
+        ID_AL_TITLE = 4'd5,
+        ID_AL_FOOT  = 4'd6;
 
     reg [3:0] rid2;
     always @(*) begin
@@ -290,42 +242,27 @@ module osd_scene #(
             if      ((py2 >= 12'd82)  && (py2 < 12'd114)) rid2 = ID_AL_TITLE;
             else if ((py2 >= 12'd452) && (py2 < 12'd468)) rid2 = ID_AL_FOOT;
         end
-        else if (mt_ok) begin
-            if      ((py2 >= MT_TY) && (py2 < MT_TY + 12'd32)) rid2 = ID_MT_TITLE;
-            else if ((py2 >= MR_TY) && (py2 < MR_TY + 12'd16)) rid2 = ID_MT_RUN;
-            else if ((py2 >= MA_TY) && (py2 < MA_TY + 12'd16)) rid2 = ID_MT_ANN;
-            else if ((py2 >= 12'd452) && (py2 < 12'd468))      rid2 = ID_MT_FOOT;
-        end
         else if (qz_ok) begin
-            if      ((py2 >= QT_TY) && (py2 < QT_TY + 12'd32)) rid2 = ID_QZ_TITLE;
-            else if ((py2 >= QS_TY) && (py2 < QS_TY + 12'd32)) rid2 = ID_QZ_STAT;
-            else if ((py2 >= QC_TY) && (py2 < QC_TY + 12'd32) &&
-                     (qstate_s <= 2'd1))                       rid2 = ID_QZ_CNT;
-            else if ((py2 >= 12'd452) && (py2 < 12'd468))      rid2 = ID_QZ_FOOT;
+            // ★2026-10-09: 抢答场景只保留"抢答中"态的倒计时行;
+            //   标题条/状态行/队伍图上的文字一律不叠(见文件头说明)。
+            if ((py2 >= QC_TY) && (py2 < QC_TY + 12'd32) &&
+                (qstate_s == 2'd1))                       rid2 = ID_QZ_CNT;
         end
     end
 
     // A 级: 滚动取模(px2 + phase, 先折 640 再按带宽周期取模)
     wire [11:0] wxx  = px2 + {2'b00, phase};
     wire [11:0] wx_1 = (wxx >= 12'd640) ? (wxx - 12'd640) : wxx;
-    wire [11:0] mw_m = (wx_1 >= 12'd320) ? (wx_1 - 12'd320) : wx_1;  // 会议/抢答
     wire [11:0] aw_m = (wx_1 >= 12'd384) ? (wx_1 - 12'd384) : wx_1;  // 应急
 
     // A 级: 行内偏移收窄 + 变量×小常量改移位加(★2026-09-21 面积优化)
     //   rid2 已把 py2 限定在本带行窗内(带宽 ≤32), 模 2^k 减法逐位精确,
     //   却把 12bit 减法器与 12bit×常量乘法器一起收窄到 5/4 位。
-    wire [4:0] dy_mt = py2[4:0] - 5'd14;   // 会议标题  [14,46)
     wire [4:0] dy_20 = py2[4:0] - 5'd20;   // 抢答标题[20,52) / 倒计时[180,212)
     wire [4:0] dy_at = py2[4:0] - 5'd18;   // 应急标题  [82,114)
     wire [4:0] dy_qs = py2[4:0];           // 抢答状态  [96,128)
-    wire [3:0] dy_4  = py2[3:0] - 4'd4;    // 公告[196,212) / 底部滚动[452,468)
-    wire [3:0] dy_12 = py2[3:0] - 4'd12;   // "已运行"[76,92)
+    wire [3:0] dy_4  = py2[3:0] - 4'd4;    // 底部滚动[452,468)(仅应急)
 
-    wire [7:0] r_mt8  = {dy_mt, 3'b0};                                          // *8
-    wire [7:0] r_mr3  = ({2'b0, dy_12} << 1) + {2'b0, dy_12};                   // *3
-    wire [7:0] r_mr10 = ({4'b0, dy_12} << 3) + ({4'b0, dy_12} << 1);            // *10
-    wire [7:0] r_ma10 = ({4'b0, dy_4}  << 3) + ({4'b0, dy_4}  << 1);            // *10
-    wire [8:0] r_ft20 = ({5'b0, dy_4}  << 4) + ({5'b0, dy_4}  << 2);            // *20
     wire [8:0] r_ft24 = ({5'b0, dy_4}  << 4) + ({5'b0, dy_4}  << 3);            // *24
     wire [7:0] r_qt5  = ({2'b0, dy_20} << 2) + {2'b0, dy_20};                   // *5
     wire [6:0] r_qs2  = {dy_qs, 1'b0};                                          // *2
@@ -337,38 +274,6 @@ module osd_scene #(
     wire [7:0] r_qcd10= ({4'b0, dy_20[4:1]} << 3) + ({4'b0, dy_20[4:1]} << 1);  // (dy>>1)*10
     wire [8:0] r_at10 = ({4'b0, dy_at} << 3) + ({4'b0, dy_at} << 1);            // *10
 
-    // A 级: 页码数字窗命中(px 的纯函数; B 级打拍复用, 右沿 = 424+16)
-    wire mpg_a = (px2 >= MP_GX) && (px2 < 12'd440);
-
-
-    // A 级: 会议运行时长数字窗(6 格 16px + 2 处 6px 冒号间隙)
-    reg        mdg_a;                    // 命中某位数字
-    reg [2:0]  mdg_p;                    // 数字位 0..5
-    reg [11:0] mdg_x0;
-    always @(*) begin
-        mdg_a  = 1'b0;
-        mdg_p  = 3'd0;
-        mdg_x0 = 12'd452;
-        if      ((px2 >= 12'd452) && (px2 < 12'd468)) begin mdg_a=1'b1; mdg_p=3'd0; mdg_x0=12'd452; end
-        else if ((px2 >= 12'd468) && (px2 < 12'd484)) begin mdg_a=1'b1; mdg_p=3'd1; mdg_x0=12'd468; end
-        else if ((px2 >= 12'd490) && (px2 < 12'd506)) begin mdg_a=1'b1; mdg_p=3'd2; mdg_x0=12'd490; end
-        else if ((px2 >= 12'd506) && (px2 < 12'd522)) begin mdg_a=1'b1; mdg_p=3'd3; mdg_x0=12'd506; end
-        else if ((px2 >= 12'd528) && (px2 < 12'd544)) begin mdg_a=1'b1; mdg_p=3'd4; mdg_x0=12'd528; end
-        else if ((px2 >= 12'd544) && (px2 < 12'd560)) begin mdg_a=1'b1; mdg_p=3'd5; mdg_x0=12'd544; end
-    end
-
-    reg [3:0] mdg_dig;                   // 该位数字字符(BCD)
-    always @(*) begin
-        case (mdg_p)
-            3'd0:    mdg_dig = hh_s[7:4];
-            3'd1:    mdg_dig = hh_s[3:0];
-            3'd2:    mdg_dig = mm_s[7:4];
-            3'd3:    mdg_dig = mm_s[3:0];
-            3'd4:    mdg_dig = ss_s[7:4];
-            default: mdg_dig = ss_s[3:0];
-        endcase
-    end
-
     // A 级: ROM 读请求(仅在字形窗内发, 省功耗)
     reg        rom_en;
     reg [12:0] rom_addr;
@@ -377,82 +282,7 @@ module osd_scene #(
         rom_addr = 13'd0;
         if (de2) begin
             case (rid2)
-                // ---- 会议 ----
-                ID_MT_TITLE: begin
-                    if ((px2 >= MT_GX) && (px2 < 12'd448)) begin
-                        rom_en   = 1'b1;
-                        rom_addr = 13'd2512 + r_mt8 + ((px2 - MT_GX) >> 5);   // 32×32 真字模
-                    end
-                end
-                ID_MT_RUN: begin
-                    if ((px2 >= MR_GX) && (px2 < 12'd444)) begin
-                        rom_en   = 1'b1;
-                        rom_addr = 13'd3408 + r_mr3 + ((px2 - MR_GX) >> 4);
-                    end
-                    else if (mdg_a) begin
-                        rom_en   = 1'b1;
-                        rom_addr = NUM_BASE + r_mr10 + mdg_dig;
-                    end
-                end
-                ID_MT_ANN: begin
-                    if ((px2 >= MA_GX) && (px2 < 12'd400)) begin
-                        rom_en   = 1'b1;
-                        rom_addr = MA_B0 + ({11'd0, page} * MA_PG)
-                                 + r_ma10 + ((px2 - MA_GX) >> 4);
-                    end
-                    else if (mpg_a) begin
-                        rom_en   = 1'b1;
-                        rom_addr = NUM_BASE + r_ma10 + {2'd0, page} + 4'd1;
-                    end
-                end
-                ID_MT_FOOT: begin
-                    rom_en   = 1'b1;
-                    rom_addr = MF_BASE + r_ft20 + (mw_m >> 4);
-                end
-                // ---- 抢答 ----
-                ID_QZ_TITLE: begin
-                    if ((px2 >= QT_GX) && (px2 < 12'd400)) begin
-                        rom_en   = 1'b1;
-                        rom_addr = 13'd3776 + r_qt5 + ((px2 - QT_GX) >> 5);   // 32×32 真字模
-                    end
-                end
-                ID_QZ_STAT: begin
-                    case (qstate_s)
-                        2'd0: begin   // 等待开始(N4, gx256)
-                            if ((px2 >= 12'd256) && (px2 < 12'd384)) begin
-                                rom_en   = 1'b1;
-                                rom_addr = QW_BASE + r_qs4 + ((px2 - 12'd256) >> 5);
-                            end
-                        end
-                        2'd1: begin   // 抢答中(N3, gx272)
-                            if ((px2 >= 12'd272) && (px2 < 12'd368)) begin
-                                rom_en   = 1'b1;
-                                rom_addr = QR_BASE + r_qs3 + ((px2 - 12'd272) >> 5);
-                            end
-                        end
-                        2'd2: begin   // 选手(N2,192) + 号(NUM,256) + 号抢答成功(N5,288)
-                            if ((px2 >= 12'd192) && (px2 < 12'd256)) begin
-                                rom_en   = 1'b1;
-                                rom_addr = QL_BASE + r_qs2 + ((px2 - 12'd192) >> 5);
-                            end
-                            else if ((px2 >= 12'd256) && (px2 < 12'd288)) begin
-                                // NUM 数字带仍是 16×16 字模, 在此 2× 窗内由 RTL 行列折叠放大
-                                rom_en   = 1'b1;
-                                rom_addr = NUM_BASE + r_qsd10 + {1'b0, winner_s} + 3'd1;
-                            end
-                            else if ((px2 >= 12'd288) && (px2 < 12'd448)) begin
-                                rom_en   = 1'b1;
-                                rom_addr = QX_BASE + r_qs5 + ((px2 - 12'd288) >> 5);
-                            end
-                        end
-                        default: begin // 时间到 无人抢答(N8, gx192)
-                            if ((px2 >= 12'd192) && (px2 < 12'd448)) begin
-                                rom_en   = 1'b1;
-                                rom_addr = QN_BASE + r_qs8 + ((px2 - 12'd192) >> 5);
-                            end
-                        end
-                    endcase
-                end
+                // ---- 抢答(仅倒计时行; 标题/状态/队伍图文字已移除 2026-10-09) ----
                 ID_QZ_CNT: begin
                     if ((px2 >= 12'd272) && (px2 < 12'd304) && (t_tens_s != 4'd0)) begin
                         rom_en   = 1'b1;      // 倒计时数字: NUM 16×16 字模 2× 折叠放大
@@ -466,10 +296,6 @@ module osd_scene #(
                         rom_en   = 1'b1;      // "秒" 为 2× 带 → 32×32 真字模
                         rom_addr = QSEC_BASE + {7'b0, dy_20};
                     end
-                end
-                ID_QZ_FOOT: begin
-                    rom_en   = 1'b1;
-                    rom_addr = QF_BASE + r_ft20 + (mw_m >> 4);
                 end
                 // ---- 应急 ----
                 ID_AL_TITLE: begin
@@ -488,38 +314,30 @@ module osd_scene #(
     end
 
     //--------------------------------------------------------------
-    // 字形 ROM(同步读, q 晚 addr 一拍; 三场景与菜单/迎新共用同一生成文件)
+    // 字形 ROM(同步读, q 晚 addr 一拍; 与菜单/迎新共用同一生成文件)
     //   ★V3: 位宽 16→32, 深度 4608→5856(2× 带存 32×32 真字模; 1× 带用低 16 位)
-    //   ★资源优化: ROM 实体移到 top 层统一例化(三路 OSD 互斥, 只占一份 BRAM)。
+    //   ★资源优化: ROM 实体移到 top 层统一例化(各路 OSD 互斥, 只占一份 BRAM)。
     //--------------------------------------------------------------
     assign rom_en_o   = rom_en;
     assign rom_addr_o = rom_addr;
 
     //--------------------------------------------------------------
-    // B 级: 行窗分类 / 页码数字窗 / 滚动取模 —— 全部改为 A 级结果打一拍
-    //   ★2026-09-21 面积优化: py3 ≡ py2 延迟 1 拍(第 265-266 行 px3<=px2;
-    //     py3<=py2), 故 f(py3) 恒等于 f(py2) 延迟 1 拍。原先 B 级把
-    //     "按 py3 分类 10 个文字带(10 个 12bit 比较器 + 优先链)"、
-    //     "6 格运行数字窗(12 个 12bit 比较器)"、"px3+phase 两次取模
-    //     (12bit 加法 + 4 个比较器 + 4 个减法器)"整套重算了一遍,
+    // B 级: 行窗分类 / 滚动取模 —— 全部改为 A 级结果打一拍
+    //   ★2026-09-21 面积优化: py3 ≡ py2 延迟 1 拍(px3<=px2; py3<=py2),
+    //     故 f(py3) 恒等于 f(py2) 延迟 1 拍。原先 B 级把"按 py3 分类
+    //     文字带"、"数字格窗"、"px3+phase 两次取模"整套重算了一遍,
     //     是本模块 633 条进位链的首要来源。改为纯打拍后画面逐像素完全不变。
     //--------------------------------------------------------------
     reg [3:0]  rid3;
-    reg        mdg_hit, mpg_hit;
-    reg [11:0] mdg_bx0;
-    reg [11:0] mw3_m, aw3_m;
+    reg [11:0] aw3_m;
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
             rid3    <= ID_NONE;
-            mdg_hit <= 1'b0; mdg_bx0 <= 12'd452;
-            mpg_hit <= 1'b0;
-            mw3_m   <= 12'd0; aw3_m   <= 12'd0;
+            aw3_m   <= 12'd0;
         end
         else begin
             rid3    <= rid2;
-            mdg_hit <= mdg_a;  mdg_bx0 <= mdg_x0;
-            mpg_hit <= mpg_a;
-            mw3_m   <= mw_m;   aw3_m   <= aw_m;
+            aw3_m   <= aw_m;
         end
     end
 
@@ -548,59 +366,8 @@ module osd_scene #(
                     default: ;
                 endcase
             end
-            else if (mt_ok) begin
-                case (rid3)
-                    ID_MT_TITLE: begin
-                        if ((px3 >= MT_GX) && (px3 < 12'd448))
-                            ink = rom_q[31 - ((px3 - MT_GX) & 12'd31)];   // 32×32 真字模
-                    end
-                    ID_MT_RUN: begin
-                        if ((px3 >= MR_GX) && (px3 < 12'd444))
-                            ink = rom_q[15 - ((px3 - MR_GX) & 12'd15)];
-                        else if (mdg_hit)
-                            ink = rom_q[15 - ((px3 - mdg_bx0) & 12'd15)];
-                    end
-                    ID_MT_ANN: begin
-                        if ((px3 >= MA_GX) && (px3 < 12'd400))
-                            ink = rom_q[15 - ((px3 - MA_GX) & 12'd15)];
-                        else if (mpg_hit)
-                            ink = rom_q[15 - ((px3 - 12'd424) & 12'd15)];
-                    end
-                    ID_MT_FOOT:  ink = rom_q[15 - mw3_m[3:0]];
-                    default: ;
-                endcase
-            end
             else if (qz_ok) begin
                 case (rid3)
-                    ID_QZ_TITLE: begin
-                        if ((px3 >= QT_GX) && (px3 < 12'd400))
-                            ink = rom_q[31 - ((px3 - QT_GX) & 12'd31)];   // 32×32 真字模
-                    end
-                    ID_QZ_STAT: begin
-                        case (qstate_s)
-                            2'd0: begin
-                                if ((px3 >= 12'd256) && (px3 < 12'd384))
-                                    ink = rom_q[31 - ((px3 - 12'd256) & 12'd31)];
-                            end
-                            2'd1: begin
-                                if ((px3 >= 12'd272) && (px3 < 12'd368))
-                                    ink = rom_q[31 - ((px3 - 12'd272) & 12'd31)];
-                            end
-                            2'd2: begin
-                                if ((px3 >= 12'd192) && (px3 < 12'd256))
-                                    ink = rom_q[31 - ((px3 - 12'd192) & 12'd31)];
-                                else if (qwg_hit)
-                                    // 胜者号仍为 NUM 16×16 字模, 2× 折叠 → 取第 15..0 位
-                                    ink = rom_q[15 - (((px3 - 12'd256) & 12'd31) >> 1)];
-                                else if ((px3 >= 12'd288) && (px3 < 12'd448))
-                                    ink = rom_q[31 - ((px3 - 12'd288) & 12'd31)];
-                            end
-                            default: begin
-                                if ((px3 >= 12'd192) && (px3 < 12'd448))
-                                    ink = rom_q[31 - ((px3 - 12'd192) & 12'd31)];
-                            end
-                        endcase
-                    end
                     ID_QZ_CNT: begin
                         if (qcg_hit)
                             // 倒计时数字仍是 NUM 16×16 字模, 2× 折叠 → 取第 15..0 位
@@ -608,7 +375,6 @@ module osd_scene #(
                         else if ((px3 >= 12'd336) && (px3 < 12'd368))
                             ink = rom_q[31 - ((px3 - 12'd336) & 12'd31)];   // "秒" 32×32
                     end
-                    ID_QZ_FOOT:  ink = rom_q[15 - mw3_m[3:0]];
                     default: ;
                 endcase
             end
@@ -618,12 +384,6 @@ module osd_scene #(
     //--------------------------------------------------------------
     // B 级: 区域命中(衬底色块)
     //--------------------------------------------------------------
-    wire mt_band  = (py3 >= BAND_Y0) && (py3 < BAND_Y1) &&
-                    (px3 >= 12'd168) && (px3 < 12'd472);
-    wire mt_runp  = (py3 >= 12'd68)  && (py3 < 12'd100) &&
-                    (px3 >= 12'd388) && (px3 < 12'd568);
-    wire mt_annp  = (py3 >= 12'd180) && (py3 < 12'd228) &&
-                    (px3 >= 12'd208) && (px3 < 12'd456);
     wire qz_band  = (py3 >= 12'd12)  && (py3 < 12'd60)  &&
                     (px3 >= 12'd200) && (px3 < 12'd440);
     wire qz_panel = (py3 >= 12'd84)  && (py3 < 12'd228) &&
@@ -631,13 +391,6 @@ module osd_scene #(
     wire foot_band= (py3 >= FOOT_Y0) && (py3 < FOOT_Y1);
     wire al_tband = (py3 >= AL_TBY0) && (py3 < AL_TBY1) &&
                     (px3 >= AL_TBX0) && (px3 < AL_TBX1);
-
-    // 会议运行时长冒号(RTL 绘制: 每处 4×4 两点)
-    wire mt_colon_row = ((py3 >= 12'd80) && (py3 < 12'd84)) ||
-                        ((py3 >= 12'd87) && (py3 < 12'd91));
-    wire mt_colon_hit = mt_colon_row &&
-                        (((px3 >= 12'd484) && (px3 < 12'd488)) ||
-                         ((px3 >= 12'd522) && (px3 < 12'd526)));
 
     // 抢答倒计时单位"秒"命中(与数字同为金色; 否则会被当作状态文字着白色)
     wire qsec_hit = (rid3 == ID_QZ_CNT) &&
@@ -681,7 +434,7 @@ module osd_scene #(
     wire [DATA_W-1:0] c_alred  = {alrd_r,   alrd_g,   alrd_b};
 
     //--------------------------------------------------------------
-    // 输出仲裁(组合): 应急 > 会议 > 抢答 > 背景透传
+    // 输出仲裁(组合): 应急 > 抢答 > 背景透传
     //--------------------------------------------------------------
     reg [DATA_W-1:0] fo;
     always @(*) begin
@@ -697,37 +450,11 @@ module osd_scene #(
                 else if (foot_band)
                     fo = ink ? C_AL_FOOT : c_dark;            // 底部滚动告警
             end
-            else if (mt_ok) begin
-                if (mt_band)
-                    fo = ink ? C_MT_TITLE : c_navy50;         // 会议标题条
-                else if (mt_runp) begin
-                    if (mdg_hit)
-                        fo = ink ? C_MT_DIG : c_panel;        // 运行时长数字
-                    else if (mt_colon_hit)
-                        fo = C_MT_DIG;                        // 冒号
-                    else
-                        fo = ink ? C_MT_RUN : c_panel;        // "已运行"
-                end
-                else if (mt_annp) begin
-                    if (mpg_hit)
-                        fo = ink ? C_MT_DIG : c_panel;        // 页码数字
-                    else
-                        fo = ink ? C_MT_ANN : c_panel;        // 公告文字
-                end
-                else if (foot_band)
-                    fo = ink ? C_MT_FOOT : c_dark;            // 底部滚动提示
-            end
             else if (qz_ok) begin
-                if (qz_band)
-                    fo = ink ? C_QZ_TITLE : c_navy50;         // 抢答标题条
-                else if (qz_panel) begin
-                    if (qcg_hit || qwg_hit || qsec_hit)
-                        fo = ink ? C_QZ_DIG : c_panel;        // 倒计时/胜者号/秒
-                    else
-                        fo = ink ? C_QZ_TXT : c_panel;        // 状态文字
-                end
-                else if (foot_band)
-                    fo = ink ? C_QZ_FOOT : c_dark;            // 底部滚动须知
+                // ★2026-10-09: 抢答场景只剩倒计时一个元素(其余全部透传);
+                //   倒计时文字直接叠在背景上(不再画状态面板衬底)。
+                if (qcg_hit || qsec_hit)
+                    fo = ink ? C_QZ_DIG : da3;            // 倒计时数字/秒(金色)
             end
         end
     end

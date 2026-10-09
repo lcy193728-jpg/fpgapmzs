@@ -126,6 +126,7 @@ module tb_display_adjust;
     reg  [3:0]  bri_level;
     reg  [3:0]  vol_level;               // 音量档 0..15(默认 8, 模式5 调)
     reg  [3:0]  res_level;               // 缩放档 0..7(默认 4=100%)
+    reg  [3:0]  con_level;               // ★对比度档 0..15(默认 8=×1.0; 2026-10-09c)
     reg         pic_manual;              // 1=手动单张 / 0=自动轮播
     reg  [2:0]  ui_mode;                 // 功能模式 0图片/1亮度/2缩放/3周期/4会议/5音量
     reg  [1:0]  img_res;                 // 源分辨率码 0=320x240 1=640x480 2=1024x768 3=1280x960
@@ -205,9 +206,21 @@ module tb_display_adjust;
         .bri_level  (bri_level),
         .vol_level  (vol_level),
         .res_level  (res_level),
+        .con_level  (con_level),   // ★对比度档(2026-10-09c)
         .img_res     (img_res),
         .pic_manual (pic_manual),
         .ui_mode    (ui_mode),
+        // ---- 抢答分数板(2026-10-09/10-09b; 本 TB 不测分数板, 一律置 0 保证不干扰既有几何) ----
+        .quiz_on    (1'b0),
+        .q_state    (2'd0),
+        .q_end      (1'b0),
+        .sc0        (8'sd0),
+        .sc1        (8'sd0),
+        .sc2        (8'sd0),
+        .sc3        (8'sd0),
+        .sc_evt     (1'b0),
+        .sc_team    (2'd0),
+        .iris_trig  (1'b0),
         .hs_o       (hs_o),
         .vs_o       (vs_o),
         .de_o       (de_o),
@@ -232,6 +245,7 @@ module tb_display_adjust;
         bri_level   = 4'd8;
         vol_level   = 4'd8;      // 音量默认档 ×1.0
         res_level   = 4'd4;      // 100%
+        con_level   = 4'd8;      // ★对比度 ×1.0(默认档 = 旁路, 行为与改造前逐位一致)
         pic_manual  = 1'b0;      // 自动轮播
         ui_mode     = 3'd0;      // 图片模式
         img_res     = 2'd1;      // 默认 640×480(码1)

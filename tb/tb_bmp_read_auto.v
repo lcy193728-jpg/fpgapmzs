@@ -56,6 +56,8 @@ module tb_bmp_read_auto;
     reg         sd_init_done;
     reg         key_trigger;
     reg         key_prev;
+    reg         key_jump;     // 绝对跳图请求(抢答场景用例 2026-10-08)
+    reg  [3:0]  jump_idx;     // 目标图序号(0 基)
     reg         slide_en;
     reg         write_req_ack;
     reg  [7:0]  sd_sec_read_data;
@@ -115,6 +117,8 @@ module tb_bmp_read_auto;
         .sd_init_done           (sd_init_done),
         .key_trigger            (key_trigger),
         .key_prev               (key_prev),
+        .key_jump               (key_jump),
+        .jump_idx               (jump_idx),
         .slide_en               (slide_en),
         .slide_interval         (slide_interval),
         .zone_start             (zone_start),
@@ -344,6 +348,8 @@ module tb_bmp_read_auto;
         sd_init_done  = 1'b0;
         key_trigger   = 1'b0;
         key_prev      = 1'b0;
+        key_jump      = 1'b0;
+        jump_idx      = 4'd0;
         slide_en      = 1'b1;
         zone_start    = IMG_A;
         zone_wrap     = Z_END;
@@ -490,6 +496,51 @@ module tb_bmp_read_auto;
         wait_state (4'd2);
         wait_state (4'd5);
         check(rd_base == IMG_A, "大间隔到点 -> 播完一圈回卷读到图A");
+
+        //-------- 9.(2026-10-08)绝对跳图 key_jump/jump_idx --------
+        //   抢答场景「锁定→队伍图」复用的机制: 从分区起点重扫, 跳过前
+        //   jump_idx 张命中图, 落在第 (jump_idx+1) 张。
+        //   分区 [IMG_A, Z_END) 内有: A(16000) B(16064) C(16128) [坏图16256]
+        //   D(16384) → 有效图序号 1..4 依次为 A/B/C/D(坏图不占序号)。
+        //   逐个跳 index=0..3, 校验落到 A/B/C/D 且 img_no = index+1。
+        fire_zone (IMG_A, Z_END, 32'd4);
+        wait_state (4'd1);
+        wait_state (4'd2);
+        wait_state (4'd5);
+        // 先回到跳图前的自然首图(A)
+        check(rd_base == IMG_A, "跳图前置: 分区首图 = A");
+
+        // index=1 → 第 2 张 = B
+        rd_base <= 32'hFFFFFFFF;               // 清旧值, 便于确认确实更新
+        key_jump  = 1'b1; jump_idx = 4'd1; @(posedge clk);
+        key_jump  = 1'b0;                      @(posedge clk);
+        wait_state (4'd2);
+        wait_state (4'd5);
+        check(rd_base == IMG_B, "key_jump idx=1 -> 落到图B(第2张)");
+
+        // index=2 → 第 3 张 = C
+        rd_base <= 32'hFFFFFFFF;
+        key_jump  = 1'b1; jump_idx = 4'd2; @(posedge clk);
+        key_jump  = 1'b0;                      @(posedge clk);
+        wait_state (4'd2);
+        wait_state (4'd5);
+        check(rd_base == IMG_C, "key_jump idx=2 -> 落到图C(第3张)");
+
+        // index=3 → 第 4 张 = D(中间跳过坏图, 坏图不占序号)
+        rd_base <= 32'hFFFFFFFF;
+        key_jump  = 1'b1; jump_idx = 4'd3; @(posedge clk);
+        key_jump  = 1'b0;                      @(posedge clk);
+        wait_state (4'd2);
+        wait_state (4'd5);
+        check(rd_base == IMG_D, "key_jump idx=3 -> 落到图D(第4张, 越过坏图)");
+
+        // index=0 → 第 1 张 = A(回内容图语义)
+        rd_base <= 32'hFFFFFFFF;
+        key_jump  = 1'b1; jump_idx = 4'd0; @(posedge clk);
+        key_jump  = 1'b0;                      @(posedge clk);
+        wait_state (4'd2);
+        wait_state (4'd5);
+        check(rd_base == IMG_A, "key_jump idx=0 -> 回到图A(第1张/内容图)");
 
         $display("=== bmp_read_auto(分区/容错) 仿真结束,失败数=%0d ===", fail_cnt);
         $finish;

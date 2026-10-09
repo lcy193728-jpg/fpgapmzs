@@ -1,6 +1,17 @@
 //====================================================================
-// 模块名 : tb_osd_scene.v —— 会议/抢答/应急 三场景 OSD 像素级回归
+// 模块名 : tb_osd_scene.v —— 抢答 / 应急 两场景 OSD 像素级回归
 // 被测   : src/osd_scene.v (三级管线 + 真汉字字库叠加)
+//
+// 变更史 : v11(2026-10-07) 会议场景整体删除 —— 本 TB 同步删掉
+//          meeting_en / run_hh·mm·ss 端口、spot_meeting 用例、
+//          全部 MT_* 期望量与区域面积常量; 窗口序列由 10 个压到 8 个。
+//          ★ 同时把应急底带的期望墨点从**写死常量**改为
+//            foot_sum_af(phase) —— 按当帧真实相位逐列求和。
+//            原因: 应急底带周期 384px、屏宽 640px, 640 = 384 + 256,
+//            多出的 256 列位置随相位平移; 写死常量是"碰巧对上了"而
+//            不是推导正确。calc_expect() 会把 384 个相位全跑一遍并
+//            打印实测 min/max 与旧常量对比(见 "A_FOOT 每帧墨点" 一行),
+//            结论据此判定, 不再依赖巧合。
 //
 // 方法   : 生成 VGA 640×480 时序, 以恒定背景色 BG 送入 osd_scene
 //          (data_i 与 px_x/px_y 同拍), 按帧切换场景使能, 逐帧结算:
@@ -14,27 +25,24 @@
 //            ★V3 字库: 2× 带存 32×32 真字模 1:1 显示 → 墨点 = Σ popcount32;
 //                      1× 带存 16×16 字模       → 墨点 = Σ popcount(低 16 位);
 //              NUM 数字带仍为 16×16 字模, 硬件 2× 行列折叠 → 屏上 = 4 × Σ;
-//            滚动带(周期 320px, 整 2 周期铺满 640) 墨点 = 2 × Σ bit;
-//            应急滚动带(周期 384px) 墨点 = Σ(24 字) + Σ(前 16 字)。
+//            抢答滚动带(周期 320px, 整 2 周期铺满 640) 墨点 = 2 × Σ(相位无关);
+//            应急滚动带(周期 384px) 墨点 = 逐列查表按相位求和(相位相关)。
 //          区域面积(由 osd_scene.v 几何常数推得, 与 px3/py3 无关的固定掩膜):
-//            会议: 标题带 13376 / 运行面板 5760 / 公告面板 11904 / 底带 26880
-//                  → 透传 BG = 249280
 //            抢答: 标题带 11520 / 状态面板 46080 / 底带 26880
 //                  → 透传 BG = 222720
 //            应急: 顶红条 33280 / 深红标题带 17280 / 底带 26880
 //                  → 透传 BG = 229760
 //          ※ 应急红条按 4Hz 闪烁, 帧内可能落在亮相或暗相, 故只断言
-//            (亮相 + 暗相 + 警示三角) = 33280 且三角墨点 > 0。
+//            (亮相 + 暗相 + 警示三角) = 33280 + 底带滚动金 且三角墨点 > 0。
 //
 // 段序(按 vs_o 下降沿结算窗口, 复位后首个空窗跳过):
 //   窗口0       : 三使能全 0                → 纯透传
-//   窗口1,2     : 会议(运行 12:34:56, 页0)  → 计数两帧一致 + 采样
-//   窗口3       : 抢答 qstate=0 等待开始
-//   窗口4       : 抢答 qstate=1 抢答中(倒计时 05)
-//   窗口5       : 抢答 qstate=2 已锁定(3 号)
-//   窗口6       : 抢答 qstate=3 时间到
-//   窗口7,8     : 应急(红条闪烁/三角/深红标题/滚动告警)
-//   窗口9       : 三使能全 0                → 复透传(证明使能可控)
+//   窗口1       : 抢答 qstate=0 等待开始
+//   窗口2       : 抢答 qstate=1 抢答中(倒计时 05)
+//   窗口3       : 抢答 qstate=2 已锁定(3 号)
+//   窗口4       : 抢答 qstate=3 时间到
+//   窗口5,6     : 应急(红条闪烁/三角/深红标题/滚动告警)
+//   窗口7       : 三使能全 0                → 复透传(证明使能可控)
 //====================================================================
 
 `timescale 1ns/1ps
@@ -57,13 +65,13 @@ module tb_osd_scene;
     localparam TOT_PIX = H_ACT * V_ACT;                  // 307200
 
     //------ 输入背景(BG) 与 唯一输出色(与 osd_scene.v 常量一一对应) ------
-    //  多个 localparam 同值(金/白/橙)折叠为同一条 case 分支:
-    //    C_GOLD  = MT_TITLE/MT_DIG/QZ_TITLE/QZ_DIG/AL_ICO/AL_FOOT
-    //    C_WHITE = MT_ANN/QZ_TXT/AL_TITLE
-    //    C_ORNG  = MT_FOOT/QZ_FOOT
+    //   多个 localparam 同值(金/白/橙)折叠为同一条 case 分支:
+    //    C_GOLD  = QZ_TITLE/QZ_DIG/AL_ICO/AL_FOOT
+    //    C_WHITE = QZ_TXT/AL_TITLE
+    //    C_ORNG  = QZ_FOOT
+    //   v11 起 C_STEEL(会议 M_RUN 标签专用)随会议层一起删除。
     localparam BG      = 24'h204080;
     localparam C_GOLD  = 24'hFFD24A;
-    localparam C_STEEL = 24'h9DCBF2;   // M_RUN 标签
     localparam C_WHITE = 24'hF5FDFF;
     localparam C_ORNG  = 24'hFF7A1F;
     localparam C_BARA  = 24'hFF2A2A;   // 应急红条(亮相)
@@ -74,15 +82,19 @@ module tb_osd_scene;
     localparam C_DARK  = 24'h081020;   // 底带暗色(BG>>2)
 
     //------ 区域面积(由 osd_scene.v 几何常数推得) ------
-    localparam MT_AREA_BAND = 44*304;    // 13376  标题带 y8..51 x168..471
-    localparam MT_AREA_RUNP = 32*180;    // 5760   y68..99 x388..567
-    localparam MT_AREA_ANNP = 48*248;    // 11904  y180..227 x208..455
     localparam QZ_AREA_BAND = 48*240;    // 11520  y12..59 x200..439
     localparam QZ_AREA_PANL = 144*320;   // 46080  y84..227 x160..479
     localparam AL_AREA_BAR  = 52*640;    // 33280  行0..51 全区宽
     localparam AL_AREA_TBND = 48*360;    // 17280  y74..121 x140..499
     localparam FOOT_AREA    = 42*640;    // 26880  y438..479
-    localparam AL_FIRST16   = 16*16;     // 应急滚动带前 16 格(再出现一次)
+
+    //------ 底带滚动几何(与 osd_scene.v 的 mw_m/aw_m 取模一致) ------
+    localparam QF_BASE_P = 4672;         // 抢答底带 ROM 基址
+    localparam QF_N      = 20;           // 抢答底带字数
+    localparam QF_PERIOD = 320;          // 抢答底带周期(px)
+    localparam AF_BASE_P = 5312;         // 应急底带 ROM 基址
+    localparam AF_N      = 24;           // 应急底带字数
+    localparam AF_PERIOD = 384;          // 应急底带周期(px)
 
     //--------------- 信号 ----------------
     reg         clk;
@@ -94,11 +106,10 @@ module tb_osd_scene;
     wire [23:0] data_o;
     wire [11:0] px_x_o, px_y_o;
 
-    reg         meeting_en, quiz_en, alarm_en;
+    reg         quiz_en, alarm_en;
     reg  [1:0]  qstate;
     reg  [1:0]  winner;
     reg  [3:0]  t_tens, t_ones;
-    reg  [7:0]  run_hh, run_mm, run_ss;
 
     // 结算/统计
     integer     cnt_err;                 // 计数类失败
@@ -106,35 +117,36 @@ module tb_osd_scene;
     integer     valid_cnt;
     reg  [31:0] act_cnt;
     reg  [31:0] c_bg, c_navy, c_panel, c_dark, c_alred;
-    reg [31:0] c_gold, c_white, c_orng, c_steel, c_bara, c_barb;
+    reg  [31:0] c_gold, c_white, c_orng, c_bara, c_barb;
     reg         vs_o_d;
 
-    // 诊断: 抢答面板内各字形窗的墨点/金色计数(定位几何与着色)
+    // 诊断: 抢答面板内各字形窗的墨点/着色计数(定位几何与着色)
     reg  [31:0] d_st_ink,  d_st_white;   // 状态文字 x256..383 y96..127
     reg  [31:0] d_w_ink,   d_w_gold;     // 胜者号   x256..287 y96..127
     reg  [31:0] d_o_ink,   d_o_gold;     // 倒计时个位 x304..335 y180..211
     reg  [31:0] d_s_ink,   d_s_gold;     // 单位"秒"  x336..367 y180..211
 
     // 期望值(由 ROM 读回统计, 复位释放后计算)
-    integer     ink_mt, ink_ma, ink_mrun, ink_mf;
     integer     ink_qt, ink_qw, ink_qr, ink_ql, ink_qx, ink_qn;
     integer     ink_qsec, ink_qf, ink_at;
-    integer     ink_af_all, ink_af16, ink_af, ink_tmp;
+    integer     ink_af_all, ink_af16, ink_tmp;
+    integer     af_min, af_max, af_hard;
     integer     num_ink [0:9];
-    integer     rdig;                    // 运行时长 6 位数字墨点(1,2,3,4,5,6)
-    integer     mt_digpart;              // 运行数字 + 冒号 + 页码数字
     integer     q_dig_run;               // 倒计时 5 秒 + "秒"
+    integer     exp_qf, exp_af;          // 底带墨点(按当帧相位求和)
 
-    integer     ex_mt_navy, ex_mt_gold, ex_mt_white, ex_mt_steel;
-    integer     ex_mt_panel, ex_mt_orng, ex_mt_dark, ex_mt_bg;
+    // 底带"逐列墨点"查表: pos(=char*16+col) → 该列墨点数
+    integer     qf_pos [0:319];
+    integer     af_pos [0:383];
+
     integer     ex_qz_navy, ex_qz_gold, ex_qz_orng, ex_qz_dark, ex_qz_bg;
     integer     ex_qz_white, ex_qz_dig, ex_qz_panel;
     integer     ex_al_white, ex_al_alred, ex_al_dark, ex_al_bg;
 
-    integer     i, r, c;
+    integer     i;
 
     //--------------- 例化被测模块 ----------------
-    // 共享字形 ROM(与 top.v 同构: 实体在 TB 顶层例化, 被 u_scene 读)
+    // 共享字形 ROM(与 top 同构: 实体在 TB 顶层例化, 被 u_scene 读)
     wire        rom_en_s;
     wire [12:0] rom_addr_s;
     wire [31:0] rom_q;
@@ -159,16 +171,12 @@ module tb_osd_scene;
         .data_i     (data_i),
         .px_x       (px_i),
         .px_y       (py_i),
-        .meeting_en (meeting_en),
         .quiz_en    (quiz_en),
         .alarm_en   (alarm_en),
         .qstate     (qstate),
         .winner     (winner),
         .t_tens     (t_tens),
         .t_ones     (t_ones),
-        .run_hh     (run_hh),
-        .run_mm     (run_mm),
-        .run_ss     (run_ss),
         .rom_en_o   (rom_en_s),
         .rom_addr_o (rom_addr_s),
         .rom_q      (rom_q),
@@ -192,16 +200,12 @@ module tb_osd_scene;
 
     //--------------- 场景使能/抢答状态 初值(全关=纯透传) ----------------
     initial begin
-        meeting_en = 1'b0;
         quiz_en    = 1'b0;
         alarm_en   = 1'b0;
         qstate     = 2'd0;
         winner     = 2'd0;
         t_tens     = 4'd0;
         t_ones     = 4'd5;          // 等待开始/抢答中均显示 05 秒
-        run_hh     = 8'h00;
-        run_mm     = 8'h00;
-        run_ss     = 8'h00;
     end
 
     //--------------- 视频时序发生器(模拟 osd_welcome 出口) ----------------
@@ -288,11 +292,47 @@ module tb_osd_scene;
         end
     endtask
 
+    //--------------------------------------------------------------
+    // 底带按"当帧相位"求墨点(必须逐帧算, 不能只用一个常量)
+    //   osd_scene 内: pos = ((px + phase) % 640) % PERIOD
+    //                 字 = pos>>4, 带内列 = pos&15
+    //                 墨点 = rom[base + (pos&15)*N + (pos>>4)] 的低 16 位
+    //   抢答 PERIOD=320 与 640 整除 ⇒ 与相位无关;
+    //   应急 PERIOD=384, 640 = 384+256 ⇒ 多出 256 列的位置随相位平移,
+    //   故不能只用一个"全 24 格 + 前 16 格"的常量(那只是碰巧相等,
+    //   calc_expect 会把 384 个相位全跑一遍实测, 见 "A_FOOT 每帧墨点" 一行)。
+    //--------------------------------------------------------------
+    function integer foot_sum_qf;
+        input integer ph;
+        integer x, k, s;
+        begin
+            s = 0;
+            for (x = 0; x < 640; x = x + 1) begin
+                k = x + ph;
+                if (k >= 640) k = k - 640;
+                if (k >= QF_PERIOD) k = k - QF_PERIOD;
+                s = s + qf_pos[k];
+            end
+            foot_sum_qf = s;
+        end
+    endfunction
+
+    function integer foot_sum_af;
+        input integer ph;
+        integer x, k, s;
+        begin
+            s = 0;
+            for (x = 0; x < 640; x = x + 1) begin
+                k = x + ph;
+                if (k >= 640) k = k - 640;
+                if (k >= AF_PERIOD) k = k - AF_PERIOD;
+                s = s + af_pos[k];
+            end
+            foot_sum_af = s;
+        end
+    endfunction
+
     task calc_expect; begin
-        band_ink32(2512,  8, ink_mt);    // MT_TITLE  (2×, 32×32 1:1)
-        band_ink  (2768, 10, ink_ma);    // MA0       (1×)
-        band_ink  (3408,  3, ink_mrun);  // M_RUN     (1×)
-        band_ink  (3456, 20, ink_mf);    // M_FOOT    (1×, 周期 320 → ×2)
         band_ink32(3776,  5, ink_qt);    // QT_TITLE  (2×)
         band_ink32(3936,  4, ink_qw);    // QW_WAIT   (2×)
         band_ink32(4064,  3, ink_qr);    // QR_READY  (2×)
@@ -300,63 +340,77 @@ module tb_osd_scene;
         band_ink32(4224,  5, ink_qx);    // QWR_WIN   (2×)
         band_ink32(4384,  8, ink_qn);    // QN_NONE   (2×)
         band_ink32(4640,  1, ink_qsec);  // QS_SEC    (2×)
-        band_ink  (4672, 20, ink_qf);    // Q_FOOT    (1×, 周期 320 → ×2)
+        band_ink  (4672, 20, ink_qf);    // Q_FOOT    (1×, 周期 320 → 恒 ×2)
         band_ink32(4992, 10, ink_at);    // AT_TITLE  (2×)
 
-        band_ink(5312, 24, ink_af_all);  // A_FOOT 全 24 格
+        band_ink(5312, 24, ink_af_all);  // A_FOOT 全 24 格(仅作参考打印)
+
+        for (i = 0; i < 10; i = i + 1)
+            char_ink(5696, 10, i, num_ink[i]);
+
+        // ---- 底带逐列墨点表 ----
+        for (i = 0; i < QF_PERIOD; i = i + 1)
+            qf_pos[i] = pc32(u_font_rom.mem[QF_BASE_P + (i & 15)*QF_N + (i >> 4)]
+                             & 32'hFFFF);
+        for (i = 0; i < AF_PERIOD; i = i + 1)
+            af_pos[i] = pc32(u_font_rom.mem[AF_BASE_P + (i & 15)*AF_N + (i >> 4)]
+                             & 32'hFFFF);
+
+        // ---- 应急底带: 相位相关性实测量化 ----
+        //   旧 TB 把期望写成常量 (全 24 格 + 前 16 格)。这里把 384 个相位
+        //   全部走一遍, 打印实测最小值/最大值, 用来判定"写死常量"是否
+        //   恰好等于每个相位的真值 —— 不再靠推测。
         ink_af16 = 0;
         for (i = 0; i < 16; i = i + 1) begin
             char_ink(5312, 24, i, ink_tmp);
             ink_af16 = ink_af16 + ink_tmp;
         end
-        ink_af = ink_af_all + ink_af16;  // 周期 384: 全 24 格 + 再出现的前 16 格
-
-        for (i = 0; i < 10; i = i + 1)
-            char_ink(5696, 10, i, num_ink[i]);
-
-        // ---- 会议(运行 12:34:56 / 页码 0 → 显示 '1') ----
-        rdig = num_ink[1]+num_ink[2]+num_ink[3]+num_ink[4]+num_ink[5]+num_ink[6];
-        mt_digpart = rdig + 64 + num_ink[1];       // 6 位数字 + 冒号 64 + 页码 '1'
-        ex_mt_navy  = MT_AREA_BAND - ink_mt;      // 32×32 真字模 1:1
-        ex_mt_gold  = ink_mt + mt_digpart;
-        ex_mt_white = ink_ma;
-        ex_mt_steel = ink_mrun;
-        ex_mt_panel = MT_AREA_RUNP + MT_AREA_ANNP - ink_mrun - ink_ma - mt_digpart;
-        ex_mt_orng  = 2*ink_mf;
-        ex_mt_dark  = FOOT_AREA - 2*ink_mf;
-        ex_mt_bg    = TOT_PIX - MT_AREA_BAND - MT_AREA_RUNP - MT_AREA_ANNP - FOOT_AREA;
+        af_min = 0;  af_max = 0;
+        for (i = 0; i < AF_PERIOD; i = i + 1) begin
+            exp_af = foot_sum_af(i);
+            if (i == 0 || exp_af < af_min) af_min = exp_af;
+            if (i == 0 || exp_af > af_max) af_max = exp_af;
+        end
+        af_hard = ink_af_all + ink_af16;
 
         // ---- 抢答(公共量) ----
         //   NUM 带仍为 16×16 字模, 硬件 2× 行列折叠 → 屏上墨点 = 4 × 字模墨点
         q_dig_run  = 4*num_ink[5] + ink_qsec;      // 倒计时 '5'(折叠×4) + '秒'(32×32 1:1)
-        ex_qz_navy = QZ_AREA_BAND - ink_qt;
-        ex_qz_gold = ink_qt;                       // + 各状态数字(见 case)
-        ex_qz_orng = 2*ink_qf;
-        ex_qz_dark = FOOT_AREA - 2*ink_qf;
-        ex_qz_bg   = TOT_PIX - QZ_AREA_BAND - QZ_AREA_PANL - FOOT_AREA;
+        // ★2026-10-09 显示规则再改: 抢答场景 OSD 只剩"倒计时秒数";
+        //   标题条(c_navy)、状态字(c_white)、面板(c_panel) **全部不再出现**
+        //   → 对应的期望计数一律为 0, 全部像素回到透传背景。
+        ex_qz_navy = 0;                            // 标题条已取消
+        ex_qz_gold = 0;                            // 标题金字已取消(倒计时另计)
+        // 整屏透传, 唯一例外是"抢答中"态的倒计时数字(金色, 非 BG)。
+        // 非抢答中态没有倒计时 → 由各段把 ex_qz_dig 置 0, 此处按 0 扣。
+        ex_qz_bg   = TOT_PIX;                      // 基准; 段2 再扣倒计时墨点
 
         // ---- 应急 ----
         ex_al_white = ink_at;                      // 32×32 真字模 1:1
         ex_al_alred = AL_AREA_TBND - ink_at;
-        ex_al_dark  = FOOT_AREA - ink_af;
         ex_al_bg    = TOT_PIX - AL_AREA_BAR - AL_AREA_TBND - FOOT_AREA;
 
         $display("---- 字模墨点(读回 ROM 统计) ----");
-        $display("  MT=%0d MA0=%0d M_RUN=%0d M_FOOT=%0d QT=%0d QW=%0d QR=%0d QL=%0d QX=%0d QN=%0d QSEC=%0d Q_FOOT=%0d AT=%0d A_FOOT=%0d(全%0d+前16格%0d)",
-                 ink_mt, ink_ma, ink_mrun, ink_mf, ink_qt, ink_qw, ink_qr,
-                 ink_ql, ink_qx, ink_qn, ink_qsec, ink_qf, ink_at,
-                 ink_af, ink_af_all, ink_af16);
+        $display("  QT=%0d QW=%0d QR=%0d QL=%0d QX=%0d QN=%0d QSEC=%0d Q_FOOT=%0d AT=%0d A_FOOT(全24格)=%0d",
+                 ink_qt, ink_qw, ink_qr, ink_ql, ink_qx, ink_qn, ink_qsec,
+                 ink_qf, ink_at, ink_af_all);
         $display("  NUM[0..9] = %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d",
                  num_ink[0], num_ink[1], num_ink[2], num_ink[3], num_ink[4],
                  num_ink[5], num_ink[6], num_ink[7], num_ink[8], num_ink[9]);
+        $display("  Q_FOOT 每帧墨点(相位无关) = %0d (== 2*%0d = %0d)",
+                 foot_sum_qf(0), ink_qf, 2*ink_qf);
+        $display("  A_FOOT 每帧墨点 实测相位范围 = %0d .. %0d  (全24格=%0d + 前16格=%0d → 旧写死常量=%0d)",
+                 af_min, af_max, ink_af_all, ink_af16, af_hard);
+        if ((af_min == af_hard) && (af_max == af_hard))
+            $display("  → 相位无关, 旧写死常量恰好恒等(仍按相位实算, 不再依赖巧合)");
+        else
+            $display("  ★ 相位相关! 旧写死常量=%0d 只覆盖 [%0d..%0d] 的一部分 → 必须按相位实算",
+                     af_hard, af_min, af_max);
         $display("---- 期望逐色计数 ----");
-        $display("  会议 BG=%0d NAVY=%0d GOLD=%0d WHITE=%0d STEEL=%0d PANEL=%0d ORNG=%0d DARK=%0d",
-                 ex_mt_bg, ex_mt_navy, ex_mt_gold, ex_mt_white,
-                 ex_mt_steel, ex_mt_panel, ex_mt_orng, ex_mt_dark);
-        $display("  抢答 BG=%0d NAVY=%0d GOLDbase=%0d ORNG=%0d DARK=%0d  (状态: WHITE/PANEL 随 qstate)",
-                 ex_qz_bg, ex_qz_navy, ex_qz_gold, ex_qz_orng, ex_qz_dark);
-        $display("  应急 BG=%0d WHITE=%0d ALRED=%0d DARK=%0d  (红条+三角=33280)", 
-                 ex_al_bg, ex_al_white, ex_al_alred, ex_al_dark);
+        $display("  抢答 BG=%0d NAVY=%0d GOLDbase=%0d  (状态/数字: WHITE/GOLD/PANEL 随 qstate)",
+                 ex_qz_bg, ex_qz_navy, ex_qz_gold);
+        $display("  应急 BG=%0d WHITE=%0d ALRED=%0d  (顶红条+三角恒=33280)",
+                 ex_al_bg, ex_al_white, ex_al_alred);
     end endtask
 
     //================================================================
@@ -388,42 +442,39 @@ module tb_osd_scene;
         end
     end endtask
 
-    task spot_meeting; begin
-        chk(198, 15, C_GOLD,  "MT_TITLE ON");      // 标题条字
-        chk(192, 14, C_NAVY,  "MT_TITLE OFF");
-        chk(243,196, C_WHITE, "MA0 ON");           // 公告页 0
-        chk(240,196, C_PANEL, "MA0 OFF");
-        chk(398, 76, C_STEEL, "M_RUN ON");         // "已运行" 首字
-        chk(396, 76, C_PANEL, "M_RUN OFF");
-        chk(485, 81, C_GOLD,  "冒号点");           // RTL 绘制冒号
-        chk( 60,200, BG,      "会议区外透传");
-    end endtask
-
+    // ★2026-10-09 新显示规则: 抢答场景 OSD 只剩"倒计时秒数"一个动态元素,
+    //   标题条/状态行/底部滚动全部**透传**卡上题目图与队伍图。
+    //   故这里把原先断言"叠加文字"的点, 改为断言"透传背景色"。
     task spot_qz0; begin
-        chk(246, 21, C_GOLD,  "QT_TITLE ON");
-        chk(240, 20, C_NAVY,  "QT_TITLE OFF");
-        chk(262, 97, C_WHITE, "QW_WAIT ON");
-        chk(256, 96, C_PANEL, "QW_WAIT OFF");
-        chk(356,181, C_GOLD,  "QS_SEC ON");
+        // 题目页(qstate=0/待开始): 标题条/状态行位置必须透传
+        chk(246, 21, BG,      "QT_TITLE 透传(题目页不叠标题)");
+        chk(240, 20, BG,      "QT_TITLE 透传(条外)");
+        chk(262, 97, BG,      "QW_WAIT 透传(题目页不叠状态)");
+        chk(256, 96, BG,      "QW_WAIT 透传(面板外)");
+        chk(356,181, BG,      "QS_SEC 透传(待开始无倒计时)");
         chk(100,300, BG,      "抢答区外透传");
     end endtask
 
     task spot_qz1; begin
-        chk(278, 97, C_WHITE, "QR_READY ON");
-        chk(272, 96, C_PANEL, "QR_READY OFF");
-        chk(356,181, C_GOLD,  "QS_SEC ON(抢答中)");
+        // 抢答中(qstate=1): 标题/状态仍不叠, 但**倒计时秒数**要叠金色
+        chk(278, 97, BG,      "QR_READY 透传(抢答中不叠状态字)");
+        chk(272, 96, BG,      "QR_READY 透传(面板外)");
+        chk(356,181, C_GOLD,  "QS_SEC ON(抢答中倒计时)");
     end endtask
 
     task spot_qz2; begin
-        chk(211, 97, C_WHITE, "QWL_WIN ON");
-        chk(192, 96, C_PANEL, "QWL_WIN OFF");
-        chk(326, 97, C_WHITE, "QWR_WIN ON");
-        chk(288, 96, C_PANEL, "QWR_WIN OFF");
+        // 已锁定(qstate=2): 队伍图自带队名, OSD 全部透传
+        chk(211, 97, BG,      "QWL_WIN 透传(队伍页不叠文字)");
+        chk(192, 96, BG,      "QWL_WIN 透传(面板外)");
+        chk(326, 97, BG,      "QWR_WIN 透传(队伍页不叠文字)");
+        chk(288, 96, BG,      "QWR_WIN 透传(面板外)");
+        chk(356,181, BG,      "QS_SEC 透传(锁定后无倒计时)");
     end endtask
 
     task spot_qz3; begin
-        chk(217, 97, C_WHITE, "QN_NONE ON");
-        chk(192, 96, C_PANEL, "QN_NONE OFF");
+        // 超时(qstate=3): 同样全部透传
+        chk(217, 97, BG,      "QN_NONE 透传(超时页不叠文字)");
+        chk(192, 96, BG,      "QN_NONE 透传(面板外)");
     end endtask
 
     task spot_alarm; begin
@@ -436,12 +487,11 @@ module tb_osd_scene;
 
     task check_spots; begin
         case (valid_cnt)
-            2: spot_meeting();
-            3: spot_qz0();
-            4: spot_qz1();
-            5: spot_qz2();
-            6: spot_qz3();
-            8: spot_alarm();
+            1: spot_qz0();
+            2: spot_qz1();
+            3: spot_qz2();
+            4: spot_qz3();
+            5: spot_alarm();
             default: ;
         endcase
     end endtask
@@ -469,8 +519,7 @@ module tb_osd_scene;
             c_panel   <= 32'd0;  c_dark  <= 32'd0;
             c_alred   <= 32'd0;  c_gold  <= 32'd0;
             c_white   <= 32'd0;  c_orng  <= 32'd0;
-            c_steel   <= 32'd0;  c_bara  <= 32'd0;
-            c_barb    <= 32'd0;
+            c_bara    <= 32'd0;  c_barb  <= 32'd0;
             vs_o_d    <= 1'b1;
             d_st_ink  <= 32'd0;  d_st_white <= 32'd0;
             d_w_ink   <= 32'd0;  d_w_gold   <= 32'd0;
@@ -492,7 +541,6 @@ module tb_osd_scene;
                     C_GOLD  : c_gold  <= c_gold  + 32'd1;
                     C_WHITE : c_white <= c_white + 32'd1;
                     C_ORNG  : c_orng  <= c_orng  + 32'd1;
-                    C_STEEL : c_steel <= c_steel + 32'd1;
                     C_BARA  : c_bara  <= c_bara  + 32'd1;
                     C_BARB  : c_barb  <= c_barb  + 32'd1;
                     default : begin
@@ -527,6 +575,8 @@ module tb_osd_scene;
             end
 
             // ---- 帧边界(vs_o 下降沿): 结算刚结束的窗口 ----
+            //   ★ 此刻 u_scene.phase 仍等于"刚结束这一帧所用的相位"
+            //     (phase 在 vs_i 上升沿更新, 而 vs_o 下降沿比它早)。
             if (vs_o_d && ~vs_o) begin
                 if (act_cnt == 0) begin
                     $display("t=%0t [NOTE] 窗口#%0d为空, 跳过", $time, valid_cnt);
@@ -538,7 +588,7 @@ module tb_osd_scene;
                                  $time, valid_cnt, act_cnt, TOT_PIX);
                     end
                     case (valid_cnt)
-                        0: begin   // 段0: 三使能全 0 → 纯透传
+                        0: begin   // 段0: 两使能全 0 → 纯透传
                             chk_cnt("旁路BG",  c_bg, TOT_PIX);
                             chk_cnt("旁路NAVY",c_navy, 0);
                             chk_cnt("旁路PANEL",c_panel,0);
@@ -546,33 +596,19 @@ module tb_osd_scene;
                             chk_cnt("旁路GOLD",c_gold, 0);
                             chk_cnt("旁路WHITE",c_white,0);
                             chk_cnt("旁路ORNG", c_orng, 0);
-                            chk_cnt("旁路STEEL",c_steel,0);
                             chk_cnt("旁路BARA", c_bara, 0);
                             chk_cnt("旁路BARB", c_barb, 0);
                             chk_cnt("旁路ALRED",c_alred,0);
                             $display("t=%0t [段0] 帧%0d 纯透传 有效=%0d BG=%0d",
                                      $time, valid_cnt, act_cnt, c_bg);
                         end
-                        1, 2: begin // 段1/2: 会议(两帧一致)
-                            chk_cnt("会议BG",   c_bg,    ex_mt_bg);
-                            chk_cnt("会议NAVY", c_navy,  ex_mt_navy);
-                            chk_cnt("会议GOLD", c_gold,  ex_mt_gold);
-                            chk_cnt("会议WHITE",c_white, ex_mt_white);
-                            chk_cnt("会议STEEL",c_steel, ex_mt_steel);
-                            chk_cnt("会议PANEL",c_panel, ex_mt_panel);
-                            chk_cnt("会议ORNG", c_orng,  ex_mt_orng);
-                            chk_cnt("会议DARK", c_dark,  ex_mt_dark);
-                            chk_cnt("会议ALRED",c_alred, 0);   // 他场景色必须为 0
-                            chk_cnt("会议BARA", c_bara,  0);
-                            chk_cnt("会议BARB", c_barb,  0);
-                            $display("t=%0t [段1] 帧%0d 会议 BG=%0d GOLD=%0d WHITE=%0d STEEL=%0d PANEL=%0d ORNG=%0d DARK=%0d",
-                                     $time, valid_cnt, c_bg, c_gold, c_white,
-                                     c_steel, c_panel, c_orng, c_dark);
-                        end
-                        3: begin   // 段3: 抢答 qstate=0 等待开始(倒计时 05)
-                            ex_qz_white = ink_qw;
-                            ex_qz_dig   = q_dig_run;
-                            ex_qz_panel = QZ_AREA_PANL - ex_qz_white - ex_qz_dig;
+                        1: begin   // 段1: 抢答 qstate=0 等待开始(不叠任何字)
+                            ex_qz_white = 0;
+                            ex_qz_dig   = 0;   // 待开始不显示倒计时
+                            ex_qz_panel = 0;
+                            ex_qz_orng  = 0;
+                            ex_qz_dark  = 0;
+                            ex_qz_bg    = TOT_PIX;   // 无倒计时 → 全透传
                             chk_cnt("抢答0BG",   c_bg,    ex_qz_bg);
                             chk_cnt("抢答0NAVY", c_navy,  ex_qz_navy);
                             chk_cnt("抢答0GOLD", c_gold,  ex_qz_gold + ex_qz_dig);
@@ -580,15 +616,21 @@ module tb_osd_scene;
                             chk_cnt("抢答0PANEL",c_panel, ex_qz_panel);
                             chk_cnt("抢答0ORNG", c_orng,  ex_qz_orng);
                             chk_cnt("抢答0DARK", c_dark,  ex_qz_dark);
-                            chk_cnt("抢答0STEEL",c_steel, 0);
                             chk_cnt("抢答0ALRED",c_alred, 0);
-                            $display("t=%0t [段3] 帧%0d 抢答(等待开始) BG=%0d WHITE=%0d GOLD=%0d PANEL=%0d",
-                                     $time, valid_cnt, c_bg, c_white, c_gold, c_panel);
+                            chk_cnt("抢答0BARA", c_bara,  0);
+                            chk_cnt("抢答0BARB", c_barb,  0);
+                            $display("t=%0t [段1] 帧%0d 抢答(等待开始) phase=%0d BG=%0d WHITE=%0d GOLD=%0d PANEL=%0d ORNG=%0d",
+                                     $time, valid_cnt, u_scene.phase, c_bg, c_white, c_gold,
+                                     c_panel, c_orng);
                         end
-                        4: begin   // 段4: 抢答 qstate=1 抢答中
-                            ex_qz_white = ink_qr;
+                        2: begin   // 段2: 抢答 qstate=1 抢答中(只叠倒计时)
+                            ex_qz_white = 0;   // 状态字已取消
                             ex_qz_dig   = q_dig_run;
-                            ex_qz_panel = QZ_AREA_PANL - ex_qz_white - ex_qz_dig;
+                            ex_qz_panel = 0;
+                            ex_qz_orng  = 0;
+                            ex_qz_dark  = 0;
+                            // 倒计时数字是金色墨点, 从透传背景里扣除
+                            ex_qz_bg    = TOT_PIX - ex_qz_dig;
                             chk_cnt("抢答1BG",   c_bg,    ex_qz_bg);
                             chk_cnt("抢答1NAVY", c_navy,  ex_qz_navy);
                             chk_cnt("抢答1GOLD", c_gold,  ex_qz_gold + ex_qz_dig);
@@ -596,13 +638,16 @@ module tb_osd_scene;
                             chk_cnt("抢答1PANEL",c_panel, ex_qz_panel);
                             chk_cnt("抢答1ORNG", c_orng,  ex_qz_orng);
                             chk_cnt("抢答1DARK", c_dark,  ex_qz_dark);
-                            $display("t=%0t [段4] 帧%0d 抢答(抢答中) BG=%0d WHITE=%0d GOLD=%0d PANEL=%0d",
+                            $display("t=%0t [段2] 帧%0d 抢答(抢答中) BG=%0d WHITE=%0d GOLD=%0d PANEL=%0d",
                                      $time, valid_cnt, c_bg, c_white, c_gold, c_panel);
                         end
-                        5: begin   // 段5: 抢答 qstate=2 已锁定(3 号)
-                            ex_qz_white = ink_ql + ink_qx;
-                            ex_qz_dig   = 4*num_ink[3];             // winner=2 → '3'(NUM 折叠×4)
-                            ex_qz_panel = QZ_AREA_PANL - ex_qz_white - ex_qz_dig;
+                        3: begin   // 段3: 抢答 qstate=2 已锁定(队伍图, 全透传)
+                            ex_qz_white = 0;   // 队伍图自带队名, OSD 不叠
+                            ex_qz_dig   = 0;   // 锁定后不显示倒计时
+                            ex_qz_panel = 0;
+                            ex_qz_orng  = 0;
+                            ex_qz_dark  = 0;
+                            ex_qz_bg    = TOT_PIX;   // 无倒计时 → 全透传
                             chk_cnt("抢答2BG",   c_bg,    ex_qz_bg);
                             chk_cnt("抢答2NAVY", c_navy,  ex_qz_navy);
                             chk_cnt("抢答2GOLD", c_gold,  ex_qz_gold + ex_qz_dig);
@@ -610,13 +655,16 @@ module tb_osd_scene;
                             chk_cnt("抢答2PANEL",c_panel, ex_qz_panel);
                             chk_cnt("抢答2ORNG", c_orng,  ex_qz_orng);
                             chk_cnt("抢答2DARK", c_dark,  ex_qz_dark);
-                            $display("t=%0t [段5] 帧%0d 抢答(已锁定) BG=%0d WHITE=%0d GOLD=%0d PANEL=%0d",
+                            $display("t=%0t [段3] 帧%0d 抢答(已锁定) BG=%0d WHITE=%0d GOLD=%0d PANEL=%0d",
                                      $time, valid_cnt, c_bg, c_white, c_gold, c_panel);
                         end
-                        6: begin   // 段6: 抢答 qstate=3 时间到
-                            ex_qz_white = ink_qn;
+                        4: begin   // 段4: 抢答 qstate=3 时间到(全透传)
+                            ex_qz_white = 0;
                             ex_qz_dig   = 0;
-                            ex_qz_panel = QZ_AREA_PANL - ex_qz_white;
+                            ex_qz_panel = 0;
+                            ex_qz_orng  = 0;
+                            ex_qz_dark  = 0;
+                            ex_qz_bg    = TOT_PIX;   // 无倒计时 → 全透传
                             chk_cnt("抢答3BG",   c_bg,    ex_qz_bg);
                             chk_cnt("抢答3NAVY", c_navy,  ex_qz_navy);
                             chk_cnt("抢答3GOLD", c_gold,  ex_qz_gold);
@@ -624,42 +672,43 @@ module tb_osd_scene;
                             chk_cnt("抢答3PANEL",c_panel, ex_qz_panel);
                             chk_cnt("抢答3ORNG", c_orng,  ex_qz_orng);
                             chk_cnt("抢答3DARK", c_dark,  ex_qz_dark);
-                            $display("t=%0t [段6] 帧%0d 抢答(时间到) BG=%0d WHITE=%0d PANEL=%0d",
+                            $display("t=%0t [段4] 帧%0d 抢答(时间到) BG=%0d WHITE=%0d PANEL=%0d",
                                      $time, valid_cnt, c_bg, c_white, c_panel);
                         end
-                        7, 8: begin // 段7/8: 应急
+                        5, 6: begin // 段5/6: 应急(两帧; 红条闪烁相位与本断言无关)
+                            exp_af      = foot_sum_af(u_scene.phase);
+                            ex_al_dark  = FOOT_AREA - exp_af;
                             chk_cnt("应急BG",   c_bg,    ex_al_bg);
                             chk_cnt("应急WHITE",c_white, ex_al_white);
                             chk_cnt("应急ALRED",c_alred, ex_al_alred);
                             chk_cnt("应急DARK", c_dark,  ex_al_dark);
                             chk_cnt("应急ORNG", c_orng,  0);
-                            chk_cnt("应急STEEL",c_steel, 0);
                             chk_cnt("应急NAVY", c_navy,  0);
                             chk_cnt("应急PANEL",c_panel, 0);
-                            // 红条(亮相+暗相+警示三角)=33280; 三角墨点>0
-                            if ((c_bara + c_barb + c_gold) !== (AL_AREA_BAR + ink_af)) begin
+                            // 红条区(亮相+暗相+三角金)=33280; 三角墨点 = 金 - 底带金
+                            if ((c_bara + c_barb + c_gold) !== (AL_AREA_BAR + exp_af)) begin
                                 cnt_err = cnt_err + 1;
-                                $display("t=%0t [FAIL] 应急红条区 %0d(亮相%d+暗相%d+金%d-滚动%d) 期望=%0d",
+                                $display("t=%0t [FAIL] 应急红条区 %0d(亮相%d+暗相%d+金%d-底带金%d) 期望=%0d",
                                          $time, c_bara + c_barb + c_gold,
-                                         c_bara, c_barb, c_gold, ink_af,
-                                         AL_AREA_BAR + ink_af);
+                                         c_bara, c_barb, c_gold, exp_af,
+                                         AL_AREA_BAR + exp_af);
                             end
-                            if (c_gold <= ink_af) begin
+                            if (c_gold <= exp_af) begin
                                 cnt_err = cnt_err + 1;
-                                $display("t=%0t [FAIL] 警示三角未绘制(gold=%0d 滚动=%0d)",
-                                         $time, c_gold, ink_af);
+                                $display("t=%0t [FAIL] 警示三角未绘制(gold=%0d 底带金=%0d)",
+                                         $time, c_gold, exp_af);
                             end
-                            $display("t=%0t [段7] 帧%0d 应急 BG=%0d 亮相=%0d 暗相=%0d GOLD(三角+滚动)=%0d WHITE=%0d ALRED=%0d DARK=%0d",
-                                     $time, valid_cnt, c_bg, c_bara, c_barb, c_gold,
+                            $display("t=%0t [段5] 帧%0d 应急 phase=%0d BG=%0d 亮相=%0d 暗相=%0d GOLD(三角+底带)=%0d WHITE=%0d ALRED=%0d DARK=%0d",
+                                     $time, valid_cnt, u_scene.phase, c_bg, c_bara, c_barb, c_gold,
                                      c_white, c_alred, c_dark);
                         end
-                        9: begin   // 段9: 三使能全 0 → 复透传
+                        7: begin   // 段7: 两使能全 0 → 复透传
                             chk_cnt("复旁路BG",   c_bg, TOT_PIX);
                             chk_cnt("复旁路GOLD", c_gold, 0);
                             chk_cnt("复旁路WHITE",c_white,0);
                             chk_cnt("复旁路ALRED",c_alred,0);
                             chk_cnt("复旁路DARK", c_dark, 0);
-                            $display("t=%0t [段9] 帧%0d 复透传 有效=%0d BG=%0d",
+                            $display("t=%0t [段7] 帧%0d 复透传 有效=%0d BG=%0d",
                                      $time, valid_cnt, act_cnt, c_bg);
                         end
                         default: ;
@@ -671,8 +720,7 @@ module tb_osd_scene;
                 c_panel   <= 32'd0;  c_dark  <= 32'd0;
                 c_alred   <= 32'd0;  c_gold  <= 32'd0;
                 c_white   <= 32'd0;  c_orng  <= 32'd0;
-                c_steel   <= 32'd0;  c_bara  <= 32'd0;
-                c_barb    <= 32'd0;
+                c_bara    <= 32'd0;  c_barb  <= 32'd0;
             end
         end
     end
@@ -684,37 +732,30 @@ module tb_osd_scene;
         @(negedge rst);
         calc_expect();                       // ROM 已初始化完毕, 统计期望值
 
-        wait (valid_cnt == 1);               // 窗口0(纯透传)结束 → 进会议
-        meeting_en = 1'b1;
-        run_hh     = 8'h12;
-        run_mm     = 8'h34;
-        run_ss     = 8'h56;
+        wait (valid_cnt == 1);               // 窗口0(纯透传)结束 → 进抢答(等待开始)
+        quiz_en = 1'b1;
+        qstate  = 2'd0;
+        t_tens  = 4'd0;
+        t_ones  = 4'd5;
 
-        wait (valid_cnt == 3);               // 窗口1/2(会议两帧)结束 → 进抢答
-        meeting_en = 1'b0;
-        quiz_en    = 1'b1;
-        qstate     = 2'd0;
-        t_tens     = 4'd0;
-        t_ones     = 4'd5;
+        wait (valid_cnt == 2);               // 抢答中
+        qstate  = 2'd1;
 
-        wait (valid_cnt == 4);               // 抢答中
-        qstate     = 2'd1;
+        wait (valid_cnt == 3);               // 已锁定(3 号)
+        qstate  = 2'd2;
+        winner  = 2'd2;
 
-        wait (valid_cnt == 5);               // 已锁定(3 号)
-        qstate     = 2'd2;
-        winner     = 2'd2;
+        wait (valid_cnt == 4);               // 时间到
+        qstate  = 2'd3;
 
-        wait (valid_cnt == 6);               // 时间到
-        qstate     = 2'd3;
+        wait (valid_cnt == 5);               // 进应急
+        quiz_en  = 1'b0;
+        alarm_en = 1'b1;
 
-        wait (valid_cnt == 7);               // 进应急
-        quiz_en    = 1'b0;
-        alarm_en   = 1'b1;
+        wait (valid_cnt == 7);               // 退出应急 → 复透传
+        alarm_en = 1'b0;
 
-        wait (valid_cnt == 9);               // 退出应急 → 复透传
-        alarm_en   = 1'b0;
-
-        wait (valid_cnt == 10);              // 复透传帧结束
+        wait (valid_cnt == 8);               // 复透传帧结束
         #1000;
         if (cnt_err == 0 && sp_err == 0)
             $display("=== osd_scene 仿真结束: 全部通过(结算 %0d 帧) ===", valid_cnt);
@@ -724,7 +765,7 @@ module tb_osd_scene;
         $finish;
     end
 
-    // 超时兜底(约 16.8ms/帧; 10 有效帧 + 空窗 < 400ms)
+    // 超时兜底(约 16.8ms/帧; 8 有效帧 + 空窗 < 400ms)
     initial begin
         #400000000 $finish;
     end

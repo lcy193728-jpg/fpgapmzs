@@ -33,16 +33,18 @@ module tb_ui_key_ctrl;
 
     reg         clk;
     reg         rst;
-    reg         key1, key2, key3;
+    reg         key1, key2, key3, key4;   // ★key4: 2026-10-09e 起 迎新模式0 切自动/手动
     reg  [7:0]  img_no;
     reg         scene_chg;
     reg         alarm_scene;         // 1=应急场景
+    reg  [1:0]  scene_id;            // ★2026-10-09c: 场景号(0迎新 1预留 2抢答 3应急)
 
     wire [2:0]  mode;
     wire [1:0]  alarm_type;          // 应急告警类型(模式0 可调)
     wire [3:0]  bri_level;
     wire [3:0]  vol_level;
     wire [3:0]  res_level;
+    wire [3:0]  con_level;
     wire [7:0]  period_sec;
     wire [31:0] period_cycles;
     wire        disp_hold;
@@ -58,6 +60,7 @@ module tb_ui_key_ctrl;
     reg         next_seen, prev_seen, rchg_seen;
     // 音量段前后对照(证明模式5 只动音量, 不碰亮度/缩放)
     reg  [3:0]  bri_save, res_save;
+    reg  [3:0]  con_save;            // ★2026-10-09e: 对比度档基线(应急段前后对照)
 
     ui_key_ctrl dut (
         .clk        (clk),
@@ -65,16 +68,18 @@ module tb_ui_key_ctrl;
         .key1       (key1),
         .key2       (key2),
         .key3       (key3),
-        .key4       (1'b1),            // 会议重新计时键(本 TB 不按: 恒释放/高)
+        .key4       (key4),            // ★2026-10-09e: 迎新模式0 自动↔手动 切换
         .control_lock(1'b0),           // 不接管: 全局UI参数正常生效
         .alarm_scene(alarm_scene),     // 应急场景标志(第10段测试)
         .alarm_type (alarm_type),      // 应急告警类型输出
         .img_no     (img_no),
         .scene_chg  (scene_chg),
+        .scene_id   (scene_id),
         .mode       (mode),
         .bri_level  (bri_level),
         .vol_level  (vol_level),
         .res_level  (res_level),
+        .con_level  (con_level),
         .period_sec (period_sec),
         .period_cycles(period_cycles),
         .disp_hold  (disp_hold),
@@ -90,6 +95,8 @@ module tb_ui_key_ctrl;
     defparam dut.u_k1.DEB_MAX = 20'd100;
     defparam dut.u_k2.DEB_MAX = 20'd100;
     defparam dut.u_k3.DEB_MAX = 20'd100;
+    defparam dut.u_k4.DEB_MAX = 20'd100;   // ★2026-10-09e: 曾漏配 → key4 消抖 10ms
+                                           //   远超 press4 的 settle(150) → k4_p 永不触发
     // 缩短参数强显保持(仅仿真; 上板用默认 2s = 200_000_000 拍)
     defparam dut.DISP_HOLD_CYCLES = 32'd3000;
 
@@ -137,6 +144,7 @@ module tb_ui_key_ctrl;
     task press1; begin key1 = 1'b0; settle(150); key1 = 1'b1; settle(150); end endtask
     task press2; begin key2 = 1'b0; settle(150); key2 = 1'b1; settle(150); end endtask
     task press3; begin key3 = 1'b0; settle(150); key3 = 1'b1; settle(150); end endtask
+    task press4; begin key4 = 1'b0; settle(150); key4 = 1'b1; settle(150); end endtask
 
     initial clk = 1'b0;
     always #(CLK_PERIOD/2) clk = ~clk;
@@ -149,10 +157,11 @@ module tb_ui_key_ctrl;
 
     initial begin
         rst       = 1'b1;
-        key1 = 1'b1; key2 = 1'b1; key3 = 1'b1;   // 全释放(高)
+        key1 = 1'b1; key2 = 1'b1; key3 = 1'b1; key4 = 1'b1;  // 全释放(高)
         img_no    = 8'd0;
         scene_chg = 1'b0;
         alarm_scene = 1'b0;
+        scene_id  = 2'd0;        // ★默认按"迎新场景"跑既有用例(迎新 3 档 = 周期档)
         repeat (5) @(posedge clk);
         rst = 1'b0;
         repeat (20) @(posedge clk);
@@ -161,6 +170,7 @@ module tb_ui_key_ctrl;
         check(mode == 3'd0 && bri_level == 4'd8 && vol_level == 4'd8 &&
               res_level == 4'd4 && pic_manual == 1'b0 && pic_param == 8'd0,
               "上电默认: 模式0图片/亮度8/音量8/缩放4(100%)/自动轮播");
+        check(con_level == 4'd8, "上电默认: 对比度档 = 8(×1.0, 旁路)");
         check(period_sec == 8'd3 && period_cycles == 32'd300_000_000,
               "上电默认: 轮播周期档=3s(=300_000_000 周期, 与原固定间隔一致)");
         check(disp_hold == 1'b0, "上电默认: 无参数强显保持");
@@ -225,10 +235,13 @@ module tb_ui_key_ctrl;
         check(res_level == 4'd4 && bri_level == 4'd8,
               "模式2 回到缩放 4(100%) / 亮度未被改动");
 
-        //-------- 5. 模式0: 切图(KEY2/KEY3 即上一张/下一张, 无需独立切换键) ----
+        //-------- 5. 模式0: 切图(KEY2/KEY3=上/下一张; ★KEY4=自动↔手动) ----
+        //   ★2026-10-09e 用户指定: "在迎新场景模式0下, 通过 KEY4 控制轮播还是
+        //     手动, KEY2/KEY3 只负责上下张调整" —— 故 KEY2/KEY3 不再顺带改变
+        //     pic_manual, 该状态只由 KEY4 切换。
         press1;                             // 2->3(周期)
         check(mode == 2'd3, "KEY1 -> 模式3 周期(经过周期档)");
-        repeat (3) press1;                  // 3->4->5->0(六档循环: 含会议/音量)
+        repeat (3) press1;                  // 3->4->5->0(迎新六档循环: 周期/对比度/音量)
         check(mode == 2'd0, "KEY1 -> 模式0 图片/切图");
         check(pic_manual == 1'b0 && pic_param == 8'd0,
               "刚进模式0 -> 默认自动轮播(上电/切场景/切模式回来一律如此)");
@@ -236,33 +249,51 @@ module tb_ui_key_ctrl;
         img_no = 8'd1; settle(5);           // 假卡首图已显示
         clear_flags; press3;
         check(next_seen, "模式0 KEY3 -> 产生下一张脉冲");
-        check(pic_manual == 1'b1 && pic_param == 8'd1,
-              "模式0 KEY3 -> 顺带转入手动单张(参数=当前图1, 停自动计时)");
+        check(pic_manual == 1'b0 && pic_param == 8'd0,
+              "★模式0 KEY3 -> 仅切图, **不再**顺带转手动(手动/自动只由 KEY4 控)");
         check(~prev_seen, "模式0 KEY3 不产生上一张脉冲");
 
         img_no = 8'd2; settle(5);           // 假卡进到第 2 张
         clear_flags; press2;
         check(prev_seen, "模式0 第2张 KEY2 -> 产生上一张脉冲");
-        check(pic_manual == 1'b1 && pic_param == 8'd2,
-              "上一张 -> 仍手动 / 参数跟随图序号 2");
+        check(pic_manual == 1'b0 && pic_param == 8'd0,
+              "★模式0 KEY2 -> 仅切图, 状态仍为自动");
 
         img_no = 8'd1; settle(5);           // 回到第 1 张
         clear_flags; press2;
         check(~prev_seen, "模式0 首张 KEY2 -> 不发上一张脉冲");
-        check(pic_manual == 1'b0 && pic_param == 8'd0,
-              "模式0 首张 KEY2 -> 改为回到自动轮播(与上一张共用一键)");
+        check(pic_manual == 1'b0,
+              "模式0 首张 KEY2 -> 状态不变(仍自动; 无旧版那种退自动副作用)");
 
-        clear_flags; press3;                // 再按 KEY3 又转手动
-        check(next_seen && pic_manual == 1'b1, "再按 KEY3 -> 再次转手动并切下一张");
+        // ---- ★KEY4: 自动 ↔ 手动 切换(仅迎新场景模式0) ----
+        clear_flags; press4;
+        check(pic_manual == 1'b1, "★模式0 KEY4 -> 转手动单张");
+        img_no = 8'd3; settle(5);
+        check(pic_param == 8'd3, "手动单张 -> 参数显示当前图序号 3");
+        clear_flags; press3;                // 手动状态下按 KEY3 仍只切图
+        check(next_seen && pic_manual == 1'b1,
+              "手动状态下 KEY3 -> 仍只切下一张, 保持手动");
+        clear_flags; press4;
+        check(pic_manual == 1'b0 && pic_param == 8'd0,
+              "★模式0 再按 KEY4 -> 切回自动轮播(参数复位为 0)");
+
+        // KEY4 在非模式0 无效(如模式1 亮度)
+        press1;                             // 0->1
+        clear_flags; press4;
+        check(pic_manual == 1'b0, "模式1(亮度) 按 KEY4 -> 无任何动作");
+        repeat (5) press1;                  // 1->2->3->4->5->0 (共 5 次)
+        check(mode == 2'd0, "KEY1×5 -> 回到模式0(准备后续用例)");
 
         // 场景切换脉冲 -> 强制回自动
+        press4;                             // 先切手动
+        check(pic_manual == 1'b1, "模式0 KEY4 -> 手动(场景切换前)");
         scene_chg = 1'b1; @(posedge clk); scene_chg = 1'b0; settle(5);
         check(pic_manual == 1'b0 && pic_param == 8'd0,
               "scene_chg -> 图片参数复位为自动轮播");
 
         // 离开模式0(去亮度) -> 自动回自动轮播(不把底层图冻住)
-        press3;                             // 先切手动
-        check(pic_manual == 1'b1, "模式0 KEY3 -> 手动(离开模式0前)");
+        press4;                             // 先切手动
+        check(pic_manual == 1'b1, "模式0 KEY4 -> 手动(离开模式0前)");
         press1;                             // 模式0->1
         check(mode == 2'd1 && pic_manual == 1'b0,
               "KEY1 离开模式0 -> 自动回自动轮播(不冻图)");
@@ -352,6 +383,7 @@ module tb_ui_key_ctrl;
         //   当前 mode=2(缩放) → KEY1×3 到模式5: 2→3→4→5
         bri_save = bri_level;               // 记下进入前的亮度/缩放(应为 10 / 6)
         res_save = res_level;
+        con_save = con_level;               // ★对比度基线(应急段前后对照)
         press1;                             // 2->3
         press1;                             // 3->4
         check(mode == 3'd4, "KEY1 -> 模式4 会议计时");
@@ -382,11 +414,13 @@ module tb_ui_key_ctrl;
         check(mode == 3'd0, "KEY1 在模式5 -> 模式0(循环回绕)");
 
         //-------- 10. 应急场景(2026-10-01): 模式0 = 四类告警环绕切换 --------
-        //   按键语义与迎新场景完全一致(KEY1 调模式 / KEY2,3 调当前模式参数),
-        //   唯一区别: 模式0 不再切图, 改为 alarm_type 四类环绕 ——
-        //     KEY3 = 下一类(0→1→2→3→0), KEY2 = 上一类(0→3→2→1→0)。
+        //   按键语义与迎新场景基本一致(KEY1 调模式 / KEY2,3 调当前模式参数),
+        //   区别: ① 模式0 不再切图, 改为 alarm_type 四类环绕 ——
+        //           KEY3 = 下一类(0→1→2→3→0), KEY2 = 上一类(0→3→2→1→0)。
+        //         ★② 2026-10-09f: 应急场景**没有缩放、没有轮播周期档**, 整体前移 ——
+        //           KEY1 序列 = 0→1→2(对比度)→3(音量)→0, **跳过 4/5 档**。
         check(mode == 3'd0, "应急前状态: 处于模式0(承接上一段)");
-        alarm_scene = 1'b1; settle(5);
+        alarm_scene = 1'b1; scene_id = 2'd3; settle(5);
         check(alarm_type == 2'd0, "进入应急 -> 告警类型第0类(火灾, 默认)");
 
         clear_flags; press3;
@@ -401,20 +435,89 @@ module tb_ui_key_ctrl;
         press2; check(alarm_type == 2'd1, "应急模式0 KEY2 -> 告警类型 2→1");
         press2; check(alarm_type == 2'd0, "应急模式0 KEY2 -> 告警类型 1→0");
 
-        // 应急场景其余模式与迎新场景完全一致(以亮度为例)
-        press1;
-        check(mode == 3'd1, "应急场景 KEY1 -> 模式1 亮度(与迎新场景一致)");
+        //---- ★应急场景 KEY1 序列(2026-10-09f): 0→1→2→3→0, 无缩放/周期/4/5 档 ----
+        press1; check(mode == 3'd1, "应急 KEY1 -> 模式1 亮度");
         clear_flags; press3;
         check(bri_level == bri_save + 4'd1 && ~next_seen,
               "应急场景 模式1 KEY3 -> 只调亮度, 不切图");
-        repeat (5) press1;                  // 1→2→3→4→5→0
-        check(mode == 3'd0, "应急场景 KEY1×5 -> 回到模式0");
+        press1; check(mode == 3'd2, "★应急 KEY1 -> 模式2 = 对比度(缩放档已删)");
+        clear_flags; press3;
+        check(con_level == con_save + 4'd1 && ~next_seen,
+              "★应急场景 模式2 KEY3 -> 调对比度(该档已不是缩放)");
+        check(period_sec == 8'd3, "★应急场景 模式2 -> 周期秒数不变(无周期档)");
+        press2; check(con_level == con_save, "应急场景 模式2 KEY2 -> 对比度回退");
+        press1; check(mode == 3'd3, "★应急 KEY1 -> 模式3 = 音量(整体前移)");
+        clear_flags; press3;
+        check(vol_level == 4'd9 && disp_sel == 3'd3 && disp_hold == 1'b1,
+              "★应急场景 模式3 KEY3 -> 调音量(档位身份=模式3)");
+        press2; check(vol_level == 4'd8, "应急场景 模式3 KEY2 -> 音量回退");
+        press1; check(mode == 3'd0,
+              "★应急 KEY1 在模式3 -> 直接回模式0(跳过 4/5 档)");
 
-        // 退出应急: 模式0 恢复为"切图"
+        // 退出应急: 模式0 恢复为"切图"(KEY3 仅切图, 不再顺带转手动)
         alarm_scene = 1'b0; settle(5);
         clear_flags; press3;
-        check(next_seen && pic_manual == 1'b1,
-              "退出应急 -> 模式0 恢复切图(KEY3 产生下一张脉冲并转手动)");
+        check(next_seen && pic_manual == 1'b0,
+              "退出应急 -> 模式0 恢复切图(KEY3 产生下一张脉冲, 但不改自动/手动)");
+
+        //-------- 11. ★对比度档的场景重映射(2026-10-09c 新增; 09e/09f 调整) --------
+        //   需求: 迎新 4 / 抢答 3 / ★应急 2 = 对比度; 模式号(数码管第5位)不变。
+        //   应急 3 = 音量(因该场景无缩放/周期而整体前移, 见第 10 段)。
+        //   (a) 迎新场景: 模式 4 = 对比度, 模式 3 = 周期(上面的第 7 段已覆盖)
+        scene_id = 2'd0; alarm_scene = 1'b0; settle(5);
+        repeat (6) press1;                  // 0→1→2→3→4 (任意起点, 循环一圈回 0 再进 4)
+        // 直接从当前状态推进到 mode==4
+        while (mode != 3'd4) press1;
+        check(mode == 3'd4, "迎新场景 KEY1 -> 模式4(对应对比度)");
+        check(period_sec == 8'd3,
+              "迎新场景 模式4 -> 周期秒数不受 KEY2/KEY3 影响(该档已是对比度)");
+        clear_flags; press3;
+        check(con_level == 4'd9 && ~next_seen,
+              "迎新场景 模式4 KEY3 -> 对比度 8→9(且不切图/不调周期)");
+        press2; check(con_level == 4'd8, "迎新场景 模式4 KEY2 -> 对比度 9→8");
+
+        //   (b) 抢答场景: 模式 3 = 对比度(原轮播周期档); 模式 4 = 计分(不动 bri/con)
+        scene_id = 2'd2; settle(5);
+        while (mode != 3'd3) press1;
+        check(mode == 3'd3, "抢答场景 KEY1 -> 模式3(对应对比度)");
+        press3; check(con_level == 4'd9,
+              "抢答场景 模式3 KEY3 -> 对比度 8→9(抢答场景无轮播周期)");
+        press2; check(con_level == 4'd8, "抢答场景 模式3 KEY2 -> 对比度 9→8");
+        press3; press3;                     // 8→9→10 建立可观测差
+        check(con_level == 4'd10, "抢答场景 模式3 连按 -> 对比度累加到 10");
+
+        //   (c) 抢答场景 模式4 = 计分档: KEY2/KEY3 不得改对比度
+        press1; check(mode == 3'd4, "抢答场景 KEY1 -> 模式4(计分档)");
+        clear_flags; press3;
+        check(con_level == 4'd10,
+              "抢答场景 模式4(计分档) KEY3 -> 对比度不变(仍是 10)");
+        press2; check(con_level == 4'd10,
+              "抢答场景 模式4(计分档) KEY2 -> 对比度不变(仍是 10)");
+
+        //   (d) 对比度档边界钳位(与亮度/音量同构: 到端不再变)
+        scene_id = 2'd0; settle(5);
+        while (mode != 3'd4) press1;
+        while (con_level != 4'd15) press3;   // 顶到 15
+        press3; check(con_level == 4'd15, "对比度档 到顶钳位(15 不再加)");
+        while (con_level != 4'd0) press2;
+        press2; check(con_level == 4'd0, "对比度档 到底钳位(0 不再减)");
+        //   还原到默认 8, 免得污染后续用例
+        repeat (8) press3; check(con_level == 4'd8, "对比度档 复位到 8");
+
+        //   (e) ★应急场景(2026-10-09f): 2 = 对比度, 3 = 音量, **无 4/5 档**
+        scene_id = 2'd3; settle(5);
+        while (mode != 3'd2) press1;
+        check(mode == 3'd2, "★应急场景 KEY1 -> 模式2(对应对比度)");
+        clear_flags; press3;
+        check(con_level == 4'd9, "★应急场景 模式2 KEY3 -> 对比度 8→9");
+        press2; check(con_level == 4'd8, "★应急场景 模式2 KEY2 -> 对比度 9→8");
+        press1; check(mode == 3'd3, "★应急场景 KEY1 -> 模式3(对应音量)");
+        clear_flags; press3;
+        check(vol_level == 4'd9, "★应急场景 模式3 KEY3 -> 音量 8→9");
+        press2; check(vol_level == 4'd8, "★应急场景 模式3 KEY2 -> 音量 9→8");
+        press1; check(mode == 3'd0, "★应急场景 模式3 -> 回模式0(跳过 4/5 档)");
+
+        scene_id = 2'd0; alarm_scene = 1'b0; settle(5);
 
         $display("=== ui_key_ctrl 仿真结束,失败数=%0d ===", fail_cnt);
         if (fail_cnt == 0) $display("=== [ALL PASS] ===");

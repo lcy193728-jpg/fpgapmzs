@@ -16,6 +16,9 @@
 //   3. 冻结(slide_en=0, 应急抢占)与手动切图(key_trigger)语义保持不变。
 //   4. 新增 key_prev(手动"上一张")：分区内按序号从起点重扫, 跳过前面
 //      的图直到目标序号, 支持图片回看; 同时导出 img_no(当前图序号)。
+//   4b. 新增 key_jump/jump_idx(绝对跳图)：与 key_prev 同用"按序号目标扫描"
+//      机制, 目标为绝对 0 基索引。用于抢答场景锁定后按 winner 直接定位到
+//      对应队伍图(QUIZ 分区第 winner+2 张), 无需重新查表、切换即时。
 //   5. 批次4(小鹅通第三讲 §3.2 period_cfg 接口)：轮播间隔由固定 parameter
 //      提升为**运行时输入 slide_interval**(ui_key_ctrl 周期档 2/3/5/10/30 s),
 //      带下限校验(非法值忽略, 保持上一次有效值); 复位默认 = SLIDE_INTERVAL
@@ -66,14 +69,20 @@ module bmp_read_auto #(
     //   ※ 2026-10-02 换卡(老 F: exFAT → 新 G: FAT32): 原默认 126000/400000/5
     //     是老卡地址, 新卡该区间实测【无任何 BMP】, 而顶层 zone_load 只在
     //     scene_change_pulse(latch_sw 变化)时才发 → 上电菜单态没有脉冲,
-    //     底层会按老地址空扫 → 上电花屏。这里改为新卡菜单区
-    //     (= 顶层 Z_MENU_*: 15936/25352/6, 即第 5~10 张 wel 素材)。
+    //     底层会按老地址空扫 → 上电花屏。
+    //   ※ 2026-10-07 整卡重排: 改为新布局迎新区实测起点 8512/22592/6。
     //   ⚠ 2026-10-02 修正: 上面这些值必须是【卡物理 LBA】= 卷内扇区 + 64
     //     (本卡 G: 分区偏移仅 64 扇区, 见 top_final.v 口径说明)。曾误用
     //     find_bmp.py 的默认 --base 2048 输出(+2048 口径), 使所有 Z_* 偏大
     //     1984 扇区 → 上电按老地址扫不到本图、跳过错位后的前几张。
-    parameter [31:0] ZONE_START_SECTOR = 32'd15936,      // 复位默认分区起点(菜单区=迎新区)
-    parameter [31:0] ZONE_WRAP_SECTOR  = 32'd25352,      // 复位默认分区上限(回卷,=末张起点+8)
+    //   ★ 2026-10-07 卡侧整卡重排后按【实测落点】更新(原 15936/25352/6):
+    //     卡上 11 张图由 FAT32 顺序分配, 物理完全连续 →
+    //       WEL1..6 = 8512..22591 (6 张, 320/640/1024 混排)
+    //     这三个参数只在"复位/从未收到 zone_load"时使用;
+    //     正常流程由 fat32_lookup 查表下发(见 fat32_lookup.v 的 FB_* 同值)。
+    //     ⚠ 换卡/重排素材后必须重跑 tools/find_bmp.py 并同步本组 + FB_* 组。
+    parameter [31:0] ZONE_START_SECTOR = 32'd8512,       // 复位默认分区起点(菜单区=迎新区)
+    parameter [31:0] ZONE_WRAP_SECTOR  = 32'd22592,      // 复位默认分区上限(回卷,=下一分区首张起点)
     parameter [31:0] ZONE_MAX_IMAGES   = 32'd6,          // 复位默认分区图片张数
     // ---- 批次3 容错参数(小鹅通第五讲 §2.4/§2.6 参数集中化) ----
     parameter [31:0] BMP_PIXEL_BYTES   = 32'd921600,     // 640×480 基准像素字节数(仿真可用小子集覆盖)
@@ -102,6 +111,15 @@ module bmp_read_auto #(
     input               sd_init_done,              // SD 卡初始化完成标志
     input               key_trigger,               // 按键手动切图/下一张(单周期高脉冲, 与 clk 同步)
     input               key_prev,                  // 按键手动"上一张"(单周期高脉冲, 与 clk 同步)
+    // key_jump: 绝对跳图(单周期高脉冲, 与 clk 同步)。与 key_prev 走同一套
+    //   "按序号目标扫描"机制(scan_tgt_en/scan_tgt/pass_cnt), 区别是目标序号
+    //   为绝对索引而非相对当前。用途: 抢答场景由 quiz_scene_ctrl 按流程状态
+    //   直接定位到 QUIZ 分区内第 (jump_idx+1) 张(jump_idx 为 0 基索引):
+    //   题目 q_idx(0..2) / 队伍 winner+3(3..6) / 结束页 7 —— 见 quiz_scene_ctrl
+    //   头部布局表。仅在 S_HOLD 边界被采纳(与 key_prev/reload 同级优先),
+    //   途中到达会等到当前帧读完, 不打断帧写。
+    input               key_jump,                  // 绝对跳图请求(单周期高脉冲)
+    input       [3:0]   jump_idx,                  // 目标图序号(0 基; 0=第1张)
     input               slide_en,                  // 轮播使能(应急=0 冻结当前画面, 保留不清屏)
     // ---- 批次4 运行时可配轮播间隔(sd_card_clk 同域, 单周期脉冲不需要) ----
     //   由 ui_key_ctrl 的"周期档"给出(2/3/5/10/30 s 对应周期数);
@@ -1174,6 +1192,26 @@ module bmp_read_auto #(
                         else begin
                             scan_tgt_en <= 1'b1;
                             scan_tgt    <= img_cnt - 32'd1;
+                        end
+                        state <= S_FIND;
+                    end
+                    else if (key_jump) begin
+                        // ---- 绝对跳图: 目标序号 = jump_idx(0 基) ----
+                        //   复用"按序号目标扫描": 从分区起点重扫, 跳过前 jump_idx
+                        //   张命中图, 落在第 (jump_idx+1) 张上(见 S_FIND 命中处理)。
+                        //   与 key_prev 同机制, 只是目标为绝对索引。
+                        //   越界保护: jump_idx >= z_max 时按 z_max-1 处理(末张),
+                        //   避免扫描空转; z_max>=1 时 z_max-1 合法。
+                        sd_sec_read_addr <= z_start;
+                        img_cnt          <= 32'd0;
+                        pass_cnt         <= 32'd0;
+                        if (z_max <= 32'd1) begin
+                            scan_tgt_en <= 1'b0;      // 只有一张: 直接命中即读
+                        end
+                        else begin
+                            scan_tgt_en <= 1'b1;
+                            scan_tgt    <= ({28'd0, jump_idx} >= z_max) ?
+                                           (z_max - 32'd1) : {28'd0, jump_idx};
                         end
                         state <= S_FIND;
                     end

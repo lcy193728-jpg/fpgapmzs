@@ -7,7 +7,7 @@
 //   导致 HDL-8007 black box。改用 include 后模块定义跟随 top.v 必然
 //   参与综合, 不再依赖 .al 维护。※ 请勿再通过 GUI "Add to Project"
 //   重复添加这些 .v(会造成模块重复定义); 若工程树中已存在请移除。
-//   (osd_scene/quiz_ctrl 为阶段2d 新增的会议/抢答/应急场景层, 同法并入)
+//   (osd_scene/quiz_ctrl 为阶段2d 新增的场景层, 同法并入)
 //   (bmp_scale 为双线性插值缩放引擎, 串在 sd_card_bmp→frame_read_write 写通路)
 //====================================================================
 `include "../../src/osd_welcome.v"
@@ -15,19 +15,17 @@
 `include "../../src/ui_key_ctrl.v"
 `include "../../src/osd_scene.v"
 `include "../../src/quiz_ctrl.v"
+`include "../../src/quiz_scene_ctrl.v"
 `include "../../src/bmp_scale.v"
 `include "../../src/reset_sync.v"
 `include "../../src/sync_2ff.v"
 `include "../../src/emergency_alarm_ctrl.v"
 `include "../../src/emergency_font_rom.v"
 `include "../../src/emergency_multi_overlay.v"
-// 会议议程控制与计时链(2026-09-21 从 fpgapmzs main ee717b2 移植):
-//   meeting_osd 自带 meeting_fmt(串行 BCD 格式化)与 meeting_glyph_rom
-//   (4096×16 会议专用字库)并以裸文件名 include; meeting_sd_rd 由
-//   sd_card_bmp.v 内部 include 并入(定义与例化同一编译单元)。
-`include "../../src/meeting_cfg.v"
-`include "../../src/meeting_ctrl.v"
-`include "../../src/meeting_osd.v"
+// 会议场景已于 2026-10-07 整体移除(用户决策: 丢会议主攻抢答场景):
+//   删除 meeting_cfg/ctrl/fmt/osd/glyph_rom/sd_rd 六个文件与 meeting_text.vh,
+//   释放 ≈1764 LUT / ≈863 REG / 4 块 BRAM9K / 2 块 BRAM32K。
+//   拨码位置 2(SW2, 原会议)保留不重编号 → 走菜单画面(见下方 case)。
 `include "../rtl/audio_feature_events.v"
 `include "../rtl/scene_audio_final.v"
 `include "../rtl/audio_viz_overlay.v"
@@ -40,15 +38,16 @@ module top(
 	input                       key1,       //KEY1(A2)：场景内功能模式循环 0图片/切图→1亮度→2分辨率
 	input                       key2,       //KEY2(B2)：当前模式参数 减
 	input                       key3,       //KEY3(B1)：当前模式参数 加
-	input                       key4,       //KEY4(C1)：预留(已释放——原"自动/手动切换"并入模式0)
+	input                       key4,       //KEY4(C1)：★迎新模式0 = 自动轮播↔手动单张 切换
 	input [3:0]                 sw,         //板载拨码直接选场景: sw[0]=SW1场景0迎新
-                                            //  sw[1]=SW2场景1会议 sw[2]=SW3场景2抢答
+                                            //  sw[1]=SW2场景1预留(原会议, v11 起走菜单画面)
+                                            //  sw[2]=SW3场景2抢答
                                             //  sw[3]=SW4场景3应急(应急最高 + 无应急时先触发先锁定)
                                             //  (引脚/极性见 top.adc; 四个全关=首页菜单态)
 	// ---- 抢答台(2×40Pin 外扩口, 上拉/按下低; 引脚见 top.adc) ----
 	input [3:0]                 quiz_btn,   //4 路选手抢答键(屏显 1~4 号)
-	input                       quiz_start, //开始/下一轮(抢答中再按=重开本轮计时)
-	input                       quiz_reset, //复位/清除(回到"等待开始")
+	input                       quiz_start, //★【白色按钮】开始抢答(仅"待开始"态有效)
+	input                       quiz_reset, //★【黑色按钮】播报下一题(仅"已锁定/超时"态有效)
 	output [7:0]                seg_sel,    //8 位数码管位选
 	output [7:0]                seg_data,	
     
@@ -104,61 +103,43 @@ parameter ADDR_BITS             = 21  ;            //external memory user interf
 parameter BUSRT_BITS            = 10  ;            //external memory user interface burst width
 
 //--------------------------------------------------------------
-// 场景素材分区表(卡内扇区区间): 四个场景 = 四个互不相同的独立分区,
-// 拨码切场景时按此表查得分区 → zone_load 重载 bmp 扫描, 各播各自区域的图.
-// ⚠ 扇区口径 = 【物理扇区】: FPGA 的 CMD17 地址原样下发(sd_card_sec_read_write.v
-//   L228 cmd <= {8'd17,sec_addr,8'hff}), 不含分区偏移。
-//   本卡(新 TF 卡 G:) = MBR + FAT32, 分区物理偏移仅 64 扇区; 而 tools/find_bmp.py
-//   读 \\.\G: 拿到的是【卷内扇区】(= 物理 - 64)。用 --base 64 让工具直接输出物理值。
-//   校准锚点: 会议配置 "MTG1" 固定在物理扇区 200000, 与 mtg_start_sector 一致。
+// 场景素材定位: 【FAT32 文件名寻址】(2026-10-07 v11 改造)
 //
-// 数据来源: tools/find_bmp.py --drive G --start 2048 --base 64
-//   卡上 10 张 BMP 全部 8 扇区对齐; 物理顺序(find_bmp.py --drive G --base 64 实测):
-//     第1张 8512  = 1_meet.bmp    (640×480)
-//     第2张 10368 = 2_quiz.bmp    (640×480)
-//     第3张 12224 = 3_extra.bmp   (640×480, 备用未入区)
-//     第4张 14080 = 4_extra.bmp   (640×480, 备用未入区)
-//     第5张 15936 = w1_320a.bmp   (320×240)
-//     第6张 16448 = w2_640a.bmp   (640×480)
-//     第7张 18304 = w3_1024a.bmp  (1024×768)
-//     第8张 22976 = w4_320b.bmp   (320×240)
-//     第9张 23488 = w5_640b.bmp   (640×480)
-//     第10张 25344= w6_1024b.bmp  (1024×768)
-//   分区划分:
-//     迎新区/菜单区 = 第5~10张(320/640/1024 各2张; 分辨率变化时右上角自动弹字幕)
-//     会议区 = 第1张 | 抢答区 = 第2张 | 应急区 = 复用抢答区底图
-//   ⚠ 换卡/重排素材后必须重跑该工具并同步本表(扇区值会变), 否则扫不到图.
-//   ★2026-10-02 口径修正(关键根因): 旧表误用 find_bmp.py 的默认 --base 2048
-//     (即假设分区 1MB 对齐), 而本卡实际分区偏移仅 64 扇区 → 全部 Z_* 偏大
-//     1984 扇区。板子按旧地址扫, 迎新区会跳过错位后的前两张(w1/w2), 上电菜单态
-//     即显示错图。现按 --base 64 重算(各值 = 卷内扇区 + 64), 与卡实测逐张吻合。
+//   改造前 = 卡内扇区区间硬编码(四组 Z_* 常量)。缺点: 换卡/重排素材/
+//     重新格式化都必须重跑 tools/find_bmp.py 重算扇区并重建位流;
+//     --base 口径错一次(本卡隐藏扇区 64 而非 2048)就整体花屏。
+//
+//   改造后 = 开机由 fat32_lookup 读卡上的 MBR → BPB → 根目录, 按【文件名
+//     前缀】把场景素材的物理位置查出来, 缓存成段表; 场景切换只是换一张
+//     段表, 不再有任何扇区常量。换素材只需往卡根目录拷文件:
+//       迎新区  WEL1.BMP … WEL8.BMP   (张数动态, 扫到几张算几张)
+//       抢答区  QUIZ1.BMP … QUIZ8.BMP
+//       应急区  ALM1.BMP  … ALM8.BMP
+//     菜单(拨码全关)与预留位(拨码 SW2)复用迎新区素材作底图。
+//
+//   ⚠ 约束(8.3 短名, FAT32 长名不支持): 文件名必须【大写 8.3 短名】,
+//     即 Windows 拷贝时不能生成 WEL1~1.BMP 这类自动编号名。
+//   ⚠ BMP 规格不变: 640×480(或 320×240 / 1024×768)×24bit、非压缩、
+//     正高度、放根目录。多分辨率轮播能力原样保留。
+//   ※ bmp_read_auto 一行未改: 它仍只认 zone_start/zone_wrap/zone_max_img
+//     三个数, 只是这三个数从"RTL 常量"改成了"FAT32 查表结果"。
 //--------------------------------------------------------------
-localparam [31:0] Z_MENU_START  = 32'd15936;    // 菜单区(=迎新区; 菜单全屏 OSD 自绘)
-localparam [31:0] Z_MENU_WRAP   = 32'd25352;    // 菜单区扫描上限(=末张起点 + 8)
-localparam [31:0] Z_MENU_IMGS   = 32'd6;        // 菜单区张数
-localparam [31:0] Z_WEL_START   = 32'd15936;    // 迎新区起点(第 5 张 w1_320a)
-localparam [31:0] Z_WEL_WRAP    = 32'd25352;    // 迎新区扫描上限(=末张起点 + 8)
-localparam [31:0] Z_WEL_IMGS    = 32'd6;        // 迎新区张数(320a,640a,1024a,320b,640b,1024b)
-localparam [31:0] Z_MEET_START  = 32'd8512;     // 会议区起点(1_meet.bmp)
-localparam [31:0] Z_MEET_WRAP   = 32'd10368;    // 会议区扫描上限(=下一区起点)
-localparam [31:0] Z_MEET_IMGS   = 32'd1;        // 会议区张数
-localparam [31:0] Z_QUIZ_START  = 32'd10368;    // 抢答区起点(2_quiz.bmp)
-localparam [31:0] Z_QUIZ_WRAP   = 32'd12224;    // 抢答区扫描上限(=下一张 3_extra)
-localparam [31:0] Z_QUIZ_IMGS   = 32'd1;        // 抢答区张数
-localparam [31:0] Z_ALARM_START = 32'd10368;    // 应急区: 复用抢答区底图(无专属素材)
-localparam [31:0] Z_ALARM_WRAP  = 32'd12224;    // 应急区扫描上限(=抢答区上限)
-localparam [31:0] Z_ALARM_IMGS  = 32'd1;        // 应急区张数(=抢答区)
+// 场景选择码(交给 sd_card_bmp 内的 FAT32 寻址层):
+//   0=菜单 / 1=迎新 / 2=预留(原会议, 走菜单画面) / 3=抢答 / 4=应急
+//   —— 就是 latch_sw, 下面直接透传, 不再有任何扇区常量。
 
 //--------------------------------------------------------------
 // TF 卡背景音乐素材区(裸 PCM: 48 kHz/16 bit 有符号/小端/单声道, 无文件头):
 //   由 PC 端工具生成并整段写到卡的固定扇区上(不放进文件系统, 扇区天然连续):
 //     python audio_final/tools/make_audio_corpus.py 你的歌.wav --name wel_music
 //   工具会打印下面两行 localparam 与写卡命令, 直接把输出盖到此处即可。
-//   素材区必须避开已占用区间: BMP 8512~34111 / 会议配置 200000~200002。
+//   素材区必须避开文件系统数据区(FAT32 会把音乐区当作未分配簇, 拷大文件
+//     时可能被分配到那里而覆盖音乐; 2026-10-07 起图片走 FAT32 文件名寻址,
+//     图片本身也在数据区内, 故音乐区要留得足够靠后)。
 //
 //   WAV_SECTORS = 0 表示"尚未准备音乐": 此时迎新技术场景**自动退回片内
 //     DDS 合成音**(与改造前完全一致, 不会静音); 填上真实扇区数后, 迎新
-//     场景即刻改播 TF 卡上的歌(见下方 sel_wav)。其余场景(会议/抢答/应急)
+//     场景即刻改播 TF 卡上的歌(见下方 sel_wav)。其余场景(抢答/应急)
 //     一律保持片内合成音不变。
 //--------------------------------------------------------------
 localparam [31:0] WAV_START_LBA = 32'd300000;   // 音乐区起始扇区
@@ -194,47 +175,27 @@ wire[3:0]                       state_code;
 
 wire                            slideshow_en;  // 底层轮播使能(应急=0冻结画面)，scene_control→bmp_read_auto
 wire                            emergency;     // 应急锁存标志(1=应急中，驱动 osd_menu 顶部红条)
-wire [1:0]                      scene_id;      // 生效场景码(0迎新 1会议 2抢答 3应急)，供后续功能层/OSD
+wire [1:0]                      scene_id;      // 生效场景码(0迎新 1预留[原会议] 2抢答 3应急)，供后续功能层/OSD
 wire                            menu_active;   // 菜单态标志(1=SW1..3 无锁且非应急 → 显示四场景 OSD 菜单)
-wire [2:0]                      latch_sw;      // 内容源/素材分区号(0菜单 1迎新 2会议 3抢答 4应急)
+wire [2:0]                      latch_sw;      // 内容源/素材分区号(0菜单 1迎新 2预留[原会议] 3抢答 4应急)
 wire                            scene_change_pulse; // 菜单↔场景/场景间切换事件 → 触发 bmp 分区重载
 
-//场景分区重载: scene_control 查表输出目标分区, zone_load 脉冲随切换事件给出
-//(四场景 = 四个独立分区; 应急=独立第 4 分区, 与其它场景同等重载)
-reg  [31:0]                     zone_start_l;   // 目标分区起点扇区
-reg  [31:0]                     zone_wrap_l;    // 目标分区扫描上限
-reg  [31:0]                     zone_max_l;     // 目标分区图片张数
-wire                            zone_load_l;    // 分区重载请求(=scene_change_pulse)
+//场景素材定位(2026-10-07 v11 改造):
+//   顶层不再输出任何扇区常量, 只给"选哪个场景"(zone_sel_l)。
+//   sd_card_bmp 内的 FAT32 寻址层把该场景的素材段表查出来, 组合成
+//   zone_start/zone_wrap/zone_max_img 再喂 bmp_read_auto;
+//   zone_load 脉冲由 sd_card_bmp 内部在"段表就绪"或"场景切换"时产生。
+//   (段表未就绪时不能脉冲 —— bmp_read_auto 在 zone_load 当拍就锁存这三个数)
+wire [2:0]                      zone_sel_l;    // 0菜单 1迎新 2预留 3抢答 4应急
+wire                            zone_load_l;   // 场景切换请求(=scene_change_pulse)
+wire                            zone_tbl_ready;// FAT32 段表已就绪(仅供观测/上板核对)
+wire                            zone_err_l;    // FAT32 未匹配到素材(已回退 10-4 兜底常量)
+                                               //  ※ 上板观测用: 1=卡上没找到 WEL/QUIZ/ALM
+                                               //    前缀的 8.3 短名(例如没改名 / 生成了
+                                               //    WEL1~1.BMP 长名残留) → 底层按 10-4
+                                               //    的固定扇区扫描, 画面等同于改造前。
 
-always @(*) begin
-    case (latch_sw)
-        3'd0: begin // 菜单(全屏 OSD 自绘, 底层预载迎新区一张)
-            zone_start_l = Z_MENU_START;
-            zone_wrap_l  = Z_MENU_WRAP;
-            zone_max_l   = Z_MENU_IMGS;
-        end
-        3'd1: begin // 迎新
-            zone_start_l = Z_WEL_START;
-            zone_wrap_l  = Z_WEL_WRAP;
-            zone_max_l   = Z_WEL_IMGS;
-        end
-        3'd2: begin // 会议
-            zone_start_l = Z_MEET_START;
-            zone_wrap_l  = Z_MEET_WRAP;
-            zone_max_l   = Z_MEET_IMGS;
-        end
-        3'd3: begin // 抢答
-            zone_start_l = Z_QUIZ_START;
-            zone_wrap_l  = Z_QUIZ_WRAP;
-            zone_max_l   = Z_QUIZ_IMGS;
-        end
-        default: begin // 应急(第 4 分区)
-            zone_start_l = Z_ALARM_START;
-            zone_wrap_l  = Z_ALARM_WRAP;
-            zone_max_l   = Z_ALARM_IMGS;
-        end
-    endcase
-end
+assign zone_sel_l  = latch_sw;
 assign zone_load_l = scene_change_pulse;
 
 //OSD 叠加底座(插入 video_delay → hdmi_tx 之间)相关信号
@@ -261,7 +222,7 @@ wire [23:0]                     wl_data;
 wire [11:0]                     wl_px_x;
 wire [11:0]                     wl_px_y;
 
-//会议/抢答/应急 场景 OSD(osd_scene)相关信号(输出送 display_adjust)
+//抢答/应急 场景 OSD(osd_scene)相关信号(v11: 会议已删; 输出送 emergency_multi_overlay)
 wire                            sc_hs;
 wire                            sc_vs;
 wire                            sc_de;
@@ -275,7 +236,7 @@ wire audio_pcm_valid,audio_pcm_ready;
 wire signed [15:0] audio_left,audio_right;
 
 //场景层使能与抢答状态
-wire                            meeting_en;    // 1=会议场景(latch=2 且非应急)
+//   (原 meeting_en 随会议场景一并删除; 场景层只剩抢答/应急)
 wire                            quiz_en;       // 1=抢答场景(latch=3 且非应急)
 wire                            alarm_en;      // 1=应急(最高优先级)
 wire [1:0]                      alarm_type;    // 应急告警类型: 0火灾/1地震/2恶劣天气/3疏散(ui_key_ctrl 模式0 切换)
@@ -284,6 +245,14 @@ wire [1:0]                      q_state;       // 抢答状态 0等待 1抢答�
 wire [1:0]                      q_winner;      // 胜者 0..3(屏显 +1)
 wire [3:0]                      q_t_tens;      // 倒计时 BCD 十位
 wire [3:0]                      q_t_ones;      // 倒计时 BCD 个位
+// ---- 2026-10-09 新增: 题号/结束/计分 ----
+wire [3:0]                      q_idx;         // 当前题号 0..2
+wire                            q_end;         // 1=已到结束页(钳位)
+wire signed [7:0]               q_sc0, q_sc1, q_sc2, q_sc3;  // 4 队累计分
+wire                            q_score_tog;   // 判分电平翻转(toggle)
+wire [1:0]                      q_score_team;  // 本次被判队伍
+wire                            ui_score_up;   // KEY3(计分档) 判对**电平**(2026-10-09c 由脉冲改电平)
+wire                            ui_score_dn;   // KEY2(计分档) 判错**电平**
 wire [7:0]                      run_hh;        // 系统运行时长 BCD 时
 wire [7:0]                      run_mm;        // 分
 wire [7:0]                      run_ss;        // 秒
@@ -305,8 +274,11 @@ wire [1:0]                      img_res;       // 当前显示图源分辨率码
 wire                            img_v2x;       // 当前图源高=240(只出 240 行, 交 bmp_scale 纵向 2×)
 
 //人机交互(ui_key_ctrl)输出
-wire [2:0]  ui_mode;        // 功能模式 0图片/1亮度/2分辨率/3轮播周期/4会议计时/5音量
+wire [2:0]  ui_mode;        // 功能模式 0图片/1亮度/2缩放/3周期|对比度/4计分|对比度/5音量
+                            //   ★各档功能随场景变(抢答 3=对比度; 迎新 4=对比度;
+                            //     应急 2=对比度/3=音量, 见 ui_key_ctrl 内部重映射)
 wire [3:0]  ui_vol;         // 音量档 0..15(模式5可调, 默认8=×1.0)
+wire [3:0]  ui_con;         // ★对比度档 0..15(对比度档可调, 默认8=×1.0; 2026-10-09c)
 wire [3:0]  res_level;      // 分辨率档 0..7
 wire [7:0]  pic_param;      // 图片参数(0=轮播 / N=手动第N张)
 wire [7:0]  ui_period_sec;  // 批次4 轮播间隔档(秒: 2/3/5/10/30)
@@ -316,53 +288,20 @@ wire [2:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时�
 wire        pic_manual;     // 1=手动单张(冻结自动轮播)
 wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
 wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
+// ---- 抢答场景「绝对跳图」+ 中心扩散转场(2026-10-08) ----
+wire        quiz_jump_req;  // 抢答锁定/复位 → 绝对跳图脉冲(→ sd_card_bmp.key_jump)
+wire [3:0]  quiz_jump_idx;  // 目标图序号(0 基; 0=内容图, 1..4=队伍图)
+wire        quiz_iris_trig; // 与跳图同拍的 iris 转场脉冲(→ display_adjust.iris_trig)
+wire        quiz_locked;    // 1=抢答已锁定(显示队伍图态; 供观测/扩展)
+wire [3:0]  quiz_jump_idx_l; // 组合给 sd_card_bmp: 菜单/非抢答场景强制 0(回内容图)
 wire        res_chg_pl;     // 缩放档变化脉冲(1拍) → bmp 缩放引擎重载当前图
-wire        key1_pl;        // KEY1 消抖"按下"脉冲(会议=开始/暂停/继续)
-wire        key2_pl;        // KEY2 消抖"按下"脉冲(会议=下一项)
-wire        key3_pl;        // KEY3 消抖"按下"脉冲(会议=上一项)
-wire        key4_pl;        // KEY4 消抖"按下"脉冲(会议=当前项重新计时)
+// v11: 四键消抖脉冲在顶层已无使用者(原会议链删除); 端口保留便于日后扩展
+wire        key1_pl;
+wire        key2_pl;
+wire        key3_pl;
+wire        key4_pl;
 wire        bmp_slide_en;   // bmp 轮播使能 = 场景轮播使能 且 非手动单张
 
-//------------------------------------------------------------
-// 会议议程配置链(2026-09-21 从 fpgapmzs main 移植):
-//   TF 卡固定扇区 →(sd_card_bmp 内 meeting_sd_rd, sd 域解析写 BRAM)
-//   → meeting_cfg(双口 BRAM + video 域快照) → meeting_ctrl(七状态计时)
-//   ⇄ meeting_osd(会议画面, 串在 osd_scene 与应急叠层之间)
-//   会议逻辑全部在 video_clk(25MHz) 域, 与 OSD 同域, 仅使能/告警跨域同步。
-//------------------------------------------------------------
-wire        mtg_ram_we;         // 配置 RAM 写使能(→ meeting_cfg 写口)
-wire [10:0] mtg_ram_addr;       // 配置 RAM 写地址(0..1271)
-wire [7:0]  mtg_ram_data;       // 配置 RAM 写数据
-wire        mtg_ready;          // 配置有效(MTG1 解析通过)
-wire        mtg_error;          // 配置无效(坏/截断/超时)
-wire [4:0]  mtg_total;          // 议程项数 1..16
-wire        mtg_done;           // 配置读取收尾(此信号后 BMP 通路放行)
-
-wire        mtg_cfg_ready_v;    // 以下均由 meeting_cfg 在 video 域输出
-wire        mtg_cfg_error_v;
-wire [4:0]  mtg_total_v;
-wire [15:0] mtg_duration_v, mtg_next_duration_v;
-wire [10:0] mo_cfg_addr;        // meeting_osd → 配置 BRAM 取字地址(2026-09-21 新增)
-wire [7:0]  mo_cfg_byte;        // 配置 BRAM → meeting_osd 字形字节(晚地址一拍)
-
-wire [2:0]  mtg_state;          // meeting_ctrl: 七状态
-wire [3:0]  mtg_current;        // 当前议程项(0 起)
-wire [15:0] mtg_remaining, mtg_overtime;
-wire [15:0] mtg_time_bcd_v;     // meeting_osd 输出的 MMSS BCD → 数码管稳定快照
-wire        mtg_alarm_paused;
-wire        mtg_warn_event, mtg_timeout_event;  // meeting_ctrl 提醒/超时事件 → 音频
-wire [31:0] mtg_uptime;
-wire [1:0]  mtg_notice_sel;     // meeting_osd 输出(注意事项页选择)
-wire [3:0]  mtg_ov_index;       // meeting_osd 输出(议程总览行号)
-wire        meeting_en_v;       // meeting_en 同步到 video 域
-wire        alarm_v;            // emergency 同步到 video 域
-// 会议 OSD 输出像素流(插在 osd_scene 与 emergency_multi_overlay 之间)
-wire        mo_hs, mo_vs, mo_de;
-wire [23:0] mo_data;
-wire [11:0] mo_px_x, mo_px_y;
-
-
-wire									  write_clk;
 wire									  read_clk;
 
 wire                            video_read_req;
@@ -471,38 +410,41 @@ sync_2ff u_sync_wr_ack (
 	
 //============================================================
 // 蓝桥风格人机交互控制器(ui_key_ctrl, sd_card_clk 控制域):
-//   KEY1(A2)=功能模式循环 0图片/切图→1亮度→2缩放→3周期→4会议计时→5音量→0
+//   KEY1(A2)=功能模式循环; ★2026-10-09f 起各场景序列不同:
+//              · 迎新: 0图片→1亮度→2缩放→3周期→4对比度→5音量→0
+//              · 抢答: 0图片→1亮度→2缩放→3对比度→4计分→5音量→0
+//              · 应急: 0图片→1亮度→2对比度→3音量→0 (**无缩放、无周期档**)
 //   KEY2(B2)=当前模式参数 减   KEY3(B1)=当前模式参数 加
-//   KEY4(C1)=**由 ui_key_ctrl 消抖后导出 key4_pl**(会议场景=当前项重新计时;
-//              其它场景顶层不采用)
-//   模式0(图片/切图): 默认自动轮播; KEY3=下一张 / KEY2=上一张(第1张时按
-//                     KEY2 = 回自动轮播); 按 KEY3 即自动转入手动单张;
-//                     离开模式0(去亮度/缩放/周期)自动回自动轮播
+//   KEY4(C1)=★2026-10-09e: **迎新场景模式0 = 自动轮播 ↔ 手动单张 切换**;
+//              其余场景/模式无动作(v11 会议已删, 原"当前项重新计时"不再存在)
+//   模式0(图片/切图): 默认自动轮播; KEY3=下一张 / KEY2=上一张(**只切图,
+//                     不改自动/手动**); 按 KEY4 切换自动↔手动; 离开模式0 自动回自动轮播
 //   模式1(亮度): KEY3 + / KEY2 -(0..15)  → display_adjust.bri_level
 //   模式2(缩放): KEY3 + / KEY2 -(0..7)   → bmp_scale 双线性缩放
 //                (档位变化输出 res_chg_pl → 重载当前图, 效果立即可见)
-//   模式3(周期): KEY3 + / KEY2 - 在 2/3/5/10/30 s 档间**环绕** →
-//                ui_period_cyc → bmp_read_auto.slide_interval(轮播间隔运行时可配)
-//   模式4(会议): 本模块不调显示参数; 会议场景下由 control_lock 接管四键
-//                (见下方"会议议程控制链": KEY1起停/KEY2下一项/KEY3上一项/KEY4重计时)
+//                ★应急场景无此档(2 档 = 对比度)
+//   模式3: 迎新 = 周期(KEY2/3 在 2/3/5/10/30 s 档间环绕, → bmp_read_auto.slide_interval)
+//          抢答 = **对比度**(KEY2/3 调档 0..15, 默认 8)
+//          应急 = **音量**
+//   ★2026-10-09c/09e/09f 用户要求: 3/4 档功能随场景重映射 ——
+//                · 迎新: 3 = 周期, 4 = **对比度**(默认 8)
+//                · 抢答: 3 = **对比度**, 4 = **抢答计分**(KEY3 判对 / KEY2 判错)
+//                · 应急: 2 = **对比度**, 3 = **音量**(无缩放/周期 → 整体前移)
+//                模式号(数码管第5位)显示的就是用户约定的档位号。
 //   模式5(音量): KEY3 + / KEY2 -(0..15)  → 音量末级增益 (下见"音量末级")
-//   ※ 按键只调参数, 与场景切换无关(场景由拨码决定, 见 scene_control)
+//                ★仅迎新/抢答场景能走到本档; 应急场景音量在 3 档。
+////   ※ 按键只调参数, 与场景切换无关(场景由拨码决定, 见 scene_control)
 //   ※ 所有场景共用同一套按键语义(全局统一样式)
 //============================================================
 // NOTE(2026-09-21): ui_key1~3 MUST be declared BEFORE the ui_key_ctrl
 //   instantiation below. Declared after it, TD treats them as implicit nets
 //   and ties them to 0 (HDL-7225 + SYN-5013 Undriven net), which silently
 //   disables the alarm key gating (keys look permanently pressed).
-// 2026-10-01 按键归口(合入 dev_sim 会议改动; 同日应急场景改交互):
-//   会议场景(latch_sw==2)期间, 按键归会议使用 → control_lock 冻结 ui_key_ctrl
-//   的全局UI参数动作(模式循环/亮度/缩放/周期/音量/切图), 消抖脉冲照常导出:
-//       会议: KEY1=开始/暂停/继续 / KEY2=下一项 / KEY3=上一项 / KEY4=重新计时
-//   应急场景(alarm_en)**不再冻结 UI**, 按键语义与迎新场景完全一致:
-//       应急: KEY1=模式循环 / KEY2/KEY3=当前模式参数 减/加;
-//             其中**模式0 = 四类告警环绕切换**(KEY3 下一类 / KEY2 上一类),
-//             告警类型 alarm_type 由 ui_key_ctrl 直接输出给应急画面层。
-//   现在**不再在输入端"截走"按键**——四键原始电平原样进 ui_key_ctrl。
-wire meeting_key_owner = (latch_sw == 3'd2);   // 会议场景接管四键
+// 2026-10-07 v11: 会议场景删除后, 按键"归口冻结"机制一并取消 ——
+//   原 meeting_key_owner(latch_sw==2)驱动 control_lock, 现在恒 0:
+//   四键在所有场景下语义统一(模式循环/参数增减/切图),
+//   不再有"某个场景按键被接管"的特例。
+//   (ui_key_ctrl 的 control_lock 端口保留, 便于日后需要时再加归口。)
 wire ui_key1 = key1;
 wire ui_key2 = key2;
 wire ui_key3 = key3;
@@ -516,7 +458,7 @@ ui_key_ctrl #(
     .key2                (ui_key2             ),
     .key3                (ui_key3             ),
     .key4                (key4                ),
-    .control_lock        (meeting_key_owner    ),  // 仅会议接管; 应急不冻结(模式0=告警切换)
+    .control_lock        (1'b0                ),  // v11: 不再有场景接管按键
     .alarm_scene         (alarm_en             ),  // 应急场景标志
     .alarm_type          (alarm_type           ),  // 应急模式0 输出的告警类型
     .img_no              (img_no               ),
@@ -524,6 +466,7 @@ ui_key_ctrl #(
     .mode                (ui_mode              ),
     .bri_level           (bri_level            ),
     .vol_level           (ui_vol               ),
+    .con_level           (ui_con               ),  // ★对比度档(2026-10-09c)
     .res_level           (res_level            ),
     .period_sec          (ui_period_sec        ),
     .period_cycles       (ui_period_cyc        ),
@@ -531,13 +474,16 @@ ui_key_ctrl #(
     .disp_sel            (ui_disp_sel          ),
     .pic_manual          (pic_manual           ),
     .pic_param           (pic_param            ),
+    .scene_id            (scene_id             ),  // ★场景号: 供 3/4 档功能重映射(2026-10-09c)
     .key_next_pl         (key_next_pl          ),
     .key_prev_pl         (key_prev_pl          ),
     .res_chg_pl          (res_chg_pl           ),
     .key1_pl             (key1_pl              ),
     .key2_pl             (key2_pl             ),  // 会议: 下一项
     .key3_pl             (key3_pl             ),  // 会议: 上一项
-    .key4_pl             (key4_pl             )   // 会议: 当前项重新计时
+    .key4_pl             (key4_pl             ),  // 会议: 当前项重新计时
+    .score_up_lv         (ui_score_up         ),  // 抢答计分档: 判对 +2(按住电平)
+    .score_dn_lv         (ui_score_dn         )   // 抢答计分档: 判错 -1(按住电平)
 );
 
 //============================================================
@@ -566,13 +512,12 @@ scene_control scene_control_m0(
 );
 
 //============================================================
-// 场景层使能(会议/抢答/应急):
-//   会议 = 内容源 latch=2 且非应急; 抢答 = latch=3 且非应急;
-//   应急 = emergency(最高优先级, 覆盖前两者)。
+// 场景层使能(抢答/应急):
+//   抢答 = 内容源 latch=3 且非应急; 应急 = emergency(最高优先级)。
+//   (会议场景已整体移除, 原 meeting_en 一并删除)
 //   (latch_sw/menu_active/emergency 均已在 scene_control 内 sd 域寄存;
 //    下游 osd_scene 内部两级同步, 无亚稳态风险)
 //============================================================
-assign meeting_en = (latch_sw == 3'd2) & ~emergency;
 assign quiz_en    = (latch_sw == 3'd3) & ~emergency;
 assign alarm_en   = emergency;
 
@@ -585,29 +530,103 @@ emergency_alarm_ctrl #(.CLK_HZ(100_000_000)) u_alarm_type_ctrl(
 );
 
 //============================================================
-// 抢答台控制(quiz_ctrl, sd_card_clk 域):
-//   4 路选手键 → 同步+20ms 消抖 → 片内并行仲裁(同拍多路按 1>2>3>4
-//   优先, 锁存后忽略后续) → 锁存胜者; 10s BCD 倒计时; 归零判超时。
-//   仅在抢答场景(quiz_en)生效, 离开场景自动回"等待开始"。
+// 抢答台控制(quiz_ctrl, sd_card_clk 域) —— 【2026-10-09 按用户新流程重写】
+//   内部 5 态流程机: 待开始 → 抢答中 → 已锁定 → (下一题/结束页)
+//                             └→ 超时 → (下一题/结束页)
+//   · 4 路选手键 → 同步+20ms 消抖 → 并行仲裁(同拍多路按 1>2>3>4 优先,
+//     锁存后忽略后续) → 锁存胜者;
+//   · 【白色按钮 quiz_start】仅在"待开始"态有效 → 启动 10s BCD 倒计时;
+//   · 【黑色按钮 quiz_reset】仅在"已锁定/超时"态有效 → 题号 +1;
+//     最后一题之后再按 → 进结束页(q_end=1), 此后任何键都不再动作;
+//   · 评委判定: 板载 KEY2/KEY3 在「抢答计分」模式档(= 数码管模式 4)
+//     分别出 score_dn_pl(判错 -1) / score_up_pl(判对 +2), 仅"已锁定"态有效;
+//     分数 4 队累计, 由 display_adjust 在屏幕右上角弹 1 秒分数板。
+//   仅在抢答场景(quiz_en)生效, 离开场景自动回"待开始"+ 清分。
 //   外扩引脚见 top.adc(quiz_btn[3:0]/quiz_start/quiz_reset)。
 //============================================================
 quiz_ctrl #(
-    .TIME_SEC            (8'd10              )
+    .TIME_SEC            (8'd10              ),
+    .Q_TOTAL             (4'd3               )   // 卡上题目图张数(QUIZ1..3)
 ) quiz_ctrl_m0(
     .clk                 (sd_card_clk       ),
     .rst                 (~rst_n_sd         ),
     .en                  (quiz_en           ),
     .player_raw          (quiz_btn          ),
-    .start_raw           (quiz_start        ),
-    .clear_raw           (quiz_reset        ),
+    .start_raw           (quiz_start        ),   // 白色外接按钮: 开始抢答
+    .next_raw            (quiz_reset        ),   // 黑色外接按钮: 播报下一题
+    .judge_up_lv         (ui_score_up       ),   // KEY3(计分档): 判对 +2(电平)
+    .judge_dn_lv         (ui_score_dn       ),   // KEY2(计分档): 判错 -1(电平)
     .qstate              (q_state           ),
     .winner              (q_winner          ),
     .t_tens              (q_t_tens          ),
-    .t_ones              (q_t_ones          )
+    .t_ones              (q_t_ones          ),
+    .q_idx               (q_idx             ),
+    .q_end               (q_end             ),
+    .sc0                 (q_sc0             ),
+    .sc1                 (q_sc1             ),
+    .sc2                 (q_sc2             ),
+    .sc3                 (q_sc3             ),
+    .score_tog           (q_score_tog       ),
+    .score_team          (q_score_team      )
 );
 
-// 底层轮播使能: 应急冻结 或 手动单张(pic_manual)时停自动计时
-assign bmp_slide_en = slideshow_en & ~pic_manual;
+//============================================================
+// 抢答场景「锁定→队伍图」桥接(quiz_scene_ctrl, sd_card_clk 域):
+//   监听 quiz_ctrl.qstate 边沿:
+//     · 进入 Q_LOCK(锁定) → 跳到第 (winner+2) 张队伍图 + 中心扩散转场;
+//     · 进入 Q_IDLE(含复位/离开场景) → 跳回内容图(QUIZ1) + 转场。
+//   跳图经 bmp_read_auto.key_jump 的"按序号目标扫描"实现, 零额外查表。
+//   转场脉冲 iris_trig 送 display_adjust(video_clk 域, 内部两级同步)。
+//============================================================
+quiz_scene_ctrl quiz_scene_ctrl_m0(
+    .clk                 (sd_card_clk       ),
+    .rst                 (~rst_n_sd         ),
+    .en                  (quiz_en           ),
+    .qstate              (q_state           ),
+    .winner              (q_winner          ),
+    .q_idx               (q_idx             ),
+    .q_end               (q_end             ),
+    .jump_req            (quiz_jump_req     ),
+    .jump_idx            (quiz_jump_idx     ),
+    .iris_trig           (quiz_iris_trig    ),
+    .locked              (quiz_locked       )
+);
+
+//============================================================
+// 抢答跳图场景门控: 仅 zone_sel==3(抢答) 时把跳图请求转发给 sd_card_bmp;
+//   其他场景/菜单下屏蔽脉冲与索引, 避免被抢答模块残留信号干扰。
+//============================================================
+wire        quiz_zone     = (zone_sel_l == 3'd3);
+wire        quiz_jump_fwd = quiz_jump_req & quiz_zone;
+assign      quiz_jump_idx_l = quiz_zone ? quiz_jump_idx : 4'd0;
+
+//============================================================
+// 中心扩散(iris)转场触发(sd_card_clk 域, toggle 电平) —— 【2026-10-08 改】
+//   ★改动: 由"两个来源合并"改为"只保留抢答一路"。
+//     原先 ② 把"迎新等场景的自动轮播切图(img_no 变化)"也并进来触发中心
+//     扩散 → 迎新轮播每换一张都会做一次 iris。用户明确要求: **迎新轮播
+//     保留原来的「淡入淡出」(经全黑)即可**, 中心扩散只留在抢答场景。
+//     ⇒ 去掉 ② 这一路后, 迎新轮播切图沿原路径走 display_adjust 的
+//       menu_evt → FOUT/FBLCK/FIN 淡入淡出状态机(img_no 变化本身会带动
+//       scene/osd 侧的菜单态边沿), 行为与"图片化之前"逐位一致。
+//     现在唯一来源:
+//       ① 抢答锁定 / 复位(quiz_scene_ctrl.iris_trig 本身即 toggle 电平)。
+//   ★为何仍用 toggle 而非脉冲: 100MHz 单拍脉冲窄于 25MHz 采样周期, 过域会丢;
+//     电平翻转会保持到下次事件, 下游 2FF 必能采到(小鹅通第十讲做法)。
+//   ★quiz_scene_ctrl 每个事件恰好翻转一次 → 下游检测"任意变化"即一次转场。
+//============================================================
+wire iris_toggle = quiz_iris_trig;
+
+
+// 底层轮播使能: 应急冻结 或 手动单张(pic_manual)或【抢答场景】时停自动计时
+//   ★【2026-10-08 改】抢答场景(zone_sel==3)强制停自动轮播:
+//     抢答区 QUIZ 分区共 8 张(QUIZ1..3 题目 + QUIZ4..7 四张队伍图 + QUIZ8 结束页),
+//     它们语义上**不是一组轮播图集** —— 之前 slideshow_en=1 令 bmp_read_auto
+//     在 S_HOLD 里按 period_cyc 秒级自动循环切换, 表现为"抢答场景在自动轮播",
+//     与设计意图(先停在题图, 等按钮再走流程)相悖。
+//     ⇒ 冻结当前图, 只有 quiz_scene_ctrl 的 key_jump(题图/队伍图/结束页切换)
+//       才会切图, 切换本身由 iris 转场呈现。
+assign bmp_slide_en = slideshow_en & ~pic_manual & (zone_sel_l != 3'd3);
 
 //SD card BMP file read(按键消抖已由 ui_key_ctrl 完成, 此处只收脉冲;
 //                     zone_load=场景切换 → 分区重载)
@@ -633,22 +652,16 @@ sd_card_bmp  sd_card_bmp_m0(
 	.bmp_width                  (16'd640                 	),  //image width
 	.key_next                   (key_next_pl              ),
 	.key_prev                   (key_prev_pl              ),
+	.key_jump                   (quiz_jump_fwd            ),	//抢答绝对跳图(仅抢答场景)
+	.jump_idx                   (quiz_jump_idx_l          ),	//目标图序号(0 基)
 	.slide_en                   (bmp_slide_en             ),
 	.slide_interval             (ui_period_cyc            ),  //批次4 周期档(2/3/5/10/30s)
-	.zone_start                 (zone_start_l             ),
-	.zone_wrap                  (zone_wrap_l              ),
-	.zone_max_img               (zone_max_l               ),
-	.zone_load                  (zone_load_l              ),
+	// ---- 场景素材定位(v11: FAT32 文件名寻址; 内部产出 zone_start/wrap/max) ----
+	.zone_sel                   (zone_sel_l               ),  // 0菜单 1迎新 2预留 3抢答 4应急
+	.zone_load_req              (zone_load_l              ),  // 场景切换请求(段表就绪后才真正下发)
+	.zone_tbl_ready             (zone_tbl_ready           ),  // 段表已就绪(调试/上板观测)
+	.zone_err                   (zone_err_l               ),  // 1=未匹配到素材(已回退兜底)
 	.reload_req                 (res_chg_pl               ),
-	// ---- 会议议程配置(TF 卡固定扇区 200000, MTG1 字节流; 开机独占读 3 扇区) ----
-	.mtg_start_sector           (32'd200000                ),
-	.mtg_ram_we                 (mtg_ram_we               ),
-	.mtg_ram_addr               (mtg_ram_addr             ),
-	.mtg_ram_data               (mtg_ram_data             ),
-	.mtg_ready                  (mtg_ready                ),
-	.mtg_error                  (mtg_error                ),
-	.mtg_total                  (mtg_total                ),
-	.mtg_done                   (mtg_done                 ),
 	.write_req                  (sd_card_write_req        ),
 	.write_req_ack              (write_req_ack_sd         ),  // ext_mem_clk→sd_card_clk 已两级同步(见 u_sync_wr_ack)
 	.write_en                   (sd_card_write_en         ),
@@ -723,13 +736,32 @@ bmp_scale bmp_scale_m0(
 wire [2:0] disp_mode = ui_disp_hold ? ui_disp_sel : ui_mode;
 
 // 当前模式对应的参数值(0..255)
+//   ★2026-10-09c: 数码管"参数值"必须与按键实际作用的对象一致 ——
+//     3/4 档的功能随场景不同(抢答 3=对比度 / 迎新 4=对比度),
+//     故参数值也按场景选择: 抢答场景的 3 档、迎新/应急的对比度档显示对比度档位。
+//   ★2026-10-09f: 应急场景"没有缩放、没有轮播周期档", 整体前移, 故:
+//     · 应急 2 档 = 对比度, 3 档 = **音量**(不是缩放/周期)
+//     · 迎新 3 档 = 周期, 4 档 = 对比度
+//     · 抢答 3 档 = 对比度, 4 档 = 计分(无参数显示 → 走 default 图片值)
+wire scr_param = (scene_id == 2'd2);          // 抢答场景
+wire scr_emg   = (scene_id == 2'd3);          // ★应急场景(2026-10-09f)
+wire dis_con   = scr_param ? (disp_mode == 3'd3)    // 抢答: 3 档 = 对比度
+                : scr_emg  ? (disp_mode == 3'd2)    // 应急: 2 档 = 对比度(去缩放后前移)
+                :            (disp_mode == 3'd4);   // 迎新: 4 档 = 对比度
+wire dis_per   = ~scr_param & ~scr_emg & (disp_mode == 3'd3);  // 真·周期档(仅迎新的 3 档)
+wire dis_vol   = scr_emg ? (disp_mode == 3'd3)      // ★应急: 3 档 = 音量
+                         : (disp_mode == 3'd5);     // 其余: 5 档 = 音量
 reg [7:0] param_val;
 always @(*) begin
-    case (disp_mode)
+    if (dis_con)
+        param_val = {4'd0, ui_con};               // ★对比度档 0..15
+    else if (dis_vol)
+        param_val = {4'd0, ui_vol};               // ★音量档 0..15
+    else if (dis_per)
+        param_val = ui_period_sec;                // 轮播间隔秒 2/3/5/10/30(仅迎新)
+    else case (disp_mode)
         3'd1:    param_val = {4'd0, bri_level};   // 亮度档 0..15
         3'd2:    param_val = {4'd0, res_level};   // 分辨率档 0..7
-        3'd3:    param_val = ui_period_sec;       // 轮播间隔秒 2/3/5/10/30
-        3'd5:    param_val = {4'd0, ui_vol};      // 音量档 0..15
         default: param_val = pic_param;           // 0=轮播 / N=手动第N张
     endcase
 end
@@ -751,34 +783,13 @@ seg_decoder u_dec_t     (.bin_data(p_t              ), .seg_data(dec_t    ));
 seg_decoder u_dec_o     (.bin_data(p_o              ), .seg_data(dec_o    ));
 seg_decoder u_dec_mode  (.bin_data({1'b0, ui_mode }), .seg_data(dec_mode ));
 
-// meeting_osd 已由 meeting_fmt 算好 MMSS BCD；这里只做稳定快照跨时钟域，
-// 避免在数码管域重复综合除法/BCD逻辑。
-//   mtg_bcd_s0 是目前唯一的 video_clk→clk 通路(见 audio.sdc 的 false path):
-//   video 域倒计时 BCD 进 50MHz 域首级采样后，连续两拍相等才更新显示。
-reg [15:0] mtg_bcd_s0, mtg_bcd_s1, mtg_bcd_s2, mtg_bcd_disp;
-reg [1:0]  mtg_sel_sync;
-wire meeting_seg_active = mtg_sel_sync[1];
-
-always @(posedge clk or negedge rst_n_clk) begin
-    if (!rst_n_clk) begin
-        mtg_sel_sync <= 2'b00;
-        mtg_bcd_s0 <= 16'd0; mtg_bcd_s1 <= 16'd0; mtg_bcd_s2 <= 16'd0;
-        mtg_bcd_disp <= 16'd0;
-    end else begin
-        mtg_sel_sync <= {mtg_sel_sync[0], meeting_key_owner};
-        mtg_bcd_s0 <= mtg_time_bcd_v;
-        mtg_bcd_s1 <= mtg_bcd_s0;
-        mtg_bcd_s2 <= mtg_bcd_s1;
-        if (mtg_bcd_s1 == mtg_bcd_s2) mtg_bcd_disp <= mtg_bcd_s2;
-    end
-end
-
-wire [6:0] dec_mtg_mt, dec_mtg_mo, dec_mtg_st, dec_mtg_so;
-seg_decoder u_dec_mtg_mt (.bin_data(mtg_bcd_disp[15:12]), .seg_data(dec_mtg_mt));
-seg_decoder u_dec_mtg_mo (.bin_data(mtg_bcd_disp[11:8] ), .seg_data(dec_mtg_mo));
-seg_decoder u_dec_mtg_st (.bin_data(mtg_bcd_disp[7:4]  ), .seg_data(dec_mtg_st));
-seg_decoder u_dec_mtg_so (.bin_data(mtg_bcd_disp[3:0]  ), .seg_data(dec_mtg_so));
-
+//============================================================
+// 数码管 8 位布局(v11: 会议 MM.SS 段随会议场景删除)
+//   第1位 = 场景号(0..3) / 第2~4位 = 当前模式参数 / 第5位 = 功能模式号
+//   第6、7位 = "-"(或错误码 E+n) / 第8位 = A 自动 / H 手动
+//   ※ 原"会议场景时整屏切到 MM.SS 倒计时"的分支已移除,
+//     数码管不再有按场景整体切换的第二套映射。
+//============================================================
 localparam [7:0] SEG_BLANK = 8'hFF;   // 全灭(含小数点)
 localparam [7:0] SEG_DASH  = 8'hBF;   // 仅 g 段亮 = "-"
 localparam [7:0] SEG_CH_A  = 8'h88;   // 字母 "A" = 自动轮播
@@ -794,14 +805,14 @@ seg_scan seg_scan_m0(
 	.rst_n                      (rst_n_clk                ),
 	.seg_sel                    (seg_sel                  ),
 	.seg_data                   (seg_data                 ),
-	.seg_data_0                 (meeting_seg_active ? SEG_BLANK : {1'b1, dec_scene}),
-	.seg_data_1                 (meeting_seg_active ? {1'b1, dec_mtg_mt} : (blank_h ? SEG_BLANK : {1'b1, dec_h})),
-	.seg_data_2                 (meeting_seg_active ? {1'b0, dec_mtg_mo} : (blank_t ? SEG_BLANK : {1'b1, dec_t})), // 会议: 小数点=MM.SS
-	.seg_data_3                 (meeting_seg_active ? {1'b1, dec_mtg_st} : {1'b1, dec_o}),
-	.seg_data_4                 (meeting_seg_active ? {1'b1, dec_mtg_so} : {1'b1, dec_mode}),
-	.seg_data_5                 (meeting_seg_active ? SEG_BLANK : (err_show ? {1'b1, 7'b000_0110} : SEG_DASH)), // "E"
-	.seg_data_6                 (meeting_seg_active ? SEG_BLANK : (err_show ? {1'b1, dec_err}      : SEG_DASH)),
-	.seg_data_7                 (meeting_seg_active ? SEG_BLANK : (pic_manual ? SEG_CH_H : SEG_CH_A))
+	.seg_data_0                 ({1'b1, dec_scene}),
+	.seg_data_1                 (blank_h ? SEG_BLANK : {1'b1, dec_h}),
+	.seg_data_2                 (blank_t ? SEG_BLANK : {1'b1, dec_t}),
+	.seg_data_3                 ({1'b1, dec_o}),
+	.seg_data_4                 ({1'b1, dec_mode}),
+	.seg_data_5                 (err_show ? {1'b1, 7'b000_0110} : SEG_DASH), // "E"
+	.seg_data_6                 (err_show ? {1'b1, dec_err}      : SEG_DASH),
+	.seg_data_7                 (pic_manual ? SEG_CH_H : SEG_CH_A)
 );
 wire hs_0;
 wire vs_0;
@@ -870,8 +881,8 @@ osd_engine #(
 //============================================================
 // 共享 OSD 字形 ROM(全网仅此一片, 省 BRAM)
 //   三路 OSD 模块(osd_menu / osd_welcome / osd_scene)的字形窗**互斥**:
-//     menu_active / welcome_en / meeting_en|quiz_en|alarm_en 为 SW 单选,
-//     且应急时 menu_active=0、welcome_en=0, 任一时刻至多一路发读请求。
+//     menu_en(菜单态 或 拨码位2) / welcome_en / quiz_en 为 SW 单选,
+//     且应急时 menu_en=0、welcome_en=0, 任一时刻至多一路发读请求。
 //   故三路共用一片 ROM: rd_en = 三路读请求之"或", addr = 优先级多路选择。
 //   三模块内部同构(A 级 px2 发地址, ROM 晚一拍回 q → 与 px3 对齐),
 //   因此 rom_en 与 rom_addr 天然同拍, 多路选择不会引入错位。
@@ -916,7 +927,7 @@ osd_menu #(
     .data_i       (osd_data),
     .px_x         (px_x),
     .px_y         (px_y),
-    .menu_en      (menu_active),
+    .menu_en      (menu_active | (latch_sw == 3'd2)),  // v11: 拨码位 2(原会议)改走菜单画面
     .emerg_en     (emergency),
     .rom_en_o     (m_rom_en),
     .rom_addr_o   (m_rom_addr),
@@ -963,13 +974,14 @@ osd_welcome #(
 );
 
 //============================================================
-// 会议/抢答/应急 场景 OSD 叠加(osd_scene, 阶段2d 扩展)
+// 抢答/应急 场景 OSD 叠加(osd_scene, 阶段2d 扩展)
 //   输入 = osd_welcome 输出(背景流 + 同拍坐标)
-//   叠加 = 会议(标题条/运行时长面板/4 页公告翻页/滚动会务提示)
-//        / 抢答(标题条/状态面板/2× 倒计时+秒/滚动须知)
-//        / 应急(顶条 4Hz 闪烁+警示三角/深红标题/滚动疏散告警)
-//   三场景互斥(SW 单选)共用一片字形 ROM; 三使能全 0 时纯透传。
-//   输出像素流 + 坐标送 display_adjust。
+//   叠加 = 抢答(标题条/状态面板/2× 倒计时+秒/滚动须知)
+//        / 应急(本层 alarm_en 恒 0, 四类应急画面由下级 emergency_multi_overlay 画)
+//   两路使能互斥(SW 单选)共用一片字形 ROM; 全 0 时纯透传。
+//   输出像素流 + 坐标送 emergency_multi_overlay。
+//   ※ v11: 会议层已删除 —— meeting_en/run_hh/run_mm/run_ss 四个端口本身
+//     已从 osd_scene 移除, 故此处不再接线(否则 HDL-8007 找不到端口)。
 //============================================================
 osd_scene #(
     .DATA_W       (24),
@@ -984,16 +996,12 @@ osd_scene #(
     .data_i       (wl_data),
     .px_x         (wl_px_x),
     .px_y         (wl_px_y),
-    .meeting_en   (meeting_en),
     .quiz_en      (quiz_en),
     .alarm_en     (1'b0), // 四类应急画面由下级 emergency_multi_overlay 统一绘制
     .qstate       (q_state),
     .winner       (q_winner),
     .t_tens       (q_t_tens),
     .t_ones       (q_t_ones),
-    .run_hh       (run_hh),
-    .run_mm       (run_mm),
-    .run_ss       (run_ss),
     .rom_en_o     (s_rom_en),
     .rom_addr_o   (s_rom_addr),
     .rom_q        (rom_q),
@@ -1010,126 +1018,18 @@ wire [23:0] em_data;
 wire [11:0] em_px_x, em_px_y;
 
 //============================================================
-// 会议议程控制链(2026-09-21 从 fpgapmzs main ee717b2 移植上板)
-//   数据流: TF 卡固定扇区 200000 →(sd_card_bmp 内 meeting_sd_rd, sd 域)
-//           → meeting_cfg(BRAM + video 域快照) → meeting_ctrl(七状态计时)
-//           ⇄ meeting_osd(会议画面, 串在 osd_scene 与应急叠层之间)
-//   按键  : 会议场景直接接管四键：KEY1 开始/暂停/继续，KEY2 下一项，
-//           KEY3 上一项，KEY4 当前项重新计时。其它场景仍使用原UI语义。
-//   ※ 会议逻辑全部在 video_clk(25MHz) 域, 故 SEC_CYCLES=25_000_000。
-//   ※ 与应急的关系: meeting_en 已含 ~emergency, 应急时 meeting_osd 使能=0
-//     纯透传, 四类应急画面仍由下级 emergency_multi_overlay 全屏绘制。
+// v11(2026-10-07): 会议议程控制链整体删除
+//   原链路: TF 卡扇区 200000(MTG1) → meeting_sd_rd → meeting_cfg →
+//           meeting_ctrl(七状态计时) → meeting_osd(会议画面)
+//   连带删除: 四键"翻转电平跨域"同步器(meet_key_tog/meet_press)、
+//             meeting_en/alarm 的 video 域同步器(下游已无使用者)、
+//             数码管的 MM.SS 稳定快照(mtg_bcd_*)与 4 个 seg 译码器。
+//   现在 osd_scene 的输出(sc_*)直接进应急叠层。
 //============================================================
-// ---- 使能/告警 电平跨域(sd_card_clk → video_clk, 两级同步) ----
-sync_2ff u_sync_meet_en (.clk(video_clk), .async_in(meeting_en), .sync_out(meeting_en_v));
-sync_2ff u_sync_alarm   (.clk(video_clk), .async_in(emergency ), .sync_out(alarm_v     ));
-
-// ---- 复用 ui_key_ctrl 的四键消抖结果；sd 域单拍(10ns) vs video 拍(40ns),
-//      直接两级同步会漏采, 故先转"翻转电平", 同步后再边沿检测还原单拍脉冲 ----
-wire [3:0] meet_key_evt_sd = {key4_pl,key3_pl,key2_pl,key1_pl} & {4{meeting_en}};
-
-reg [3:0] meet_key_tog;
-always @(posedge sd_card_clk) begin
-    if (!rst_n_sd) meet_key_tog <= 4'b0000;
-    else meet_key_tog <= meet_key_tog ^ meet_key_evt_sd;
-end
-
-reg [3:0] meet_key_s0, meet_key_s1, meet_key_s2;
-always @(posedge video_clk) begin
-    if (!rst_n_vid) begin
-        meet_key_s0 <= 4'b0000; meet_key_s1 <= 4'b0000; meet_key_s2 <= 4'b0000;
-    end
-    else begin
-        meet_key_s0 <= meet_key_tog;
-        meet_key_s1 <= meet_key_s0;
-        meet_key_s2 <= meet_key_s1;
-    end
-end
-wire [3:0] meet_press = meet_key_s1 ^ meet_key_s2;
-
-// ---- 配置存储 + 视频域快照(写口在 sd 域, 读口在 video 域) ----
-meeting_cfg meeting_cfg_m0(
-    .wr_clk         (sd_card_clk        ),
-    .wr_en          (mtg_ram_we         ),
-    .wr_addr        (mtg_ram_addr       ),
-    .wr_data        (mtg_ram_data       ),
-    .cfg_ready      (mtg_ready          ),
-    .cfg_error      (mtg_error          ),
-    .cfg_total      (mtg_total          ),
-    .cfg_current    (mtg_current        ),
-    .clk            (video_clk          ),
-    .rst            (~rst_n_vid         ),
-    .rd_addr        (mo_cfg_addr        ),  // meeting_osd 取字地址
-    .rd_data        (mo_cfg_byte        ),  // 配置 BRAM 取字数据(晚地址一拍)
-    .ready          (mtg_cfg_ready_v    ),
-    .error          (mtg_cfg_error_v    ),
-    .total          (mtg_total_v        ),
-    .duration       (mtg_duration_v     ),
-    .next_duration  (mtg_next_duration_v)
-);
-
-// ---- 七状态议程计时(会议场景内使能; 配置有效才走计时) ----
-meeting_ctrl #(
-    .SEC_CYCLES     (25_000_000         )   // video_clk = 25.000MHz
-) meeting_ctrl_m0(
-    .clk            (video_clk          ),
-    .rst            (~rst_n_vid         ),
-    .en             (meeting_en_v       ),
-    .config_ready   (mtg_cfg_ready_v    ),
-    .alarm          (alarm_v            ),
-    .press          (meet_press           ),
-    .end_long       (1'b0               ),  // 文档长按为可选扩展，本次只接四个短按
-    .home_long      (1'b0               ),
-    .total          (mtg_total_v        ),
-    .duration       (mtg_duration_v     ),
-    .state          (mtg_state          ),
-    .current        (mtg_current        ),
-    .remaining      (mtg_remaining      ),
-    .overtime       (mtg_overtime       ),
-    .alarm_paused   (mtg_alarm_paused   ),
-    .warn_event     (mtg_warn_event     ),  // → audio_feature_events(会议提醒)
-    .timeout_event  (mtg_timeout_event  ),  // → audio_feature_events(会议超时)
-    .uptime         (mtg_uptime         )
-);
-
-// ---- 会议场景画面(插在 osd_scene 与应急叠层之间) ----
-//   使能 = 会议场景 且 配置已就绪: 配置缺失(TF 卡没写 MTG1 扇区)时本层不画,
-//   自动退回 osd_scene 原有的"会议公告"画面(优雅降级; osd_scene 一字未改)。
-meeting_osd meeting_osd_m0(
-    .clk            (video_clk          ),
-    .rst            (~rst_n_vid         ),
-    .en             (meeting_en_v & mtg_cfg_ready_v),
-    .alarm          (alarm_v            ),
-    .hs_i           (sc_hs              ),
-    .vs_i           (sc_vs              ),
-    .de_i           (sc_de              ),
-    .data_i         (sc_data            ),
-    .px_x           (sc_px_x            ),
-    .px_y           (sc_px_y            ),
-    .state          (mtg_state          ),
-    .current        (mtg_current        ),
-    .total          (mtg_total_v        ),
-    .remaining      (mtg_remaining      ),
-    .overtime       (mtg_overtime       ),
-    .next_duration  (mtg_next_duration_v),
-    .uptime         (mtg_uptime         ),
-    .alarm_paused   (mtg_alarm_paused   ),
-    .cfg_addr       (mo_cfg_addr        ),  // 取字地址 → 配置 BRAM
-    .cfg_byte       (mo_cfg_byte        ),  // 取字数据(晚地址一拍)
-    .time_bcd_o     (mtg_time_bcd_v     ),  // MMSS BCD → 数码管稳定快照
-    .hs_o           (mo_hs              ),
-    .vs_o           (mo_vs              ),
-    .de_o           (mo_de              ),
-    .data_o         (mo_data            ),
-    .px_x_o         (mo_px_x            ),
-    .px_y_o         (mo_px_y            ),
-    .notice_sel     (mtg_notice_sel     ),
-    .overview_index (mtg_ov_index       )
-);
 
 emergency_multi_overlay u_emergency_multi(
-    .clk(video_clk),.rst(~rst_n_vid),.hs_i(mo_hs),.vs_i(mo_vs),.de_i(mo_de),
-    .data_i(mo_data),.px_x(mo_px_x),.px_y(mo_px_y),.alarm_en(alarm_en),
+    .clk(video_clk),.rst(~rst_n_vid),.hs_i(sc_hs),.vs_i(sc_vs),.de_i(sc_de),
+    .data_i(sc_data),.px_x(sc_px_x),.px_y(sc_px_y),.alarm_en(alarm_en),
     .alarm_type(alarm_type),.min_tens(alarm_mt),.min_ones(alarm_mo),
     .sec_tens(alarm_st),.sec_ones(alarm_so),.hs_o(em_hs),.vs_o(em_vs),
     .de_o(em_de),.data_o(em_data),.px_x_o(em_px_x),.px_y_o(em_px_y)
@@ -1175,12 +1075,24 @@ audio_viz_overlay u_audio_viz(
 	    .menu_active  (menu_active),
 	    .emerg        (emergency),
 	    .bmp_busy     (img_busy),
+	    .iris_trig    (iris_toggle),
 	    .bri_level    (bri_level),
 	    .vol_level    (ui_vol),
+	    .con_level    (ui_con),       // ★对比度档(2026-10-09c)
 	    .res_level    (res_level),
-    .img_res      (img_res),
-    .pic_manual   (pic_manual),
+	    .img_res      (img_res),
+	    .pic_manual   (pic_manual),
 	    .ui_mode      (ui_mode),
+	    // ---- 抢答分数板(2026-10-09) ----
+	    .quiz_on      (quiz_en),
+	    .q_state      (q_state),
+	    .q_end        (q_end),        // ★2026-10-09b: 结束页 → 4 队总分常显
+	    .sc0          (q_sc0),
+	    .sc1          (q_sc1),
+	    .sc2          (q_sc2),
+	    .sc3          (q_sc3),
+	    .sc_evt       (q_score_tog),
+	    .sc_team      (q_score_team),
 	    .hs_o         (fin_hs),
 	    .vs_o         (fin_vs),
 	    .de_o         (fin_de),
@@ -1218,7 +1130,7 @@ sync_2ff u_audio_scene1_sync(.clk(video_clk),.async_in(scene_id[1]),.sync_out(au
 audio_feature_events u_feature_events(
  .clk(video_clk),.rst_n(rst_n_vid),.menu_active(audio_menu_sync),.emergency(audio_emergency_sync),
  .scene_id(audio_scene_sync),.q_state(q_state),.q_t_tens(q_t_tens),.q_t_ones(q_t_ones),
- .meeting_warn_event(mtg_warn_event),.meeting_timeout_event(mtg_timeout_event),
+ .meeting_warn_event(1'b0),.meeting_timeout_event(1'b0),  // v11: 会议场景已删, 恒无事件
  .event_valid(feature_event_valid),.event_kind(feature_event_kind),.event_media(feature_event_media));
 // [修复 2026-09-27] 静音"测试源"必须恒有效。
 //   原实现用 audio_pcm_tone(#(.PROFILE(0)), .enable(1'b0)) 产生 zero_valid,
