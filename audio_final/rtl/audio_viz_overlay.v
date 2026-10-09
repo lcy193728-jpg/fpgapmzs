@@ -47,6 +47,7 @@
 module audio_viz_overlay(
  input wire clk,rst, input wire hs_i,vs_i,de_i,input wire [23:0] data_i,
  input wire [11:0] px_x,px_y,input wire menu_active,input wire [1:0] scene_id,
+ input wire meet_warn_lv,   // ★2026-10-09n: 会议场景仅 WARN 期间才允许出现可视化
  input wire pcm_take,input wire signed [15:0] pcm,
  output reg hs_o,vs_o,de_o,output reg [23:0] data_o,
  output reg [11:0] px_x_o,px_y_o
@@ -96,7 +97,11 @@ reg hs_d,vs_d,de_d;reg [23:0] data_d;reg [11:0] x_d,y_d;
 //   下一根柱写入时置位 → 整条立刻出现。资源只有 50 个 FF + 1 位比较。
 //   ⚠ 不改 [C3] 原有逐列门控: 它的作用是在"整条可见"的前提下, 让某一根柱
 //     在其对应组确实静音时归零(警报"鸣 6s/停 6s"的间歇能看出缺口)。
-wire show_not_full = (sc1==0||sc1==2||sc1==3);
+// ★2026-10-09n: 会议场景(sc1==1) 的柱阵**只在 WARN 期间出现** —— 刚进入会议
+//   (RUN 段)不显示任何可视化, 与"告警时才可视化"的需求一致。其余三场景
+//   (0 迎新 / 2 抢答 / 3 应急) 判据不变。meet_warn_lv 由顶层的 WARN 电平
+//   两级同步后送入(video_clk 域)。
+wire show_not_full = (sc1==0||sc1==2||sc1==3) || (sc1==1 && meet_warn_lv);
 wire show=!menu1 && show_not_full && (live_sr != 50'd0);
  // 5*px_x: 有效像素 px_x<=639 → 5*px_x<=3195, 12 位足够, 无高位丢失。
  wire [11:0] px5=(px_x<<2)+px_x;

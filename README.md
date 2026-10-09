@@ -1,4 +1,4 @@
-# HX4S20C 多功能 FPGA 智能终端（v10-9）
+# HX4S20C 多功能 FPGA 智能终端（v10-10）
 
 基于安路 FPGA（**EG4S20BG256** / 开发板 **HX4S20C**）的 HDMI 多媒体播放系统：从 TF 卡读取 BMP 图片 → 写入片内 SDRAM 帧缓存 → 经 HDMI 输出画面，并同步输出 **48kHz HDMI 音频**。支持**上电自启**（固化 Flash，无需 PC 重下载）。
 
@@ -28,11 +28,11 @@
 | ---- | ---- | ---- |
 | 全关 | **首页菜单** | 全屏 OSD 矢量菜单（上电默认） |
 | SW1 | **迎新** | 多图轮播 + 亮度/缩放/周期/对比度/音量 + WAV 背景乐 |
-| SW2 | 预留（原会议） | 走菜单画面（会议场景已于 v11 移除） |
+| SW2 | **会议** | 智能会议议程屏：TF 卡议程图 + 状态条 + MM:SS 倒计时 + 进度条，走完进空闲态 |
 | SW3 | **抢答** | 4 路抢答 + 倒计时 + 评委判分 + 音效 + 音频可视化 |
 | SW4 | **应急** | 4 类告警（火灾/地震/恶劣天气/疏散）+ 防空警报音 |
 
-**核心能力**：TF 卡读 640×480/24bit BMP → SDRAM → HDMI；按键翻图 + 自动轮播（无闪烁切换）；HDMI 48kHz 音频音画同步；Flash 上电自启。扩展：OSD 图层/字幕、iris 转场、双线性缩放、亮度/对比度/音量实时调节、音频可视化（时域波形）。
+**核心能力**：TF 卡读 640×480/24bit BMP → SDRAM → HDMI；按键翻图 + 自动轮播（无闪烁切换）；HDMI 48kHz 音频音画同步；Flash 上电自启。扩展：OSD 图层/字幕、iris 转场 + **左→右 Wipe 转场**、双线性缩放、亮度/对比度/音量实时调节、音频可视化（时域波形）。
 
 ---
 
@@ -48,7 +48,7 @@
 | 开关 | 引脚 | 场景 |
 | ---- | ---- | ---- |
 | SW1 | C8 | 迎新（场景 0） |
-| SW2 | C7 | 预留（场景 1，原会议） |
+| SW2 | C7 | 会议（场景 1） |
 | SW3 | C6 | 抢答（场景 2） |
 | SW4 | C5 | 应急（场景 3，**最高优先级**） |
 
@@ -59,18 +59,20 @@
 
 ---
 
-## 三场景档位映射（KEY1 循环，核心）
+## 四场景档位映射（KEY1 循环，核心）
 
 KEY1 的**模式号序列随场景不同**，这是本版本的关键设计：
 
 | 场景 | 模式0 | 模式1 | 模式2 | 模式3 | 模式4 | 模式5 |
 | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
 | **迎新** | 图片/切图 | 亮度 | 缩放 | 轮播周期 | **对比度** | 音量 |
+| **会议** | 议程/切场 | 亮度 | 缩放 | **对比度** | **音量** | — |
 | **抢答** | 图片/切图 | 亮度 | 缩放 | **对比度** | 抢答计分 | 音量 |
 | **应急** | 图片/切告警 | 亮度 | **对比度** | **音量** | — | — |
 
-- 迎新/抢答 KEY1 循环 `0→1→2→3→4→5→0`；**应急 `0→1→2→3→0`**（无缩放/周期/计分档）。
+- 迎新/抢答 KEY1 循环 `0→1→2→3→4→5→0`；**会议 `0→1→2→3→4→0`**（无轮播周期档，倒计时驱动切场）；**应急 `0→1→2→3→0`**（无缩放/周期/计分档）。
 - **KEY4**（C1）：迎新场景模式 0 切「自动轮播 ↔ 手动单张」；KEY2/KEY3 只切上/下一张。
+- **会议**：进入场景自动开跑第 1 场，KEY3/KEY2 手动切场（重置倒计时并计入场次），倒计时归零自动切场。
 - **对比度**（小鹅通口径）：`out = saturate((in−128)×k/128 + 128)`，`k = 8 + con×15`（con=8 → 128 精确中性、con>8 增强、con<8 减弱）。档位 0..15，默认 8。
 
 各档参数：亮度 0..15(默认8)；缩放 0..7(默认4=100%，25%~300%)；周期 2/3/5/10/30s；音量 0..15(默认8)；抢答计分 KEY3=判对+2 / KEY2=判错−1。
@@ -81,22 +83,45 @@ KEY1 的**模式号序列随场景不同**，这是本版本的关键设计：
 
 ```
 video_timing_data → frame_read_write(读) → video_delay → osd_engine
-  → osd_menu → osd_welcome → osd_scene → emergency_multi_overlay
+  → osd_menu → osd_welcome → osd_scene → meeting_osd → emergency_multi_overlay
   → audio_viz_overlay → display_adjust → hdmi_tx
 ```
 
 | 模块 | 职责 |
 | ---- | ---- |
 | `osd_engine` | 重建 0 基坐标（px_x/px_y，与 de/data 同拍） |
-| `osd_menu` | 菜单态/预留位全屏矢量菜单 + 应急顶部红条 |
+| `osd_menu` | 菜单态全屏矢量菜单 + 应急顶部红条 |
 | `osd_welcome` | 迎新信息 OSD（欢迎语横幅/报到地点卡/联系方式卡/滚动流程） |
-| `osd_scene` | 抢答 OSD（标题/状态面板/倒计时/滚动须知）；应急画面由下级绘制 |
+| `osd_scene` | 抢答 OSD（标题/状态面板/倒计时/滚动须知） |
+| `meeting_osd` | ★会议议程屏叠加（顶部状态条 红/黄/绿 + MM:SS 7 段大数字倒计时 + 进度条） |
 | `emergency_multi_overlay` | 4 类应急告警页（图标/大字/信息行/滚动提醒，矢量自绘） |
-| `audio_viz_overlay` | 音频可视化（时域波形 + 峰值条，迎新/抢答/应急） |
-| `display_adjust` | 末级：亮度 + 对比度 + 淡入淡出 + HUD 提示条（亮度金/缩放青/对比度品红/音量/轮播状态卡） |
+| `audio_viz_overlay` | 音频可视化（时域波形 + 峰值条，迎新/抢答/应急；会议仅 WARN 期间） |
+| `display_adjust` | 末级：亮度 + 对比度 + 淡入淡出 + iris/Wipe 转场 + HUD 提示条 |
 
 - **缩放引擎** `bmp_scale`（双线性插值）串在 TF→SDRAM **写通路**：`sd_card_bmp → bmp_scale → frame_read_write`。
 - 三路 OSD（menu/welcome/scene）**共用一片** `osd_font_rom`（BRAM，读请求互斥仲裁），省资源。
+
+---
+
+## 会议场景（智能会议议程屏，★10-10 新重建）
+
+`meeting_ctrl`（sd_card_clk 100MHz 域）是一个 **4 态议程状态机**：
+
+| 状态 | 表现 |
+| ---- | ---- |
+| `IDLE` 空闲 | 未开会 / 会议全部结束 —— **绿条 + 显示 `00:00` + 停在末图** |
+| `RUN` 会议中 | 红条，倒计时 `MEET_SEC→0` 逐秒递减 |
+| `WARN` 即将结束 | 黄条 + 提示音（剩余 ≤ `WARN_SEC`=3s 时进入） |
+| `NEXT` 切场 | 归零瞬态（1 拍），发 `next_pl` 后按场次决定去向 |
+
+- **进入会议场景**（拨码 SW2 拨上，`scene_en` 0→1 上升沿）自动开跑第 1 场，无需按键。
+- **每场 20s**（演示缩短）；倒计时是**硬件计数器**（100MHz 逐拍计数），帧级精确。
+- **自行计场次**（`MEET_NUM`=3，对应卡上 `MEET1..3.BMP`）：每切一场 +1；手动 KEY3/KEY2 切场也计入。
+- **走满 3 场 → 回 `IDLE` 并停留**（绿条 + `00:00` + 停在末图），这就是「没会议」的空闲态。
+- **重新开始** = 拨码离开会议场景再拨回（`scene_en` 0→1 时重置场次并开跑第 1 场）。
+- 每次切场 `wipe_trig` 翻转 → 驱动 `display_adjust` 的**左→右 Wipe 转场**（对照小鹅通第十讲模式②）。
+
+> OSD 叠加细节：顶部状态条 `y=0..51`；倒计时为 `MM:SS` 4 位 7 段大数字（48×64 字格 / 8px 段厚）+ 冒号，置于近黑面板 + 状态色描边之上，远距离可读；进度条按剩余时间比例着色。全部组合逻辑 + 1 拍输出寄存器，**零 BRAM、零 DSP**。
 
 ---
 
@@ -114,9 +139,8 @@ audio_feature_events(抢答门控)┘
 | `scene_audio_final` | 片内 DDS 合成音（抢答/应急提示音 + 防空警报音，无需 TF 卡） |
 | `wav_stream_player` | TF 卡 WAV 背景乐播放（迎新，裸扇区 16bit/48k/mono PCM） |
 | `audio_src_sel` | 按场景切源：迎新读 WAV，其余走 DDS |
-| `audio_sd_arbiter` | 音频读卡与图片轮播**共用 SD 总线**的逐扇区仲裁（水位流控） |
-| `audio_feature_events` | 抢答音乐门控：题目静音，抢到/倒计时最后几秒才播音 |
-| `audio_viz_overlay` | 时域波形 + 峰值条（有声音才显示） |
+| `audio_sd_arbiter` | 音频读卡与图片轮播**共用 SD 总线**的逐扇区仲裁（水位流控） || `audio_feature_events` | 抢答音乐门控（题目静音，抢到/倒计时最后几秒才播音）+ **会议 WARN 提示音**（进入即将结束态触发一声） |
+| `audio_viz_overlay` | 时域波形 + 峰值条（有声音才显示；会议场景仅 WARN 期间出现） |
 
 - 音频跑在 `video_clk` 域，`audio_rate_tick` 分频到 **48kHz**，音画同步。
 - 迎新音乐写在卡裸扇区 `WAV_START_LBA=300000`（偏移 153.6MB，不经文件系统）；`WAV_SECTORS=0` 自动退回 DDS。
@@ -130,9 +154,10 @@ audio_feature_events(抢答门控)┘
 | 分区 | 文件名前缀 | 数量 |
 | ---- | ---- | ---- |
 | 迎新 | `WEL1.BMP … WEL8.BMP` | 动态，扫到几张算几张 |
+| 会议 | `MEET1.BMP … MEET3.BMP` | 3 张议程图（无则回退迎新区底图） |
 | 抢答 | `QUIZ1.BMP … QUIZ8.BMP` | 同上（8 张连排：3 题 + 4 队 + 1 结束页） |
-| 应急 | `ALM1.BMP … ALM8.BMP` | 同上 |
-| 菜单/预留 | 复用迎新区素材做底图 | — |
+| 应急 | `ALM1.BMP … ALM8.BMP` | 同上（无则回退抢答区底图） |
+| 菜单 | 复用迎新区素材做底图 | — |
 
 > ⚠ **8.3 短名约束**：文件名必须大写 8.3 短名（Windows 拷贝不能生成 `WEL1~1.BMP` 自动编号）。
 > `zone_launch` 负责「查表停车/交棒」握手（fat32_lookup 与 bmp_read_auto 共用 SD 总线 A 侧，须串行化）。
@@ -160,9 +185,11 @@ fpgapmzs/
 │   ├── fat32_lookup.v         # ★FAT32 文件名寻址层（替代硬编码扇区常量）
 │   ├── zone_launch.v          # ★查表停车/交棒握手（与轮播共用 SD 总线）
 │   ├── scene_control.v        # 场景主状态机（SW 直选 + 应急 + 菜单）
-│   ├── ui_key_ctrl.v          # 人机交互（KEY1 模式循环 / KEY2/3 参数加减 / KEY4）
+│   ├── ui_key_ctrl.v          # 人机交互（四场景 KEY1 模式循环 / KEY2/3 参数加减 / KEY4）
+│   ├── meeting_ctrl.v         # ★会议议程状态机（4 态 + 20s 倒计时 + 场次计数→空闲态）
+│   ├── meeting_osd.v          # ★会议议程屏 OSD（状态条 + MM:SS 倒计时 + 进度条）
 │   ├── bmp_scale.v            # 双线性插值缩放引擎（写通路）
-│   ├── display_adjust.v       # 亮度/对比度/淡入淡出/HUD 末级
+│   ├── display_adjust.v       # 亮度/对比度/iris+Wipe 转场/HUD 末级
 │   ├── osd_engine.v / osd_menu.v / osd_welcome.v / osd_scene.v  # OSD 叠加链
 │   ├── osd_font_rom.v         # 16×16 汉字字形 ROM（BRAM，三路 OSD 共用）
 │   ├── emergency_alarm_ctrl.v # 应急计时器（四类选择已移交 ui_key_ctrl）
@@ -188,42 +215,48 @@ fpgapmzs/
 ├── sim/                       # ModelSim 脚本（run_sim*.do / run_regress_all.sh）
 ├── README.md                  # 本文件
 ├── 使用手册.md                 # ★完整操作手册（逐按钮、逐场景）
-└── 抢答按钮引脚接入表.md       # 抢答外接按钮接线表
+├── 抢答按钮引脚接入表.md       # 抢答外接按钮接线表
+└── 优化方案_逻辑优化与低功耗.md # ★评测加分项梳理（逻辑优化 / 低功耗设计）
 ```
 
-> `osd_welcome.v`、`display_adjust.v`、`ui_key_ctrl.v`、`osd_scene.v`、`quiz_ctrl.v`、`quiz_scene_ctrl.v`、`bmp_scale.v`、`emergency_*`、`audio_*.v` 等由顶层 `` `include `` 并入综合，**不在** `.al` 源码列表登记。
+> `osd_welcome.v`、`display_adjust.v`、`ui_key_ctrl.v`、`osd_scene.v`、`meeting_ctrl.v`、`meeting_osd.v`、`quiz_ctrl.v`、`quiz_scene_ctrl.v`、`bmp_scale.v`、`emergency_*`、`audio_*.v` 等由顶层 `` `include `` 并入综合，**不在** `.al` 源码列表登记。
 
 ---
 
 ## 编译与烧录
 
 1. 用安路 TD EDA 打开 `pic_sdram_audio_final.al`，综合 → 布局布线 → 生成比特流。
-2. 命令行构建：`audio_final/tools/build_td.tcl`（seed 17）；复用网表生成位流：`make_bit_seed.tcl`。
+2. 命令行构建：`audio_final/tools/build_td.tcl`（seed 29）；复用网表生成位流：`make_bit_seed.tcl`。
 3. TF 卡插入开发板，下载器烧录：JTAG/SRAM 验证 → 确认后固化 Flash（上电自启）。
 
 > SDRAM 控制器与 HDMI 发送器为安路官方加密网表（仅 TD 可用）；PLL/FIFO 为 TD 生成的 IP。
 
 ---
 
-## 资源与时序（TD 6.2 实测，seed 17）
+## 资源与时序（TD 6.2 实测，seed 29）
 
 | 资源 | 用量 | 总量 | 占用 |
 | ---- | ---- | ---- | ---- |
-| slices | 8030 | 9800 | **81.94%** |
-| LUT | 14619 | 19600 | 74.59% |
-| REG | 7686 | 19600 | 39.21% |
+| LUT | 15240 | 19600 | 77.76% |
+| REG | 7811 | 19600 | 39.85% |
+| LE | 16366 | — | — |
 | BRAM9K | 39 | 64 | 60.94% |
 | BRAM32K | 8 | 16 | 50.00% |
 | DSP | 14 | 29 | 48.28% |
+| IO | 53 | 188 | 28.19% |
 
-- 时序：**SWNS +0.141ns / HWNS +0.020ns / 0 违例**（clk0 = sd_card_clk 100MHz 域）。
-- 位流：`audio_final/artifacts/pic_sdram_audio_final.bit`（SHA `723d54a1…`）。
+- 时序：**SWNS +0.113ns / HWNS +0.021ns / 0 违例**（clk0 = sd_card_clk 100MHz 域）。
+  - 各域余量：clk0(sd_card_clk) +0.113 / clk1(video_clk) +0.268 / 其余均正。
+- 位流：`audio_final/artifacts/pic_sdram_audio_final.bit`（685496 B，SHA256 `00c1932f…`），**10-09 已上板确认正常**，并已固化 SPI Flash（上电自启）。
+- **place seed = 29**：netlist 变化后以当轮 gate.db 重扫，SD 域最差路径落在 `fat32_lookup.v`（健康落点），非 `bmp_read_auto.v` 比较进位链（历史花屏指纹）。
 
 ---
 
 ## 仿真验证
 
-`sim/run_regress_all.sh` 一键回归（22 套用例全绿，0 FAIL）：bmp_read_auto / scene_control / ui_key_ctrl / osd_engine / osd_menu / osd_welcome / osd_scene / quiz_ctrl / bmp_scale / display_adjust(对比度) / fat32_lookup / audio_sd_arbiter / wav_stream_player / audio_viz 等。
+`sim/run_regress_all.sh` 一键回归（**26 套用例全绿，0 FAIL**）：bmp_read_auto / scene_control / ui_key_ctrl / ui_key_ctrl_meeting / osd_engine / osd_menu / osd_welcome / osd_scene / meeting_ctrl / meeting_osd / meeting_audio / quiz_ctrl / quiz_scene / bmp_scale / display_adjust(对比度) / fat32_lookup / zone_launch / audio_sd_arbiter / wav_stream_player / audio_viz / audio_viz_gate / scene_audio 等。
+
+> 会议新增用例：`run_sim_meeting_ctrl`（27 PASS）+ `run_sim_meeting_osd`（25 PASS），覆盖「走完 3 场 → 空闲态（绿条 + 00:00 + 停在末图）→ 空闲保持 → 空闲态按键无效 → 拨码重开」全流程。
 
 ---
 
@@ -232,4 +265,5 @@ fpgapmzs/
 | 版本 | 内容 |
 | ---- | ---- |
 | v10-4 | 多分辨率缩放 + 对比度(旧 4+con*8，只能压灰) + 会议/抢答/应急三场景 |
-| **v10-9** | 对比度重写(k=8+con×15) + 应急去缩放档 + 会议移除 + 抢答音乐门控/音频可视化 + FAT32 文件名寻址 + 使用手册 |
+| v10-9 | 对比度重写(k=8+con×15) + 应急去缩放档 + 会议移除 + 抢答音乐门控/音频可视化 + FAT32 文件名寻址 + 使用手册 |
+| **v10-10** | **会议场景重建**（议程状态机 + MM:SS 倒计时 + 状态条/进度条 + 走完进空闲态）+ **左→右 Wipe 转场** + 会议 WARN 提示音/音频可视化 + 会议档位映射（0议程/1亮度/2缩放/3对比度/4音量） |

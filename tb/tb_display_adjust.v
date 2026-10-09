@@ -212,6 +212,7 @@ module tb_display_adjust;
         .ui_mode    (ui_mode),
         // ---- 抢答分数板(2026-10-09/10-09b; 本 TB 不测分数板, 一律置 0 保证不干扰既有几何) ----
         .quiz_on    (1'b0),
+        .meeting_on (1'b0),     // ★会议场景(2026-10-09j; 本 TB 不测, 置 0)
         .q_state    (2'd0),
         .q_end      (1'b0),
         .sc0        (8'sd0),
@@ -221,6 +222,7 @@ module tb_display_adjust;
         .sc_evt     (1'b0),
         .sc_team    (2'd0),
         .iris_trig  (1'b0),
+        .wipe_trig  (1'b0),     // ★左→右 Wipe(2026-10-09j; 本 TB 不测, 置 0)
         .hs_o       (hs_o),
         .vs_o       (vs_o),
         .de_o       (de_o),

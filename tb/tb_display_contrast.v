@@ -90,6 +90,7 @@ module tb_display_contrast;
         .emerg      (emerg),
         .bmp_busy   (bmp_busy),
         .iris_trig  (iris_trig),
+        .wipe_trig  (1'b0),     // ★左→右 Wipe(2026-10-09j; 本 TB 不测, 置 0)
         .bri_level  (bri_level),
         .vol_level  (vol_level),
         .res_level  (res_level),
@@ -98,6 +99,7 @@ module tb_display_contrast;
         .pic_manual (pic_manual),
         .ui_mode    (ui_mode),
         .quiz_on    (1'b0),
+        .meeting_on (1'b0),     // ★会议场景(2026-10-09j; 本 TB 不测, 置 0)
         .q_state    (2'd0),
         .q_end      (1'b0),
         .sc0        (8'sd0),

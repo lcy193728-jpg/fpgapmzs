@@ -182,7 +182,7 @@ load_run_param -run phy_1
 #       seed 59(+0.150) / 17(+0.141) / 47(+0.129) / 29(+0.122) / 11(+0.114) /
 #       61(+0.113) / 53(+0.112) / 7(+0.103) / 57(+0.104, 旧)
 #     → seed 59 余量最大(clk0 SWNS +0.150 / HWNS +0.046 / 0 违例), 选定 59。
-set_param place seed 59
+set_param place seed 29
 place
 route
 # 官方 DefaultFlow.tcl 的收尾步骤: route 之后跑一次 fix_hold 修保持时间,

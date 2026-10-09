@@ -132,7 +132,15 @@ module display_adjust #(
     parameter [7:0]  IRIS_FRAMES = 8'd32,   // 扩散帧数(0=旁路; 32 帧 ≈0.53s@60fps)
     //   每帧半径增量 = IRIS_R_MAX / IRIS_FRAMES (编译期由下方 localparam 算)
     //   ★两个 *_STEP 必须为 2 的幂(用移位实现), 否则恢复乘法写法。
-    parameter [11:0] IRIS_R_MAX  = 12'd400   // 覆盖半径上限(>对角线半长 √(320²+240²)=400, 取 400)
+    parameter [11:0] IRIS_R_MAX  = 12'd400,  // 覆盖半径上限(>对角线半长 √(320²+240²)=400, 取 400)
+    // ---- 左→右 Wipe 转场(2026-10-09j 新增, 对照小鹅通第十讲"模式② 从左到右") ----
+    //   语义: 会议场景切图时, 新图从屏幕左侧"擦"出、逐帧向右揭示, 直到铺满。
+    //   边界内(x < wipe_x) = 全亮新图; 边界外 = 新图压暗版(>>2, 与 iris 同幕布)。
+    //   ★与 iris 同源同理: 单帧缓存无"旧图", 用"新图压暗版"当未揭示侧幕布,
+    //     零额外存储、零乘法器。
+    //   ★推进速度: WIPE_FRAMES=32 → 每帧 ≈640/32=20px, 全程 32 帧 ≈0.53s@60fps,
+    //     与 iris 同节奏, 观感一致。
+    parameter [7:0]  WIPE_FRAMES = 8'd32    // 擦除帧数(0=旁路; 32 帧 ≈0.53s@60fps)
 )(
     input                video_clk,      // 像素时钟(≈25.175MHz)
     input                rst,            // 高有效复位
@@ -146,6 +154,7 @@ module display_adjust #(
     input                emerg,          // 应急中(强制不淡出)
     input                bmp_busy,       // 底层 BMP 加载忙(1=扫描/读图中)
     input                iris_trig,      // 中心扩散触发(异步电平, 每次事件翻转; 见下方同步)
+    input                wipe_trig,      // ★左→右 Wipe 触发(会议切图, toggle 电平; 2026-10-09j)
     input        [3:0]   bri_level,      // 亮度档 0..15(默认 8)
     input        [3:0]   vol_level,      // 音量档 0..15(默认 8, 模式5 调; 仅用于音量条 HUD)
     input        [3:0]   res_level,      // 缩放档 0..7(默认 4=100%)
@@ -159,6 +168,7 @@ module display_adjust #(
                                          //     迎新/应急 4=对比度(由 ui_key_ctrl 决定)
     // ---- 抢答分数板(2026-10-09 新增; 异步电平, 内部两级同步) ----
     input                quiz_on,        // 1=处于抢答场景(非抢答场景不显示分数板)
+    input                meeting_on,     // ★1=处于会议场景(2026-10-09j; 用于 mode_map 场景映射)
     input        [1:0]   q_state,        // 抢答状态(仅用于调试/扩展, 当前未直接参与显示)
     input                q_end,          // ★2026-10-09b: 1=抢答结束页(F_END) → 4 队总分常显
     input signed [7:0]   sc0, sc1, sc2, sc3,  // 4 队累计分(有符号)
@@ -201,8 +211,10 @@ module display_adjust #(
                                 //   抢答/应急 3→4 档平移(见 mode_msel 段)
     reg  [1:0] x_s0, x_s1;      // 源分辨率码(2026-10-02; 原 1bit img_2x 扩为四档)
     reg        i_s0, i_s1;      // iris 触发电平(2026-10-08)
+    reg        w_s0, w_s1;      // ★Wipe 触发电平(2026-10-09j)
     // ---- 抢答分数板(2026-10-09) ----
     reg        q_s0, q_s1;      // 抢答场景使能
+    reg        mt_s0, mt_s1;    // ★会议场景使能(2026-10-09j)
     reg        qe_s0, qe_s1;    // ★2026-10-09b: 抢答结束页电平
     reg        cev_s0, cev_s1;  // 判分电平翻转(toggle)
     reg signed [7:0] sc0_s0, sc0_s1, sc1_s0, sc1_s1,
@@ -218,7 +230,9 @@ module display_adjust #(
     wire [2:0] mode_s = u_s1;
     wire [1:0] imgres_s = x_s1;   // 过域后的源分辨率码(0..3)
     wire       iris_s   = i_s1;   // 过域后的 iris 触发电平
+    wire       wipe_s   = w_s1;   // ★过域后的 Wipe 触发电平(2026-10-09j)
     wire       quiz_s   = q_s1;   // 过域后的抢答场景使能
+    wire       meeting_s = mt_s1; // ★过域后的会议场景使能(2026-10-09j)
     // ★场景相关的"映射后模式号"(2026-10-09f 重写):
     //   上游 ui_key_ctrl 的 KEY1 循环序列与"各档功能"都随场景不同。
     //   display_adjust 位于 video_clk 域, 但已有 emerg_s(应急)/quiz_s(抢答)
@@ -239,6 +253,10 @@ module display_adjust #(
             (mm_s1 == 3'd3) ? 3'd4 :      // 3 = 对比度
             (mm_s1 == 3'd4) ? 3'd3 :      // 4 = 计分(不弹卡)
             mm_s1                          // 0/1/2/5 原样
+        ) : meeting_s ? (                 // ★会议场景(2026-10-09j)
+            (mm_s1 == 3'd3) ? 3'd4 :      // 3 = 对比度
+            (mm_s1 == 3'd4) ? 3'd5 :      // 4 = 音量
+            mm_s1                          // 0/1/2 原样(图片/亮度/缩放)
         ) : (                              // 迎新场景
             (mm_s1 == 3'd4) ? 3'd4 :      // 4 = 对比度
             mm_s1                          // 0/1/2/3(周期)/5 原样
@@ -262,7 +280,9 @@ module display_adjust #(
             u_s0<=MODE_PIC; u_s1<=MODE_PIC;
             x_s0<=2'd1; x_s1<=2'd1;   // 复位默认 640×480(码1), 防上电假字幕
             i_s0<=1'b0; i_s1<=1'b0;   // iris 触发默认无效, 防上电假扩散
+            w_s0<=1'b0; w_s1<=1'b0;   // ★Wipe 触发默认无效, 防上电假擦除
             q_s0<=1'b0; q_s1<=1'b0;   // 抢答场景默认关
+            mt_s0<=1'b0; mt_s1<=1'b0; // 会议场景默认关(2026-10-09j)
             qe_s0<=1'b0; qe_s1<=1'b0; // ★结束页默认关
             cev_s0<=1'b0; cev_s1<=1'b0;
             sc0_s0<=8'sd0; sc0_s1<=8'sd0; sc1_s0<=8'sd0; sc1_s1<=8'sd0;
@@ -281,7 +301,9 @@ module display_adjust #(
             mm_s0<=ui_mode;    mm_s1<=mm_s0;
             x_s0<=img_res;     x_s1<=x_s0;
             i_s0<=iris_trig;   i_s1<=i_s0;
+            w_s0<=wipe_trig;   w_s1<=w_s0;
             q_s0<=quiz_on;     q_s1<=q_s0;
+            mt_s0<=meeting_on; mt_s1<=mt_s0;
             qe_s0<=q_end;      qe_s1<=qe_s0;
             cev_s0<=sc_evt;    cev_s1<=cev_s0;
             sc0_s0<=sc0; sc0_s1<=sc0_s0;
@@ -348,10 +370,23 @@ module display_adjust #(
     localparam [11:0] IRIS_R0    = 12'd6;                 // 起始半径(中心小圆)
     localparam [11:0] IS_OFFSET = (IRIS_FRAMES == 0) ? 12'd0
                                 : (IRIS_R_MAX / {4'd0, IRIS_FRAMES}); // 每帧增量
+    // ★Wipe 每帧边界增量(左→右): WIPE_FRAMES=32 → 640/32=20px/帧
+    localparam [11:0] WIPE_STEP  = (WIPE_FRAMES == 0) ? 12'd0
+                                : (H_ACT / {4'd0, WIPE_FRAMES});
     reg        iris_run;
     reg [11:0] iris_r;
     reg        iris_past;      // 上一拍 iris_s(边沿检测)
     reg        iris_evt;       // 粘性上升沿事件(帧边界消费)
+
+    // ---- 左→右 Wipe 转场(2026-10-09j) ----
+    //   wipe_s(过域 toggle 电平)任意变化 → 粘性事件 wipe_evt(逐拍捕获), 帧边界消费。
+    //   wipe_run: 1=擦除进行中; wipe_x: 当前边界 x(每帧递增 WIPE_STEP, 左→右)。
+    //   结束时 wipe_x 顶到 640, 显示回落到"全亮新图"(判据自然成立)。
+    //   ★与 iris/淡入淡出互斥: 非应急才可启动; 应急帧边界强制清 wipe_run。
+    reg        wipe_run;
+    reg [11:0] wipe_x;
+    reg        wipe_past;      // 上一拍 wipe_s(边沿检测)
+    reg        wipe_evt;       // 粘性事件(帧边界消费)
 
     always @(posedge video_clk or posedge rst) begin
         if (rst) begin
@@ -379,6 +414,10 @@ module display_adjust #(
             iris_r     <= IRIS_R0;
             iris_past  <= 1'b0;      // 默认无效, 防上电假扩散
             iris_evt   <= 1'b0;
+            wipe_run   <= 1'b0;
+            wipe_x     <= 12'd0;
+            wipe_past  <= 1'b0;      // 默认无效, 防上电假擦除
+            wipe_evt   <= 1'b0;
         end
         else begin
             // ---- 事件锁存(逐拍检测, 与帧边界无关) ----
@@ -393,6 +432,11 @@ module display_adjust #(
             if (iris_s != iris_past)
                 iris_evt <= 1'b1;
             iris_past <= iris_s;
+
+            // Wipe 触发事件(粘性事件, 帧边界消费; 同 iris 检测任意变化)
+            if (wipe_s != wipe_past)
+                wipe_evt <= 1'b1;
+            wipe_past <= wipe_s;
 
             if (lvl_s != lvl_past)
                 bar_cnt <= BAR_HOLD_FRAMES[5:0];   // 亮度档变化 → 显示亮度条
@@ -473,6 +517,10 @@ module display_adjust #(
                     iris_run <= 1'b0;
                     iris_r   <= IRIS_R_MAX;
                     iris_evt <= 1'b0;
+                    // Wipe 转场同样即刻终止(防应急图被擦除幕布遮挡)
+                    wipe_run <= 1'b0;
+                    wipe_x   <= 12'd640;
+                    wipe_evt <= 1'b0;
                 end
                 else begin
                     case (fsm)
@@ -541,6 +589,34 @@ module display_adjust #(
                 end
                 else begin
                     iris_evt <= 1'b0;             // 应急期间的触发直接丢弃
+                end
+
+                // ---- 左→右 Wipe 边界推进(帧边界原子提交, 2026-10-09j) ----
+                if (WIPE_FRAMES == 0) begin
+                    wipe_run <= 1'b0;
+                    wipe_x   <= H_ACT;              // 旁路: 边界顶满 → 全亮
+                    wipe_evt <= 1'b0;
+                end
+                else if (wipe_run) begin
+                    if (wipe_x >= H_ACT - WIPE_STEP) begin
+                        wipe_x   <= H_ACT;          // 擦除完成 → 铺满全屏
+                        wipe_run <= 1'b0;
+                    end
+                    else
+                        wipe_x <= wipe_x + WIPE_STEP;
+                end
+                else if (wipe_evt && !emerg_s) begin
+                    // 新擦除启动(未在应急): 边界从左侧重新开始
+                    wipe_evt <= 1'b0;
+                    wipe_run <= 1'b1;
+                    wipe_x   <= WIPE_STEP;
+                    // 启动 wipe 时抢占淡入淡出(同 iris)
+                    fsm      <= FIDLE;
+                    alpha    <= 8'd255;
+                    menu_evt <= 1'b0;
+                end
+                else begin
+                    wipe_evt <= 1'b0;             // 应急期间的触发直接丢弃
                 end
             end
         end
@@ -756,6 +832,18 @@ module display_adjust #(
     wire [7:0] ir_o = iris_run ? (iris_inside ? r_co : iris_mr) : r_co;
     wire [7:0] ig_o = iris_run ? (iris_inside ? g_co : iris_mg) : g_co;
     wire [7:0] ib_o = iris_run ? (iris_inside ? b_co : iris_mb) : b_co;
+
+    //--------------------------------------------------------------
+    // 左→右 Wipe 转场 · 像素级(2026-10-09j, 对照小鹅通第十讲"模式②")
+    //   判据: 像素 x < wipe_x(当前边界) ? 全亮新图 : 幕布(压暗)
+    //   幕布与 iris 共用(新图 >>2, 1/4 亮度), 零额外存储/乘法器。
+    //   wipe_x 每帧递增(左→右), 新图自左向右"擦"出。
+    //   ★与 iris 互斥(不同场景触发), 合成时 iris 优先、wipe 次之。
+    //--------------------------------------------------------------
+    wire        wipe_inside = (px1[9:0] < wipe_x[9:0]);
+    wire [7:0] wr_o = wipe_run ? (wipe_inside ? ir_o : iris_mr) : ir_o;
+    wire [7:0] wg_o = wipe_run ? (wipe_inside ? ig_o : iris_mg) : ig_o;
+    wire [7:0] wb_o = wipe_run ? (wipe_inside ? ib_o : iris_mb) : ib_o;
 
     //--------------------------------------------------------------
     // 亮度条区域命中(左上角)
@@ -1430,7 +1518,7 @@ module display_adjust #(
         end
         else begin
             if (de1) begin
-                fo = {ir_o, ig_o, ib_o};             // 显示有效区: 亮度×淡入淡出×中心扩散
+                fo = {wr_o, wg_o, wb_o};             // 显示有效区: 亮度×淡入淡出×中心扩散×Wipe
             end
             else begin
                 fo = da1;                            // 消隐区: 维持原值即可(不关心)

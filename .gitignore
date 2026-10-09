@@ -23,11 +23,32 @@ sim/_work*/
 sim/_chk*/
 audio_final/tb/_work/
 sim/modelsim.ini
+*/modelsim.ini
+*modelsim.ini
 sim/transcript
+transcript
 *.wlf
+# 仿真中间目录 / 临时脚本 / 回归输出（各目录下划线前缀的 scratch）
+sim/_*/
+audio_final/_*/
+audio_final/rtl/_w/
+audio_final/tools/_*.tcl
+sim/_gold_dump.txt
+sim/_regress_run.out
+# 临时/手写仿真 .do（下划线前缀）
+sim/_*.do
+# 会议议程图生成脚本（一次性素材工具）
+_gen_meet_bmp.py
+# 图片生成中间产物
+图片/_quiz_team/
 
 # ===== 临时验证目录 =====
 _fontcheck/
+_analyze_*.tcl
+
+# ===== TF 卡内容本地备份（体积大，不入库）=====
+_card_backup_*/
+_meet_bmp/
 
 # ===== Python 缓存 =====
 __pycache__/

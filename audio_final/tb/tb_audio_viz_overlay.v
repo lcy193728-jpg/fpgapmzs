@@ -33,6 +33,7 @@ module tb_audio_viz_overlay;
   reg [11:0] px_x = 0, px_y = 0;
   reg menu_active = 0;
   reg [1:0] scene_id = 0;
+  reg meet_warn_lv = 0;   // ★2026-10-09n: 会议场景 WARN 电平
   reg pcm_take = 0;
   reg signed [15:0] pcm = 0;
   wire hs_o, vs_o, de_o;
@@ -44,6 +45,7 @@ module tb_audio_viz_overlay;
   audio_viz_overlay dut(
     .clk(clk), .rst(rst), .hs_i(hs_i), .vs_i(vs_i), .de_i(de_i), .data_i(data_i),
     .px_x(px_x), .px_y(px_y), .menu_active(menu_active), .scene_id(scene_id),
+    .meet_warn_lv(meet_warn_lv),
     .pcm_take(pcm_take), .pcm(pcm),
     .hs_o(hs_o), .vs_o(vs_o), .de_o(de_o), .data_o(data_o),
     .px_x_o(px_x_o), .px_y_o(px_y_o));
@@ -190,14 +192,24 @@ module tb_audio_viz_overlay;
     chk(628, 478, C_ACC3, "D8 应急场景基线柱体红色");
 
     // ---------- 阶段 E: 隐藏条件 ----------
-    scene_id = 1; repeat (4) @(posedge clk);
-    chk(  0, 478, C_PASS, "E1 会议场景不叠加");
-    scene_id = 2; repeat (4) @(posedge clk);
+    //   ★2026-10-09n: 会议场景(scene_id==1) 的柱阵只在 WARN 期间出现。
+    //     先喂音把柱阵立起来(证明"有声音"), 再验证:
+    //       E1/E2 会议 + 非 WARN → 不叠加(即便此刻真有声音);
+    //       E3    会议 + WARN    → 叠加(上边框 = 绿色, 与迎新同配色)。
+    scene_id = 1; meet_warn_lv = 0;
+    feed_pat(64, 2, AMP); repeat (4) @(posedge clk);
+    chk(  0, 404, C_PASS, "E1 会议场景(非WARN)即使有声音也不叠加");
+    chk(628, 470, C_PASS, "E2 会议场景(非WARN)最右柱身也不叠加");
+    meet_warn_lv = 1; repeat (4) @(posedge clk);
+    chk(  0, 404, C_ACC0, "E3 会议场景 WARN 期间叠加(上边框绿色)");
+    feed_pat(64, 2, AMP); repeat (4) @(posedge clk);
+    chk(628, 454, C_ACC0, "E3b 会议场景 WARN 期间柱体照画(绿色)");
+    meet_warn_lv = 0; scene_id = 2; repeat (4) @(posedge clk);
     menu_active = 1; repeat (4) @(posedge clk);
-    chk(  0, 404, C_PASS, "E2 菜单态不叠加");
-    chk(628, 470, C_PASS, "E3 菜单态整条不叠加");
+    chk(  0, 404, C_PASS, "E4 菜单态不叠加");
+    chk(628, 470, C_PASS, "E5 菜单态整条不叠加");
     menu_active = 0; repeat (4) @(posedge clk);
-    chk(  0, 478, C_ACC2, "E4 退回场景2恢复显示");
+    chk(  0, 478, C_ACC2, "E6 退回场景2恢复显示");
 
     // ---------- 阶段 F: [包络路·迎新场景] 柱高真随音量(组内平均幅度) ----------
     //   迎新放 TF 卡真实音乐, 柱高 = Σ|pcm| / 1024 / 128:

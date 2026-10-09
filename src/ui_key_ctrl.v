@@ -186,20 +186,26 @@ module ui_key_ctrl #(
     //--------------------------------------------------------------
     wire scr_q;        // 1 = 抢答场景
     wire scr_e;        // 1 = 应急场景(2026-10-09e 新增)
+    wire scr_m;        // 1 = 会议场景(2026-10-09j 新增)
     assign scr_q = (scene_id == 2'd2);
     assign scr_e = (scene_id == 2'd3);
-    // 三个"档位身份"判据(与 KEY1 循环无关, 只用于 KEY2/KEY3 的动作门控):
+    assign scr_m = (scene_id == 2'd1);
+    // 四个"档位身份"判据(与 KEY1 循环无关, 只用于 KEY2/KEY3 的动作门控):
     //   ★2026-10-09f: 应急场景"没有缩放"—— 删掉缩放档后整体前移,
     //     最终 0图片/1亮度/2对比度/3音量(缩放、周期、计分三档全无)。
     //     故 con_slot 应急取 2 档、vol_slot 应急取 3 档。
+    //   ★2026-10-09j: 会议场景"无轮播周期档"(倒计时驱动切场), 档位前移:
+    //     0议程/1亮度/2缩放/3对比度/4音量 → con_slot 会议取 3 档、vol_slot 会议取 4 档。
     wire con_slot = scr_q ? (mode == MODE_CON)      // 抢答: 3 档 = 对比度
                   : scr_e ? (mode == MODE_RES)      // 应急: 2 档 = 对比度(去缩放后前移)
+                  : scr_m ? (mode == MODE_PERIOD)   // 会议: 3 档 = 对比度(无周期档)
                   :         (mode == MODE_MEET);    // 迎新: 4 档 = 对比度
-    wire per_slot = ~scr_q & ~scr_e & (mode == MODE_PERIOD); // 周期档(仅迎新: 3 档)
+    wire per_slot = ~scr_q & ~scr_e & ~scr_m & (mode == MODE_PERIOD); // 周期档(仅迎新: 3 档)
     wire scc_slot =  scr_q & (mode == MODE_MEET);          // 计分档(仅抢答: 4 档)
-    // 音量档: 常规在 5 档; 应急场景无缩放/周期, 音量落在 3 档。
+    // 音量档: 迎新/抢答在 5 档; 应急无缩放/周期落在 3 档; 会议无周期档落在 4 档。
     wire vol_slot = scr_e ? (mode == MODE_PERIOD)   // 应急: 3 档 = 音量
-                          : (mode == MODE_VOL);     // 其余: 5 档 = 音量
+                  : scr_m ? (mode == MODE_MEET)     // 会议: 4 档 = 音量
+                          : (mode == MODE_VOL);     // 迎新/抢答: 5 档 = 音量
 
 
     //--------------------------------------------------------------
@@ -400,6 +406,8 @@ module ui_key_ctrl #(
             if (k1_p && !control_lock) begin
                 if (scr_e)
                     mode <= (mode >= MODE_PERIOD) ? MODE_PIC : (mode + 3'd1);
+                else if (scr_m)
+                    mode <= (mode >= MODE_MEET) ? MODE_PIC : (mode + 3'd1);  // 会议: 0→1→2→3→4→0
                 else
                     mode <= (mode == MODE_VOL)  ? MODE_PIC : (mode + 3'd1);
             end
@@ -462,7 +470,7 @@ module ui_key_ctrl #(
                 pic_manual <= 1'b0;
             else if (alarm_scene)
                 pic_manual <= 1'b0;
-            else if (k4_p && !control_lock && ~scr_q && ~scr_e)
+            else if (k4_p && !control_lock && ~scr_q && ~scr_e && ~scr_m)
                 pic_manual <= ~pic_manual;    // ★KEY4: 自动 ↔ 手动 切换(仅迎新模式0)
 
             // ---- 图序号锁存 ----

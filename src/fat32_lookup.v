@@ -113,8 +113,9 @@ module fat32_lookup #(
     reg  [255:0] ent;               // 组装完成的目录项
     reg         ent_v;              // 目录项完成标志(单拍)
 
-    reg  [1:0]  pfx;                // 目标前缀: 0=WEL 1=QUIZ 2=ALM
+    reg  [2:0]  pfx;                // 目标前缀: 0=WEL 1=QUIZ 2=ALM 3=MEET(会议)
     reg         alt_quiz;           // 应急区已回退用抢答区(防二次回退)
+    reg         alt_meet;           // 会议区已回退用迎新区(防二次回退)
     reg         pend;               // 查找期间又来的请求(结束后补做一次)
 
     reg  [31:0] part_entry;         // MBR 分区项里的起始 LBA
@@ -240,8 +241,11 @@ module fat32_lookup #(
     wire       m_quiz  = (n0==8'h51)&&(n1==8'h55)&&(n2==8'h49)&&(n3==8'h5A)&& dig(n4)
                        && (n5==8'h20);                                                  // "QUIZ"+d
     wire       m_alm   = (n0==8'h41)&&(n1==8'h4C)&&(n2==8'h4D)&& dig(n3) && (n4==8'h20); // "ALM"+d
-    wire       m_sel   = (pfx==2'd0) ? m_wel :
-                         (pfx==2'd1) ? m_quiz : m_alm;
+    wire       m_meet  = (n0==8'h4D)&&(n1==8'h45)&&(n2==8'h45)&&(n3==8'h54)&& dig(n4)
+                       && (n5==8'h20);                                                  // "MEET"+d (会议)
+    wire       m_sel   = (pfx==3'd0) ? m_wel :
+                         (pfx==3'd1) ? m_quiz :
+                         (pfx==3'd2) ? m_alm : m_meet;
 
     wire [31:0] cl  = {cl_hi, cl_lo};
     //★ 时序: 原式 phys = data_start + ((cl - 2) << l2) 是"32bit 借位链 + 桶形移位
@@ -281,8 +285,9 @@ module fat32_lookup #(
             e_sh             <= 256'd0;
             ent              <= 256'd0;
             ent_v            <= 1'b0;
-            pfx              <= 2'd0;
+            pfx              <= 3'd0;
             alt_quiz         <= 1'b0;
+            alt_meet         <= 1'b0;
             pend             <= 1'b0;
             part_entry       <= 32'd0;
             mbr_sig          <= 1'b0;
@@ -382,10 +387,12 @@ module fat32_lookup #(
                 if (sd_init_done && (start_req || pend)) begin
                     pend       <= 1'b0;
                     // 目标前缀: 抢答=QUIZ, 应急=ALM(无 ALM 素材时回退 QUIZ),
-                    // 菜单(0)/迎新(1)/预留(2) 一律用迎新区素材作底图
-                    pfx        <= (zone_sel == 3'd3) ? 2'd1 :
-                                  (zone_sel == 3'd4) ? 2'd2 : 2'd0;
+                    // 会议(预留位 2)=MEET, 菜单(0)/迎新(1) 一律用迎新区素材
+                    pfx        <= (zone_sel == 3'd3) ? 3'd1 :
+                                  (zone_sel == 3'd4) ? 3'd2 :
+                                  (zone_sel == 3'd2) ? 3'd3 : 3'd0;
                     alt_quiz   <= 1'b0;
+                    alt_meet   <= 1'b0;
                     cnt        <= 32'd0;
                     mn         <= 32'hFFFFFFFF;
                     mx         <= 32'd0;
@@ -500,11 +507,28 @@ module fat32_lookup #(
             //------------------------------------------------
             S_FIN: begin
                 if (cnt == 32'd0) begin
-                    if ((pfx == 2'd2) && !alt_quiz) begin
+                    if ((pfx == 3'd2) && !alt_quiz) begin
                         // 应急区无专属素材: 沿用抢答区底图(与 10-4 的
                         // Z_ALARM_* = Z_QUIZ_* 口径一致)
-                        pfx        <= 2'd1;
+                        pfx        <= 3'd1;
                         alt_quiz   <= 1'b1;
+                        cnt        <= 32'd0;
+                        mn         <= 32'hFFFFFFFF;
+                        mx         <= 32'd0;
+                        dir_end    <= 1'b0;
+                        dsec       <= 32'd0;
+                        to_cnt     <= 32'd0;
+                        bidx       <= 10'd0;
+                        w          <= 32'd0;
+                        e_sh       <= 256'd0;
+                        sd_sec_read_addr <= root_lba;
+                        sd_sec_read      <= 1'b1;
+                        state            <= S_ROOT;
+                    end
+                    else if ((pfx == 3'd3) && !alt_meet) begin
+                        // 会议区无专属素材: 回退迎新区底图(2026-10-09j)
+                        pfx        <= 3'd0;
+                        alt_meet   <= 1'b1;
                         cnt        <= 32'd0;
                         mn         <= 32'hFFFFFFFF;
                         mx         <= 32'd0;
@@ -520,7 +544,7 @@ module fat32_lookup #(
                     end
                     else begin
                         zone_err <= 1'b1;
-                        if (pfx == 2'd1) begin
+                        if (pfx == 3'd1) begin
                             zone_start   <= FB_QZ_START;
                             zone_wrap    <= FB_QZ_WRAP;
                             zone_max_img <= FB_QZ_IMGS;

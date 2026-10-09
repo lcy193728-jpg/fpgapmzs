@@ -1,1 +1,1 @@
-723d54a1f1bbef32070217817b65583e467f6f219e1ff8f2e85ec01d8e22f3bc  pic_sdram_audio_final.bit
+00c1932f322dab28e5c5ff094e6c3ba233cbb3ff016d0ed66223514b22ce0cdb *artifacts/pic_sdram_audio_final.bit

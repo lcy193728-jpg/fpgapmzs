@@ -22,10 +22,12 @@
 `include "../../src/emergency_alarm_ctrl.v"
 `include "../../src/emergency_font_rom.v"
 `include "../../src/emergency_multi_overlay.v"
-// 会议场景已于 2026-10-07 整体移除(用户决策: 丢会议主攻抢答场景):
-//   删除 meeting_cfg/ctrl/fmt/osd/glyph_rom/sd_rd 六个文件与 meeting_text.vh,
-//   释放 ≈1764 LUT / ≈863 REG / 4 块 BRAM9K / 2 块 BRAM32K。
-//   拨码位置 2(SW2, 原会议)保留不重编号 → 走菜单画面(见下方 case)。
+// ★2026-10-09j 会议场景重建(产品化"智能会议议程屏"):
+//   原 meeting_cfg/ctrl/fmt/osd/glyph_rom/sd_rd 已于 2026-10-07 删除;
+//   现新增 meeting_ctrl(4 态议程状态机+20s 倒计时) + meeting_osd(状态条+倒计时+进度条),
+//   TF 卡 MEET1..3.BMP 三张议程图, 拨码位 2(SW2) 走独立会议场景(不再复用菜单画面)。
+`include "../../src/meeting_ctrl.v"
+`include "../../src/meeting_osd.v"
 `include "../rtl/audio_feature_events.v"
 `include "../rtl/scene_audio_final.v"
 `include "../rtl/audio_viz_overlay.v"
@@ -237,6 +239,7 @@ wire signed [15:0] audio_left,audio_right;
 
 //场景层使能与抢答状态
 //   (原 meeting_en 随会议场景一并删除; 场景层只剩抢答/应急)
+wire                            meeting_en;    // ★1=会议场景(latch=2 且非应急; 2026-10-09j 重建)
 wire                            quiz_en;       // 1=抢答场景(latch=3 且非应急)
 wire                            alarm_en;      // 1=应急(最高优先级)
 wire [1:0]                      alarm_type;    // 应急告警类型: 0火灾/1地震/2恶劣天气/3疏散(ui_key_ctrl 模式0 切换)
@@ -512,12 +515,12 @@ scene_control scene_control_m0(
 );
 
 //============================================================
-// 场景层使能(抢答/应急):
-//   抢答 = 内容源 latch=3 且非应急; 应急 = emergency(最高优先级)。
-//   (会议场景已整体移除, 原 meeting_en 一并删除)
+// 场景层使能(会议/抢答/应急):
+//   会议 = 内容源 latch=2 且非应急; 抢答 = latch=3 且非应急; 应急 = emergency(最高优先级)。
 //   (latch_sw/menu_active/emergency 均已在 scene_control 内 sd 域寄存;
-//    下游 osd_scene 内部两级同步, 无亚稳态风险)
+//    下游 osd_scene/meeting_osd 内部两级同步, 无亚稳态风险)
 //============================================================
+assign meeting_en = (latch_sw == 3'd2) & ~emergency;   // ★会议场景(2026-10-09j 重建)
 assign quiz_en    = (latch_sw == 3'd3) & ~emergency;
 assign alarm_en   = emergency;
 
@@ -527,6 +530,36 @@ emergency_alarm_ctrl #(.CLK_HZ(100_000_000)) u_alarm_type_ctrl(
     .clk(sd_card_clk), .rst(~rst_n_sd), .alarm_en(alarm_en),
     .elapsed_m_tens(alarm_mt), .elapsed_m_ones(alarm_mo),
     .elapsed_s_tens(alarm_st), .elapsed_s_ones(alarm_so)
+);
+
+//============================================================
+// 会议场景控制(meeting_ctrl, sd_card_clk 域) —— ★2026-10-09j 重建
+//   4 态议程状态机(IDLE/RUN/WARN/NEXT) + 单场 20s 倒计时(演示缩短)。
+//   进入会议场景自动开跑第 1 场; 倒计时归零 → next_pl 切下一张;
+//   手动 KEY3/KEY2 切议程并重置倒计时; wipe_trig 每次切场翻转 →
+//   驱动 display_adjust 的「左→右 Wipe」转场(对照小鹅通第十讲模式②)。
+//============================================================
+wire [1:0] meet_state;       // 会议 4 态: 0空闲 1会议中 2即将结束 3切场
+wire [5:0] meet_sec;         // 剩余秒数 0..20
+wire       meet_next_pl;     // 倒计时归零切下一场脉冲
+wire       meet_active;      // 会议进行中(RUN/WARN)
+wire       meet_warn;        // WARN 期间(提示音)
+wire       meet_warn_tog;    // ★进入 WARN 的 toggle(→ audio_feature_events, 2026-10-09l)
+wire       meet_wipe_trig;   // 左→右 Wipe 转场触发(toggle)
+
+meeting_ctrl #(.MEET_SEC(6'd20)) u_meeting_ctrl(
+    .clk        (sd_card_clk),
+    .rst        (~rst_n_sd),
+    .scene_en   (meeting_en),
+    .key_next   (key_next_pl),
+    .key_prev   (key_prev_pl),
+    .state      (meet_state),
+    .sec_left   (meet_sec),
+    .next_pl    (meet_next_pl),
+    .meet_active(meet_active),
+    .warn_active(meet_warn),
+    .warn_tog   (meet_warn_tog),
+    .wipe_trig  (meet_wipe_trig)
 );
 
 //============================================================
@@ -626,7 +659,7 @@ wire iris_toggle = quiz_iris_trig;
 //     与设计意图(先停在题图, 等按钮再走流程)相悖。
 //     ⇒ 冻结当前图, 只有 quiz_scene_ctrl 的 key_jump(题图/队伍图/结束页切换)
 //       才会切图, 切换本身由 iris 转场呈现。
-assign bmp_slide_en = slideshow_en & ~pic_manual & (zone_sel_l != 3'd3);
+assign bmp_slide_en = slideshow_en & ~pic_manual & (zone_sel_l != 3'd3) & (zone_sel_l != 3'd2);
 
 //SD card BMP file read(按键消抖已由 ui_key_ctrl 完成, 此处只收脉冲;
 //                     zone_load=场景切换 → 分区重载)
@@ -650,7 +683,7 @@ sd_card_bmp  sd_card_bmp_m0(
 	.rst                        (~rst_n_sd_rdy ),
 	.state_code                 (state_code               ),
 	.bmp_width                  (16'd640                 	),  //image width
-	.key_next                   (key_next_pl              ),
+	.key_next                   (key_next_pl | (meeting_en & meet_next_pl)),  // ★会议: 手动+倒计时归零自动
 	.key_prev                   (key_prev_pl              ),
 	.key_jump                   (quiz_jump_fwd            ),	//抢答绝对跳图(仅抢答场景)
 	.jump_idx                   (quiz_jump_idx_l          ),	//目标图序号(0 基)
@@ -745,12 +778,15 @@ wire [2:0] disp_mode = ui_disp_hold ? ui_disp_sel : ui_mode;
 //     · 抢答 3 档 = 对比度, 4 档 = 计分(无参数显示 → 走 default 图片值)
 wire scr_param = (scene_id == 2'd2);          // 抢答场景
 wire scr_emg   = (scene_id == 2'd3);          // ★应急场景(2026-10-09f)
+wire scr_meet  = (scene_id == 2'd1);          // ★会议场景(2026-10-09j)
 wire dis_con   = scr_param ? (disp_mode == 3'd3)    // 抢答: 3 档 = 对比度
                 : scr_emg  ? (disp_mode == 3'd2)    // 应急: 2 档 = 对比度(去缩放后前移)
+                : scr_meet ? (disp_mode == 3'd3)    // 会议: 3 档 = 对比度(无周期档)
                 :            (disp_mode == 3'd4);   // 迎新: 4 档 = 对比度
-wire dis_per   = ~scr_param & ~scr_emg & (disp_mode == 3'd3);  // 真·周期档(仅迎新的 3 档)
+wire dis_per   = ~scr_param & ~scr_emg & ~scr_meet & (disp_mode == 3'd3);  // 真·周期档(仅迎新的 3 档)
 wire dis_vol   = scr_emg ? (disp_mode == 3'd3)      // ★应急: 3 档 = 音量
-                         : (disp_mode == 3'd5);     // 其余: 5 档 = 音量
+                : scr_meet ? (disp_mode == 3'd4)    // ★会议: 4 档 = 音量
+                :            (disp_mode == 3'd5);   // 迎新/抢答: 5 档 = 音量
 reg [7:0] param_val;
 always @(*) begin
     if (dis_con)
@@ -927,7 +963,7 @@ osd_menu #(
     .data_i       (osd_data),
     .px_x         (px_x),
     .px_y         (px_y),
-    .menu_en      (menu_active | (latch_sw == 3'd2)),  // v11: 拨码位 2(原会议)改走菜单画面
+    .menu_en      (menu_active),  // ★2026-10-09j: 会议场景重建, 拨码位2不再走菜单画面
     .emerg_en     (emergency),
     .rom_en_o     (m_rom_en),
     .rom_addr_o   (m_rom_addr),
@@ -1013,33 +1049,53 @@ osd_scene #(
     .px_y_o       (sc_px_y)
 );
 
+wire mt_hs, mt_vs, mt_de;
+wire [23:0] mt_data;
+wire [11:0] mt_px_x, mt_px_y;
+
+//============================================================
+// ★2026-10-09j 会议场景 OSD(meeting_osd, video_clk 域): 状态条 + 倒计时 + 进度条
+//   插在 osd_scene(抢答层) 之后、emergency_multi_overlay(应急层) 之前 ——
+//   会议/抢答互斥(SW 单选), 应急最高优先级覆盖会议。
+//   meet_en/m_state/m_sec 来自 sd_card_clk 域, 模块内两级同步。
+//============================================================
+meeting_osd u_meeting_osd(
+    .video_clk(video_clk), .rst(~rst_n_vid),
+    .hs_i(sc_hs), .vs_i(sc_vs), .de_i(sc_de),
+    .data_i(sc_data), .px_x(sc_px_x), .px_y(sc_px_y),
+    .meet_en(meeting_en), .m_state(meet_state), .m_sec(meet_sec),
+    .hs_o(mt_hs), .vs_o(mt_vs), .de_o(mt_de),
+    .data_o(mt_data), .px_x_o(mt_px_x), .px_y_o(mt_px_y)
+);
+
 wire em_hs, em_vs, em_de;
 wire [23:0] em_data;
 wire [11:0] em_px_x, em_px_y;
 
 //============================================================
-// v11(2026-10-07): 会议议程控制链整体删除
-//   原链路: TF 卡扇区 200000(MTG1) → meeting_sd_rd → meeting_cfg →
-//           meeting_ctrl(七状态计时) → meeting_osd(会议画面)
-//   连带删除: 四键"翻转电平跨域"同步器(meet_key_tog/meet_press)、
-//             meeting_en/alarm 的 video 域同步器(下游已无使用者)、
-//             数码管的 MM.SS 稳定快照(mtg_bcd_*)与 4 个 seg 译码器。
-//   现在 osd_scene 的输出(sc_*)直接进应急叠层。
+// v11(2026-10-07): 会议议程控制链整体删除(原 meeting_sd_rd/cfg/ctrl/osd);
+//   2026-10-09j 重建为 meeting_ctrl + meeting_osd(见上), 现在 meeting_osd
+//   的输出(mt_*)进应急叠层。
 //============================================================
 
 emergency_multi_overlay u_emergency_multi(
-    .clk(video_clk),.rst(~rst_n_vid),.hs_i(sc_hs),.vs_i(sc_vs),.de_i(sc_de),
-    .data_i(sc_data),.px_x(sc_px_x),.px_y(sc_px_y),.alarm_en(alarm_en),
+    .clk(video_clk),.rst(~rst_n_vid),.hs_i(mt_hs),.vs_i(mt_vs),.de_i(mt_de),
+    .data_i(mt_data),.px_x(mt_px_x),.px_y(mt_px_y),.alarm_en(alarm_en),
     .alarm_type(alarm_type),.min_tens(alarm_mt),.min_ones(alarm_mo),
     .sec_tens(alarm_st),.sec_ones(alarm_so),.hs_o(em_hs),.vs_o(em_vs),
     .de_o(em_de),.data_o(em_data),.px_x_o(em_px_x),.px_y_o(em_px_y)
 );
 
 // Actual final-PCM visualization: welcome, quiz and alarm only.
+//   ★2026-10-09n: 会议场景仅在 WARN 期间显示柱阵 —— meet_warn(sd 域电平)
+//     两级同步到 video_clk 后送 meet_warn_lv。
+wire meet_warn_vlv;
+sync_2ff u_meet_warn_lv_sync(.clk(video_clk),.async_in(meet_warn),.sync_out(meet_warn_vlv));
 audio_viz_overlay u_audio_viz(
     .clk(video_clk),.rst(~rst_n_vid),.hs_i(em_hs),.vs_i(em_vs),.de_i(em_de),
     .data_i(em_data),.px_x(em_px_x),.px_y(em_px_y),.menu_active(menu_active),
-    .scene_id(scene_id),.pcm_take(audio_pcm_valid&&audio_pcm_ready),.pcm(audio_left),
+    .scene_id(scene_id),.meet_warn_lv(meet_warn_vlv),
+    .pcm_take(audio_pcm_valid&&audio_pcm_ready),.pcm(audio_left),
     .hs_o(viz_hs),.vs_o(viz_vs),.de_o(viz_de),.data_o(viz_data),
     .px_x_o(viz_px_x),.px_y_o(viz_px_y));
 
@@ -1076,6 +1132,7 @@ audio_viz_overlay u_audio_viz(
 	    .emerg        (emergency),
 	    .bmp_busy     (img_busy),
 	    .iris_trig    (iris_toggle),
+	    .wipe_trig    (meet_wipe_trig),  // ★左→右 Wipe(会议切场, 2026-10-09j)
 	    .bri_level    (bri_level),
 	    .vol_level    (ui_vol),
 	    .con_level    (ui_con),       // ★对比度档(2026-10-09c)
@@ -1085,6 +1142,7 @@ audio_viz_overlay u_audio_viz(
 	    .ui_mode      (ui_mode),
 	    // ---- 抢答分数板(2026-10-09) ----
 	    .quiz_on      (quiz_en),
+	    .meeting_on   (meeting_en),   // ★会议场景(2026-10-09j; mode_map 场景映射)
 	    .q_state      (q_state),
 	    .q_end        (q_end),        // ★2026-10-09b: 结束页 → 4 队总分常显
 	    .sc0          (q_sc0),
@@ -1127,10 +1185,13 @@ sync_2ff u_audio_menu_sync(.clk(video_clk),.async_in(menu_active),.sync_out(audi
 sync_2ff u_audio_emergency_sync(.clk(video_clk),.async_in(emergency),.sync_out(audio_emergency_sync));
 sync_2ff u_audio_scene0_sync(.clk(video_clk),.async_in(scene_id[0]),.sync_out(audio_scene_sync[0]));
 sync_2ff u_audio_scene1_sync(.clk(video_clk),.async_in(scene_id[1]),.sync_out(audio_scene_sync[1]));
+// ★2026-10-09l: 会议 WARN 进入 toggle(sd 域) → video_clk 域, 接 audio_feature_events
+wire meet_warn_sync;
+sync_2ff u_meet_warn_sync(.clk(video_clk),.async_in(meet_warn_tog),.sync_out(meet_warn_sync));
 audio_feature_events u_feature_events(
  .clk(video_clk),.rst_n(rst_n_vid),.menu_active(audio_menu_sync),.emergency(audio_emergency_sync),
  .scene_id(audio_scene_sync),.q_state(q_state),.q_t_tens(q_t_tens),.q_t_ones(q_t_ones),
- .meeting_warn_event(1'b0),.meeting_timeout_event(1'b0),  // v11: 会议场景已删, 恒无事件
+ .meeting_warn_event(meet_warn_sync),.meeting_timeout_event(1'b0),  // ★会议 WARN 提示音(2026-10-09l)
  .event_valid(feature_event_valid),.event_kind(feature_event_kind),.event_media(feature_event_media));
 // [修复 2026-09-27] 静音"测试源"必须恒有效。
 //   原实现用 audio_pcm_tone(#(.PROFILE(0)), .enable(1'b0)) 产生 zero_valid,
