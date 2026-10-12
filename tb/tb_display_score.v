@@ -62,7 +62,7 @@ module tb_display_score;
     reg         pic_manual;
     reg  [2:0]  ui_mode;
     // 抢答
-    reg         quiz_on, q_end;
+    reg         quiz_on, q_end, q_end_ready;
     reg  [1:0]  q_state;
     reg signed [7:0] sc0, sc1, sc2, sc3;
     reg         sc_evt;
@@ -116,10 +116,11 @@ module tb_display_score;
         .data_i    (data_i),
         .px_x      (px_i),
         .px_y      (py_i),
-        .menu_active(1'b0),           // 非菜单态 → 无淡入淡出干扰
+        .menu_active(menu_active),
         .emerg     (1'b0),
-        .bmp_busy  (1'b0),
+        .bmp_busy  (bmp_busy),
         .iris_trig (1'b0),
+        .wipe_trig (1'b0),
         .bri_level (4'd8),            // 亮度直通(增益×1.0) → 便于辨色
         .vol_level (4'd8),
         .res_level (4'd4),
@@ -128,8 +129,10 @@ module tb_display_score;
         .pic_manual(1'b0),
         .ui_mode   (3'd0),
         .quiz_on   (quiz_on),
+        .meeting_on(1'b0),
         .q_state   (q_state),
         .q_end     (q_end),
+        .q_end_ready(q_end_ready),
         .sc0       (sc0),
         .sc1       (sc1),
         .sc2       (sc2),
@@ -219,9 +222,11 @@ module tb_display_score;
     initial begin
         err_cnt = 0;
         rst = 1'b1;
+        menu_active = 1'b1;
+        emerg = 1'b0; bmp_busy = 1'b0; iris_trig = 1'b0;
         con_level = 4'd8;   // ★对比度默认档 = 旁路(不影响既有几何期望值)
         bri_level = 4'd8; vol_level = 4'd8; res_level = 4'd4;
-        quiz_on = 1'b0; q_end = 1'b0; q_state = 2'd0;
+        quiz_on = 1'b0; q_end = 1'b0; q_end_ready = 1'b0; q_state = 2'd0;
         sc0 = 8'sd0; sc1 = 8'sd0; sc2 = 8'sd0; sc3 = 8'sd0;
         sc_evt = 1'b0; sc_team = 2'd0;
         iris_trig = 1'b0;
@@ -236,7 +241,14 @@ module tb_display_score;
         // 用例 1: 弹窗式 —— 4 队分数 T1+2 / T2-1 / T3+0 / T4+4
         //================================================================
         $display("\n[Case1] 弹窗式分数板 (判分后保持)");
+        // 按 10-12 场景入口握手进入抢答：先观察本次图片加载 busy，
+        // 再等待释放并完成淡入，避免测试台被上电首帧有效门控保持在黑场。
         quiz_on = 1'b1;
+        bmp_busy = 1'b1;
+        menu_active = 1'b0;
+        wait_frame;
+        bmp_busy = 1'b0;
+        repeat (6) wait_frame;
         sc0 = 8'sd2; sc1 = -8'sd1; sc2 = 8'sd0; sc3 = 8'sd4;
         @(negedge clk);
         // 触发判分(电平翻转) → 弹窗
@@ -267,6 +279,9 @@ module tb_display_score;
         //================================================================
         $display("\n[Case3] 结束页(q_end=1)四队分数散点(仅分数, 2x 字)");
         q_end = 1'b1;
+        // 10-12 起分数必须等 QUIZ8 背景整帧提交后一起出现。
+        // 本像素级 TB 不包含 SDRAM 装载器，故显式模拟“背景已提交”。
+        q_end_ready = 1'b1;
         repeat (4) @(posedge clk);
         gold_cnt = 0; ebd_cnt = 0; g0=0; g1=0; g2=0; g3=0;
         sample_frame;
@@ -332,6 +347,7 @@ module tb_display_score;
         //================================================================
         $display("\n[Case7] 弹窗行尾无拖尾(BUG-1)");
         q_end = 1'b0;
+        q_end_ready = 1'b0;
         repeat (4) @(posedge clk);
         sc_evt = ~sc_evt; sc_team = 2'd2;   // 再弹一次
         wait_frame;

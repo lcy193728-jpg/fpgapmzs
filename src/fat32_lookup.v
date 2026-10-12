@@ -109,9 +109,11 @@ module fat32_lookup #(
     reg  [31:0] to_cnt;
     reg  [9:0]  bidx;               // 扇区内字节序号 0..511
     reg  [31:0] w;                  // 最近 4 字节滑窗(小端拼接用)
-    reg  [255:0] e_sh;              // 目录项 32B 移位寄存器
-    reg  [255:0] ent;               // 组装完成的目录项
-    reg         ent_v;              // 目录项完成标志(单拍)
+    reg         ent_v;              // 一条目录项字段捕获完成(单拍)
+    reg  [7:0]  b00, b01, b02, b03, b04, b05;
+    reg  [7:0]  b08, b09, b10, b11;
+    reg  [7:0]  b20, b21, b26, b27;
+    reg         size_nonzero;       // 文件长度四字节的 OR 归约
 
     reg  [2:0]  pfx;                // 目标前缀: 0=WEL 1=QUIZ 2=ALM 3=MEET(会议)
     reg         alt_quiz;           // 应急区已回退用抢答区(防二次回退)
@@ -181,14 +183,8 @@ module fat32_lookup #(
                       && (fat_sz32 != 32'd0)
                       && (root_cluster >= 32'd2);
 
-    //★ 时序: BPB 派生地址 nfats→fats_tot→data_base→root_base 原本是"32bit 加法×3"
-    //   (Level 10 / ADDER=6), 直连 sd_sec_read_addr 的 D 必然违例。
-    //   这里改成【S_BPB 期间按 byte_v 逐级推进的 3 级流水】, 每级 D 只接寄存器:
-    //     级1 bp_ft ← fats_tot               (nfats/fat_sz32 已捕获于 bidx 16/39)
-    //     级2 bp_db ← part_entry+reserved+bp_ft   (part_entry 来自 MBR, reserved 于 bidx 15)
-    //     级3 bp_rb ← bp_db + ((root_cluster-2)<<l2) (root_cluster 于 bidx 47, spc 于 bidx 13)
-    //   全部字段在 bidx=47 前就位 ⇒ 3 拍后(≈bidx 50)三级已稳定, 而 sd_sec_read_end
-    //   要到 bidx 511 之后 ⇒ 取值时刻余量 460+ 字节, 与周期数无关, 稳健。
+    //★ 时序: BPB 派生地址在有效字节期间逐级流水。所有字段在 bidx=47
+    //   前就位，距离扇区结束仍有 460+ 字节，三级结果在使用前稳定。
     wire [31:0] fats_tot  = (nfats == 8'd2) ? (fat_sz32 << 1) : fat_sz32;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -202,34 +198,16 @@ module fat32_lookup #(
     end
 
     // ---- 目录项字段(小端) ----
-    //   e_sh 是【左移】寄存器: e_sh <= {e_sh[247:0], din} ⇒ 全部 32 字节装入后,
-    //   第 i 字节落在 ent[255-8i -: 8] (第 0 字节在最高位)。
-    //   多字节字段必须按【小端】显式拼: 低地址字节 = 低位。
-    wire [7:0]  b00 = ent[255:248];   // 主名 [0..7]
-    wire [7:0]  b01 = ent[247:240];
-    wire [7:0]  b02 = ent[239:232];
-    wire [7:0]  b03 = ent[231:224];
-    wire [7:0]  b04 = ent[223:216];
-    wire [7:0]  b05 = ent[215:208];
-    wire [7:0]  b08 = ent[191:184];   // 扩展名 [8..10]
-    wire [7:0]  b09 = ent[183:176];
-    wire [7:0]  b10 = ent[175:168];
-    wire [7:0]  b11 = ent[167:160];   // 属性
-    wire [7:0]  b20 = ent[95:88];     // 首簇高 16 位 [20,21]
-    wire [7:0]  b21 = ent[87:80];
-    wire [7:0]  b26 = ent[47:40];     // 首簇低 16 位 [26,27]
-    wire [7:0]  b27 = ent[39:32];
-    wire [7:0]  b28 = ent[31:24];     // 文件长度 [28..31]
-    wire [7:0]  b29 = ent[23:16];
-    wire [7:0]  b30 = ent[15:8];
-    wire [7:0]  b31 = ent[7:0];
+    // 10-13 等价优化: FAT32 判决只需要 14 个字段字节和“文件长度非零”。
+    // 按 bidx 流式捕获这些字段，删除原来的 e_sh+ent 两份 256bit 缓存。
+    // ent_v 将判决隔离到下一拍，SD 输入不直穿匹配逻辑；下一条目录项的
+    // byte0 同拍到来也安全，因为非阻塞赋值保证判决仍读取上一条字段。
 
     wire [7:0]  n0 = b00, n1 = b01, n2 = b02, n3 = b03, n4 = b04, n5 = b05;
     wire [7:0]  x0 = b08, x1 = b09, x2 = b10;
     wire [7:0]  at = b11;
     wire [15:0] cl_hi = {b21, b20};      // 16 位: 必须两字节都取
     wire [15:0] cl_lo = {b27, b26};
-    wire [31:0] fsz   = {b31, b30, b29, b28};
 
     wire       name_ok = (x0==8'h42) && (x1==8'h4D) && (x2==8'h50);       // "BMP"
     wire       attr_ok = (at[3:0] != 4'hF) && (at[4] == 1'b0);            // 非 LFN / 非目录
@@ -249,14 +227,14 @@ module fat32_lookup #(
 
     wire [31:0] cl  = {cl_hi, cl_lo};
     //★ 时序: 原式 phys = data_start + ((cl - 2) << l2) 是"32bit 借位链 + 桶形移位
-    //   + 32bit 加法", 再加 hit 里的 (cl>=32'd2)/(fsz!=32'd0) 两个 32bit 比较,
+    //   + 32bit 加法", 再加 hit 里的簇号/文件长度有效性判断,
     //   直连 mn/mx 的 .ce 共 10 级组合(6 ADDER), 超 C9(≤8 级)。改为:
     //     · 簇号减 2 事先并进 data_adj ⇒ phys 只剩【移位 + 一次加法】;
     //     · hit / phys 各打一拍, 下一拍再做 min/max 比较与计数 ⇒ .ce 只接寄存器。
     wire [31:0] phys = (cl << l2) + data_adj;
 
     wire       hit  = live_ok && name_ok && attr_ok && m_sel
-                   && (fsz != 32'd0) && (cl >= 32'd2);
+                   && size_nonzero && (cl >= 32'd2);
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -282,9 +260,11 @@ module fat32_lookup #(
             to_cnt           <= 32'd0;
             bidx             <= 10'd0;
             w                <= 32'd0;
-            e_sh             <= 256'd0;
-            ent              <= 256'd0;
             ent_v            <= 1'b0;
+            b00 <= 8'd0; b01 <= 8'd0; b02 <= 8'd0; b03 <= 8'd0;
+            b04 <= 8'd0; b05 <= 8'd0; b08 <= 8'd0; b09 <= 8'd0;
+            b10 <= 8'd0; b11 <= 8'd0; b20 <= 8'd0; b21 <= 8'd0;
+            b26 <= 8'd0; b27 <= 8'd0; size_nonzero <= 1'b0;
             pfx              <= 3'd0;
             alt_quiz         <= 1'b0;
             alt_meet         <= 1'b0;
@@ -327,11 +307,29 @@ module fat32_lookup #(
                 w <= {din, w[31:8]};
 
                 if (state == S_ROOT) begin
-                    e_sh <= {e_sh[247:0], din};
-                    if (bidx[4:0] == 5'd31) begin
-                        ent   <= {e_sh[247:0], din};   // 32 字节组装完成
-                        ent_v <= 1'b1;
-                    end
+                    case (bidx[4:0])
+                        5'd0:  begin b00 <= din; size_nonzero <= 1'b0; end
+                        5'd1:  b01 <= din;
+                        5'd2:  b02 <= din;
+                        5'd3:  b03 <= din;
+                        5'd4:  b04 <= din;
+                        5'd5:  b05 <= din;
+                        5'd8:  b08 <= din;
+                        5'd9:  b09 <= din;
+                        5'd10: b10 <= din;
+                        5'd11: b11 <= din;
+                        5'd20: b20 <= din;
+                        5'd21: b21 <= din;
+                        5'd26: b26 <= din;
+                        5'd27: b27 <= din;
+                        5'd28, 5'd29, 5'd30:
+                            size_nonzero <= size_nonzero | (din != 8'd0);
+                        5'd31: begin
+                            size_nonzero <= size_nonzero | (din != 8'd0);
+                            ent_v <= 1'b1;
+                        end
+                        default: ;
+                    endcase
                 end
 
                 // MBR: 分区项 0 的起始 LBA(偏移 454..457, 小端)
@@ -363,7 +361,7 @@ module fat32_lookup #(
 
             //--------------------------------------------------
             // 目录项判决(命中即累计 min/max/count)
-            //   · dir_end 仍在 ent_v 当拍判定(n0 只有 8bit, 零成本、无时序压力)
+            //   · dir_end 在 ent_v 当拍判定(n0 只有 8bit, 零成本、无时序压力)
             //   · 命中判决与物理 LBA 用上一拍打好的 hit_q/phys_q ⇒ .ce 与
             //     min/max 比较都只接寄存器输出, 不再是 10 级长链
             //--------------------------------------------------
@@ -402,7 +400,6 @@ module fat32_lookup #(
                     to_cnt     <= 32'd0;
                     bidx       <= 10'd0;
                     w          <= 32'd0;
-                    e_sh       <= 256'd0;
                     part_entry <= 32'd0;
                     mbr_sig    <= 1'b0;
                     lba              <= 32'd0;
@@ -449,9 +446,9 @@ module fat32_lookup #(
                         bad <= 2'd1; sd_sec_read <= 1'b0; state <= S_FIN;
                     end
                     else begin
-                        data_start       <= bp_db;                  // 流水级2 = data_base
+                        data_start       <= bp_db;
                         data_adj         <= bp_db - (32'd2 << log2b(spc));
-                        root_lba         <= bp_rb;                  // 流水级3 = root_base
+                        root_lba         <= bp_rb;
                         l2               <= log2b(spc);
                         lba              <= bp_rb;
                         sd_sec_read_addr <= bp_rb;
@@ -459,7 +456,6 @@ module fat32_lookup #(
                         to_cnt           <= 32'd0;
                         bidx             <= 10'd0;
                         w                <= 32'd0;
-                        e_sh             <= 256'd0;
                         sd_sec_read      <= 1'b1;
                         state            <= S_ROOT;
                     end
@@ -483,7 +479,6 @@ module fat32_lookup #(
                     to_cnt <= 32'd0;
                     bidx   <= 10'd0;
                     w      <= 32'd0;
-                    e_sh   <= 256'd0;
                     if (dir_end || ((dsec + 32'd1) >= MAX_DIR_SEC)) begin
                         sd_sec_read <= 1'b0;
                         state       <= S_FIN;
@@ -520,7 +515,6 @@ module fat32_lookup #(
                         to_cnt     <= 32'd0;
                         bidx       <= 10'd0;
                         w          <= 32'd0;
-                        e_sh       <= 256'd0;
                         sd_sec_read_addr <= root_lba;
                         sd_sec_read      <= 1'b1;
                         state            <= S_ROOT;
@@ -537,7 +531,6 @@ module fat32_lookup #(
                         to_cnt     <= 32'd0;
                         bidx       <= 10'd0;
                         w          <= 32'd0;
-                        e_sh       <= 256'd0;
                         sd_sec_read_addr <= root_lba;
                         sd_sec_read      <= 1'b1;
                         state            <= S_ROOT;

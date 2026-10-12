@@ -105,7 +105,9 @@ module tb_audio_viz_gate;
     scene_id = 2; menu_active = 1; repeat (6) @(negedge clk);
     chk(0, 362, C_PASS, "G10 菜单态不显示");
     menu_active = 0; repeat (6) @(negedge clk);
-    chk(0, 362, C_ACC2, "G11 退出菜单恢复显示");
+    // 10-12 策略: 菜单/场景切换会清空旧场景音频历史；退出菜单后
+    // 必须等目标场景产生新音频柱才显示，禁止迎新音乐残留到抢答页。
+    chk(0, 362, C_PASS, "G11 退出菜单无新音频: 保持隐藏");
 
     $display("==== tb_audio_viz_gate: checks=%0d fails=%0d ====", checks, fails);
     if (fails == 0) $display("RESULT: PASS"); else $display("RESULT: FAIL");

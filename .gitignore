@@ -50,6 +50,7 @@ _gen_meet_bmp.py
 _fontcheck/
 _analyze_*.tcl
 analysis_*/
+_build_*/
 sim/*.jpg
 
 # ===== 一次性烧录/诊断脚本 =====
