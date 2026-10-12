@@ -19,6 +19,9 @@
 `include "../../src/bmp_scale.v"
 `include "../../src/reset_sync.v"
 `include "../../src/sync_2ff.v"
+`include "../../src/video_first_frame_gate.v"
+`include "../../src/scene_load_guard.v"
+`include "../../src/quiz_end_commit_guard.v"
 `include "../../src/emergency_alarm_ctrl.v"
 `include "../../src/emergency_font_rom.v"
 `include "../../src/emergency_multi_overlay.v"
@@ -251,6 +254,7 @@ wire [3:0]                      q_t_ones;      // 倒计时 BCD 个位
 // ---- 2026-10-09 新增: 题号/结束/计分 ----
 wire [3:0]                      q_idx;         // 当前题号 0..2
 wire                            q_end;         // 1=已到结束页(钳位)
+wire                            q_end_ready;   // QUIZ8 已完整提交，可在帧边界显示总分
 wire signed [7:0]               q_sc0, q_sc1, q_sc2, q_sc3;  // 4 队累计分
 wire                            q_score_tog;   // 判分电平翻转(toggle)
 wire [1:0]                      q_score_team;  // 本次被判队伍
@@ -270,6 +274,9 @@ wire [23:0]                     fin_data;
 wire                            welcome_en;
 wire [3:0]                      bri_level;     // 亮度档 0..15(ui_key_ctrl 模式1可调)
 wire                            img_busy;      // 底层 BMP 加载忙(sd_card_bmp 导出)
+wire                            frame_write_finish; // SDRAM 一整帧实际写完(ext_mem_clk 域)
+wire                            scene_commit_busy;  // 切场后等目标帧真正提交(sd_card_clk 域)
+wire                            display_bmp_busy = img_busy | scene_commit_busy;
 wire [7:0]                      img_no;        // 当前图序号(sd_card_bmp 导出, ui_key_ctrl 用)
 wire [3:0]                      bmp_error;     // BMP 加载错误码(批次3: 0无/1头校验/2超时/3截断)
 wire [1:0]                      img_res;       // 当前显示图源分辨率码(0=320x240 1=640x480
@@ -311,6 +318,7 @@ wire                            video_read_req;
 wire                            video_read_req_ack;
 wire                            video_read_en;
 wire[31:0]                      video_read_data;
+wire[23:0]                      video_first_frame_data;
 wire                            sd_card_write_en;      // sd_card_bmp 源像素写使能(接缩放引擎输入)
 wire[31:0]                      sd_card_write_data;    // sd_card_bmp 源像素 {R,G,B,8'b0}
 wire                            sd_card_write_req;
@@ -866,12 +874,28 @@ video_timing_data video_timing_data_m0
 	.de                         (de_0                         )
 	//.vout_data                  (vout_data                )
 );
+
+// 冷启动时 SDRAM 虽已初始化，但首张 BMP 尚未完整写入。首个
+// frame_write_finish 到来前只把背景压黑；菜单等后级 OSD 仍可正常绘制。
+// 放行动作锁定在 VS 上升沿，避免一帧中途由黑切到图像。
+video_first_frame_gate u_video_first_frame_gate (
+    .mem_clk            (ext_mem_clk),
+    .rst_mem            (~rst_n_mem),
+    .frame_write_finish (frame_write_finish),
+    .video_clk          (video_clk),
+    .rst_video          (~rst_n_vid),
+    .video_vs            (vs_0),
+    .data_i              (video_read_data[31:8]),
+    .data_o              (video_first_frame_data),
+    .frame_ready         ()
+);
+
 video_delay video_delay_m0
 (
     .video_clk                  (video_clk                ),
 	.rst                        (~rst_n_vid    ),
     .read_en					(video_read_en),
-    .read_data					(video_read_data[31:8]),
+	.read_data					(video_first_frame_data),
     .hs                         (hs_0                       ),
 	.vs                         (vs_0                       ),
 	.de                         (de_0                         ),
@@ -1130,7 +1154,7 @@ audio_viz_overlay u_audio_viz(
 	    .px_y         (viz_px_y),
 	    .menu_active  (menu_active),
 	    .emerg        (emergency),
-	    .bmp_busy     (img_busy),
+	    .bmp_busy     (display_bmp_busy),
 	    .iris_trig    (iris_toggle),
 	    .wipe_trig    (meet_wipe_trig),  // ★左→右 Wipe(会议切场, 2026-10-09j)
 	    .bri_level    (bri_level),
@@ -1145,6 +1169,7 @@ audio_viz_overlay u_audio_viz(
 	    .meeting_on   (meeting_en),   // ★会议场景(2026-10-09j; mode_map 场景映射)
 	    .q_state      (q_state),
 	    .q_end        (q_end),        // ★2026-10-09b: 结束页 → 4 队总分常显
+	    .q_end_ready  (q_end_ready),  // QUIZ8 完整帧提交后才放行
 	    .sc0          (q_sc0),
 	    .sc1          (q_sc1),
 	    .sc2          (q_sc2),
@@ -1168,7 +1193,7 @@ assign welcome_en = (latch_sw == 3'd1) && ~emergency;
 wire audio_rst_n_ser;
 reset_sync u_audio_serial_reset(.clk(hdmi_5x_clk),.rst_n_async(ext_rst_n),.rst_n_sync(audio_rst_n_ser));
 wire [31:0] audio_media_samples,audio_mux_pairs,audio_zero_samples;
-wire audio_menu_sync,audio_emergency_sync;wire [1:0] audio_scene_sync;
+wire audio_menu_sync,audio_emergency_sync,audio_welcome_sync;wire [1:0] audio_scene_sync;
 wire feature_event_valid;wire [1:0] feature_event_kind,feature_event_media;
 wire zero_valid,zero_ready,media_valid,media_ready;
 wire signed [15:0] zero_left,zero_right,media_left,media_right;
@@ -1179,10 +1204,12 @@ wire dds_valid,dds_ready;wire signed [15:0] dds_left,dds_right;wire [8:0] dds_ga
 //   wav_valid / wav_ready / wav_left / wav_right 已在 sd_card_bmp 例化前声明。
 // 迎新(SW1 场景 0)且非菜单/非应急, 并且音乐素材已准备好 → 走 WAV;
 //   否则退回 DDS。三个输入都在 video_clk 域(sync_2ff 后), 纯组合选择。
-assign sel_wav = (audio_scene_sync == 2'd0) & ~audio_menu_sync &
-                 (WAV_SECTORS != 32'd0);
+// 只同步“真实迎新场景”这一个资格位，避免 menu/scene 两路独立同步时
+// 在菜单→抢答途中短暂组合成非菜单+scene0，随机误开 WAV。
+assign sel_wav = audio_welcome_sync & (WAV_SECTORS != 32'd0);
 sync_2ff u_audio_menu_sync(.clk(video_clk),.async_in(menu_active),.sync_out(audio_menu_sync));
 sync_2ff u_audio_emergency_sync(.clk(video_clk),.async_in(emergency),.sync_out(audio_emergency_sync));
+sync_2ff u_audio_welcome_sync(.clk(video_clk),.async_in(welcome_en),.sync_out(audio_welcome_sync));
 sync_2ff u_audio_scene0_sync(.clk(video_clk),.async_in(scene_id[0]),.sync_out(audio_scene_sync[0]));
 sync_2ff u_audio_scene1_sync(.clk(video_clk),.async_in(scene_id[1]),.sync_out(audio_scene_sync[1]));
 // ★2026-10-09l: 会议 WARN 进入 toggle(sd 域) → video_clk 域, 接 audio_feature_events
@@ -1190,6 +1217,7 @@ wire meet_warn_sync;
 sync_2ff u_meet_warn_sync(.clk(video_clk),.async_in(meet_warn_tog),.sync_out(meet_warn_sync));
 audio_feature_events u_feature_events(
  .clk(video_clk),.rst_n(rst_n_vid),.menu_active(audio_menu_sync),.emergency(audio_emergency_sync),
+ .welcome_active(audio_welcome_sync),
  .scene_id(audio_scene_sync),.q_state(q_state),.q_t_tens(q_t_tens),.q_t_ones(q_t_ones),
  .meeting_warn_event(meet_warn_sync),.meeting_timeout_event(1'b0),  // ★会议 WARN 提示音(2026-10-09l)
  .event_valid(feature_event_valid),.event_kind(feature_event_kind),.event_media(feature_event_media));
@@ -1212,6 +1240,7 @@ assign audio_zero_samples = 32'd0;
 scene_audio_final u_scene_audio(
  .clk(video_clk),.rst_n(rst_n_vid),.event_valid(feature_event_valid),.event_kind(feature_event_kind),
  .media_id(feature_event_media),.menu_active(audio_menu_sync),.emergency(audio_emergency_sync),
+ .welcome_active(audio_welcome_sync),
  .active_scene(audio_scene_sync),
  .sample_valid(dds_valid),.sample_ready(dds_ready),.sample_left(dds_left),.sample_right(dds_right),
  .sample_gain(dds_gain),.overflow(media_overflow),.state_debug(media_state),.sample_count(audio_media_samples));
@@ -1415,7 +1444,7 @@ frame_read_write frame_read_write_m0(
     .write_clk                  (sd_card_clk        ),
 	.write_req                  (sd_card_write_req        ),
 	.write_req_ack              (sd_card_write_req_ack    ),
-	.write_finish               (                 ),
+	.write_finish               (frame_write_finish),
 	.write_addr_0               (24'd0            ),
 	.write_addr_1               (24'd0            ),
 	.write_addr_2               (24'd0            ),
@@ -1424,6 +1453,34 @@ frame_read_write frame_read_write_m0(
 	.write_len                  (24'd307200       ), //frame size
 	.write_en                   (bmp_scale_wr_en          ),
 	.write_data                 (bmp_scale_wr_data        )
+);
+
+// 小鹅通第八/十讲的“完整帧提交后再显示”：img_busy 只覆盖 SD/BMP 源端，
+// frame_write_finish 才表示缩放输出、异步 FIFO 和 SDRAM 写事务全部结束。
+// 保护器还会吞掉切场前旧帧的迟到提交，避免随机淡入半新半旧画面。
+scene_load_guard u_scene_load_guard (
+    .mem_clk      (ext_mem_clk),
+    .rst_mem      (~rst_n_mem),
+    .write_finish (frame_write_finish),
+    .sd_clk       (sd_card_clk),
+    .rst_sd       (~rst_n_sd),
+    // 菜单/场景切换和抢答内部跳图都必须等真实 SDRAM 帧提交。
+    .scene_change (scene_change_pulse | quiz_jump_fwd),
+    .img_busy     (img_busy),
+    .guard_busy   (scene_commit_busy)
+);
+
+// 只服务抢答结束页分数，不改变其他场景和通用转场保护。
+quiz_end_commit_guard u_quiz_end_commit_guard (
+    .mem_clk      (ext_mem_clk),
+    .rst_mem      (~rst_n_mem),
+    .write_finish (frame_write_finish),
+    .sd_clk       (sd_card_clk),
+    .rst_sd       (~rst_n_sd),
+    .quiz_en      (quiz_en),
+    .q_end        (q_end),
+    .img_busy     (img_busy),
+    .ready        (q_end_ready)
 );
 
 sdram U3

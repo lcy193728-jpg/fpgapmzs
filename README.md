@@ -1,8 +1,18 @@
-# HX4S20C 多功能 FPGA 智能终端（v10-10）
+# HX4S20C 多功能 FPGA 智能终端（v10-12）
 
 基于安路 FPGA（**EG4S20BG256** / 开发板 **HX4S20C**）的 HDMI 多媒体播放系统：从 TF 卡读取 BMP 图片 → 写入片内 SDRAM 帧缓存 → 经 HDMI 输出画面，并同步输出 **48kHz HDMI 音频**。支持**上电自启**（固化 Flash，无需 PC 重下载）。
 
 > 📖 **完整操作请见 [`使用手册.md`](./使用手册.md)**（逐按钮、逐场景）。
+
+## v10-12 更新摘要
+
+- 菜单进入迎新/会议/抢答时立即黑场，等待目标图片真正写完 SDRAM 后再在帧边界淡入，不再随机闪出默认迎新图或旧场景残帧。
+- 抢答场景入口默认静音并清空音频可视化历史；只有倒计时末段、抢答成功等有效事件才播放音效和显示柱阵。
+- 抢答结束页的总分等待 `QUIZ8` 完整帧提交，并与中心扩散转场共用可见区域，背景和分数同步出现。
+- 增加上电首帧有效门控：第一帧完整写入前仅压黑 SDRAM 背景，首页菜单等后级 OSD 不受影响。
+- 固化流程改为 BitWriter 列表只保留一个新位流；`PROGRAM_FLASH / 5MHz / 128Mbits` 完成后必须断电冷启动验证。
+
+详细问题、原因、修改范围和验证结果见 [`RELEASE_NOTES_V10_12.md`](./RELEASE_NOTES_V10_12.md)。
 
 ---
 
@@ -225,36 +235,41 @@ fpgapmzs/
 
 ## 编译与烧录
 
-1. 用安路 TD EDA 打开 `pic_sdram_audio_final.al`，综合 → 布局布线 → 生成比特流。
+1. 用安路 TD EDA 打开仓库根目录的 `pic_sdram_audio_final.al`，综合 → 布局布线 → 生成比特流。
 2. 命令行构建：`audio_final/tools/build_td.tcl`（seed 29）；复用网表生成位流：`make_bit_seed.tcl`。
-3. TF 卡插入开发板，下载器烧录：JTAG/SRAM 验证 → 确认后固化 Flash（上电自启）。
+3. 新位流位于 `pic_sdram_audio_final_Runs/best_result/pic_sdram_audio_final.bit`；先用 `PROGRAM_SRAM` 验证。
+4. 固化时清空 BitWriter 文件列表，只添加上述一个位流，选择 `PROGRAM_FLASH / 5MHz / 128Mbits` 并启用 Verify。
+5. 看到 `program_spi`、`verify_spi` 和 `PROGRAM_FLASH success` 后，不再执行 `PROGRAM_SRAM`；完全断电约 10 秒再重新上电验证自启动。
 
 > SDRAM 控制器与 HDMI 发送器为安路官方加密网表（仅 TD 可用）；PLL/FIFO 为 TD 生成的 IP。
 
 ---
 
-## 资源与时序（TD 6.2 实测，seed 29）
+## 资源与时序（TD 6.2，v10-12 实测）
 
 | 资源 | 用量 | 总量 | 占用 |
 | ---- | ---- | ---- | ---- |
-| LUT | 15240 | 19600 | 77.76% |
-| REG | 7811 | 19600 | 39.85% |
-| LE | 16366 | — | — |
+| LUT | 15352 | 19600 | 78.33% |
+| REG | 7824 | 19600 | 39.92% |
+| LE | — | — | — |
 | BRAM9K | 39 | 64 | 60.94% |
 | BRAM32K | 8 | 16 | 50.00% |
 | DSP | 14 | 29 | 48.28% |
-| IO | 53 | 188 | 28.19% |
+| IO | 57 | 188 | 30.32% |
 
-- 时序：**SWNS +0.113ns / HWNS +0.021ns / 0 违例**（clk0 = sd_card_clk 100MHz 域）。
-  - 各域余量：clk0(sd_card_clk) +0.113 / clk1(video_clk) +0.268 / 其余均正。
-- 位流：`audio_final/artifacts/pic_sdram_audio_final.bit`（685496 B，SHA256 `00c1932f…`），**10-09 已上板确认正常**，并已固化 SPI Flash（上电自启）。
-- **place seed = 29**：netlist 变化后以当轮 gate.db 重扫，SD 域最差路径落在 `fat32_lookup.v`（健康落点），非 `bmp_read_auto.v` 比较进位链（历史花屏指纹）。
+- 本次 TD 全流程完成：综合、布局布线和 bitgen 均为 `complete`；界面报告 SWNS `+0.070ns`、HWNS `+0.003ns`。
+- 位流：`pic_sdram_audio_final_Runs/best_result/pic_sdram_audio_final.bit`，685496 B，生成时间 2026-10-12 10:27:34。位流属于本机构建产物，不提交 Git。
 
 ---
 
 ## 仿真验证
 
-`sim/run_regress_all.sh` 一键回归（**26 套用例全绿，0 FAIL**）：bmp_read_auto / scene_control / ui_key_ctrl / ui_key_ctrl_meeting / osd_engine / osd_menu / osd_welcome / osd_scene / meeting_ctrl / meeting_osd / meeting_audio / quiz_ctrl / quiz_scene / bmp_scale / display_adjust(对比度) / fat32_lookup / zone_launch / audio_sd_arbiter / wav_stream_player / audio_viz / audio_viz_gate / scene_audio 等。
+`sim/run_regress_all.sh` 会自动发现 `run_sim*.do`。v10-12 共执行 27 项：**25 项通过，2 项独立旧用例未通过**。
+
+- 新增 `run_sim_first_frame`：通过，验证上电保持黑背景、首帧提交后仍等待 VS 边界、随后正常透传，以及复位重新关门。
+- `run_sim_score`：旧 testbench 未驱动新加入的 `q_end_ready` 提交资格，出现 11 个像素期望失败。
+- `run_sim_viz_gate`：旧可视化门控期望与当前“场景切换清历史”策略不一致，出现 1 个期望失败。
+- 上述两项不经过 `video_first_frame_gate`，不是首帧门控引入；为避免扩大本次修改范围，10-12 未改写这两个旧用例。
 
 > 会议新增用例：`run_sim_meeting_ctrl`（27 PASS）+ `run_sim_meeting_osd`（25 PASS），覆盖「走完 3 场 → 空闲态（绿条 + 00:00 + 停在末图）→ 空闲保持 → 空闲态按键无效 → 拨码重开」全流程。
 
@@ -267,3 +282,4 @@ fpgapmzs/
 | v10-4 | 多分辨率缩放 + 对比度(旧 4+con*8，只能压灰) + 会议/抢答/应急三场景 |
 | v10-9 | 对比度重写(k=8+con×15) + 应急去缩放档 + 会议移除 + 抢答音乐门控/音频可视化 + FAT32 文件名寻址 + 使用手册 |
 | **v10-10** | **会议场景重建**（议程状态机 + MM:SS 倒计时 + 状态条/进度条 + 走完进空闲态）+ **左→右 Wipe 转场** + 会议 WARN 提示音/音频可视化 + 会议档位映射（0议程/1亮度/2缩放/3对比度/4音量） |
+| **v10-12** | **完整帧提交门控**：切场旧图隔离、抢答入口音频/可视化清场、结束页分数与 QUIZ8 同步揭示、上电首帧有效门控；补充冷启动仿真和 Flash 固化排障文档 |

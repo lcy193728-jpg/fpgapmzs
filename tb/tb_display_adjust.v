@@ -8,9 +8,10 @@
 //          整帧色, 逐帧整帧逐色核对(亮度算术/淡入逐帧/HUD 几何/应急抑制
 //          全被覆盖):
 //   帧#0      稳态(menu=1 lvl=8) 全帧 0x808080(8档=直通), 无 HUD
-//   帧#1..#10 场景切换淡出→淡入(menu 1→0): alpha 时序 =
-//             255,255,191,127,63,0,0,64,128,192,255(FIDLE 消费事件那帧
-//             仍全亮; FOUT 降 64/帧; FBLCK(busy=0 即放行); FIN 升 64/帧)
+//   帧#1..#10 菜单→场景(menu 1→0): 帧边界直接封黑；故意让 bmp_busy
+//             晚两帧才拉高，覆盖“请求已发出但 busy 尚未跨域”的竞态窗口。
+//             帧#1..#4 必须持续全黑；busy 完整拉高再释放后才从黑淡入。
+//             alpha = 255,0,0,0,0,0,64,128,192,255,255。
 //   帧#11..#12 应急抑制淡出(menu 0→1 同时 emerg=1): 应急帧事件被清
 //             帧全亮; emerg 撤除后也不再淡出
 //   帧#13..#14 亮度条(lvl 8→12): 档变在帧边界武装 BAR_HOLD=3, 武装后首帧
@@ -164,19 +165,15 @@ module tb_display_adjust;
         end
     endfunction
 
-    // alpha 时序表(帧号→期望 alpha): 淡出 255→191/127/63/0(FIN 等忙释放),
-    // 淡入 0→64/128/192(FIN 每帧 +64, 与 RTL 一致): 帧#2=191,3=127,4=63,
-    // 5=0,6=0,7=64,8=128,9=192; 其余帧 255
+    // alpha 时序表(帧号→期望 alpha): 菜单→场景不再显示旧背景，帧#1
+    // 直接为黑；bmp_busy 保持到帧#4 结束，帧#5 仍是 FBLCK→FIN 的
+    // 交接黑帧，随后 64/128/192/255 淡入目标场景。
     function [7:0] alpha_sched; input integer f; begin
         case (f)
-            2: alpha_sched = 8'd191;
-            3: alpha_sched = 8'd127;
-            4: alpha_sched = 8'd63;
-            5: alpha_sched = 8'd0;
-            6: alpha_sched = 8'd0;
-            7: alpha_sched = 8'd64;
-            8: alpha_sched = 8'd128;
-            9: alpha_sched = 8'd192;
+            1, 2, 3, 4, 5: alpha_sched = 8'd0;
+            6: alpha_sched = 8'd64;
+            7: alpha_sched = 8'd128;
+            8: alpha_sched = 8'd192;
             default: alpha_sched = 8'd255;
         endcase
     end endfunction
@@ -545,10 +542,16 @@ module tb_display_adjust;
     //--------------- 主流程(帧边界驱动控制信号) ----------------
     initial begin
         @(negedge rst);
-        // 帧#0 稳态; 帧#1 起淡出(事件在帧#0 期间锁存, 帧#1 边沿消费)
+        // 帧#0 稳态; 菜单→场景事件在帧#0 期间锁存，帧#1 边沿直接封黑。
         wait (valid_cnt == 1);
-        menu_active = 1'b0;            // 菜单→场景, 触发淡出淡入序列
-        // 帧#1..#10 淡出→FBLCK→淡入 自动推进(busy=0 即放行)
+        menu_active = 1'b0;            // 菜单→场景, 触发黑场等待序列
+        // 故意保留两个帧边界的旧空闲低电平。旧 RTL 会在帧#2 误进 FIN，
+        // 随后即使 busy 拉高也继续淡入；新 RTL 必须等待本次 busy 完整周期。
+        wait (valid_cnt == 3);
+        bmp_busy    = 1'b1;            // 本次目标分区开始查找/写入
+        wait (valid_cnt == 5);         // 帧#1..#4 必须持续全黑，不得露出旧迎新图
+        bmp_busy    = 1'b0;            // 目标首帧完整提交，允许开始淡入
+        // 帧#5..#10 FBLCK→淡入 自动推进
         wait (valid_cnt == 11);
         menu_active = 1'b1;            // 场景→菜单, 但应急同时拉起
         emerg       = 1'b1;

@@ -9,13 +9,14 @@
 //
 // 验证点:
 //   1. 复位后无假触发(jump_req=0, iris_trig=0, locked=0);
-//   2. 进入场景(en 0→1) → 强制一次首屏对齐跳图, idx = q_idx(0) + iris 翻转;
+//   2. 进入场景(en 0→1) → 强制一次首屏对齐跳图, idx = q_idx(0)，但不触发
+//      iris（外层菜单转场负责黑场等待目标图，防止揭示默认迎新图）;
 //   3. 题号推进 q_idx=1/2 → 各产生 1 次跳图, idx 与 q_idx 一致;
 //   4. 锁定 → idx = winner+3 (3..6), 四队各验一次;
 //   5. Q_LOCK 持续期间**不重复**发脉冲(防重入);
 //   6. 结束页 q_end=1 → idx=7,**优先于锁定/题号**;
 //   7. 离开场景(en=0)不产生跳图、不翻转、locked 清零;
-//   8. toggle 对称性: 12 次事件(偶数)后 iris_trig 回到初值。
+//   8. toggle 对称性: 首次入场跳图不计 iris，其余场景内切图一一翻转。
 //
 // ★时序纪律(本 TB 的关键, 改动请勿破坏):
 //   (a) 脉冲/翻转计数器必须在 **posedge + #1** 处采样 —— 直接 @(posedge) 会与
@@ -154,8 +155,8 @@ module tb_quiz_scene_ctrl;
         tickr; tickr;                          // 等待 en_rise 生效
         check_true((pulses - pulse_snapshot) == 1,
                    "进入场景即产生 1 次首屏对齐跳图");
-        check_true((flips - flip_snapshot) == 1,
-                   "进入场景 iris 恰好翻转 1 次");
+        check_true((flips - flip_snapshot) == 0,
+                   "进入场景不触发 iris(由菜单黑场淡入接管)");
         check_true(jump_idx === 4'd0, "首屏对齐跳到第 1 题(idx=0)");
 
         // 首屏对齐后不得再重复跳(idx 未变)
@@ -255,11 +256,12 @@ module tb_quiz_scene_ctrl;
         //     四队每轮: 锁定(idx→w+3) + 回题目页(idx→1) = 2 × 4 = 8
         //     结束页(idx→7)    1
         //     小计 12; 另加"第 1 队锁定前"从 idx=2 回 idx=1 的 settle 1 次 → 13
-        //   13 为奇数 → iris_trig 应为 1(与初值 0 相反)。
+        //   跳图共 13 次，但首次入场由菜单黑场淡入接管，不触发 iris；
+        //   场景内共 12 次 iris，为偶数 → 最终回到初值 0。
         $display("       (总脉冲 = %0d, 总翻转 = %0d)", pulses, flips);
         check_true(pulses == 13,       "总跳图脉冲数 = 13");
-        check_true(flips  == 13,       "总翻转次数 = 13(与脉冲一一对应)");
-        check_true(iris_trig === 1'b1, "奇数次事件 → iris_trig 为 1(toggle 对称)");
+        check_true(flips  == 12,       "总翻转次数 = 12(首入场不触发 iris)");
+        check_true(iris_trig === 1'b0, "偶数次场景内事件 → iris_trig 回到 0");
 
         // ---------- 结果 ----------
         $display("=== tb_quiz_scene_ctrl done: errors=%0d ===", errors);

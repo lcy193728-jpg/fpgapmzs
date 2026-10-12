@@ -26,7 +26,7 @@ module scene_audio_final #(
     //   警报不会自己静音; 6 s * 48000 = 288000 个 48 kHz 样本。
     parameter integer BURST_ON_SAMPLES=288000,BURST_OFF_SAMPLES=288000
 )(
-    input wire clk,rst_n,event_valid,menu_active,emergency,
+    input wire clk,rst_n,event_valid,menu_active,emergency,welcome_active,
     input wire [1:0] active_scene,
     input wire [1:0] event_kind,media_id,
     output wire sample_valid,input wire sample_ready,
@@ -43,7 +43,7 @@ module scene_audio_final #(
     reg repeat_index,with_melody; reg [15:0] age; reg [31:0] rate_acc,phase;
     reg signed [15:0] sine_q; reg pending,transition; reg [2:0] pending_state;
     reg [1:0] pending_scene; reg pending_melody; reg [8:0] fade_gain;
-    reg emergency_d,menu_d; reg [1:0] scene_d; reg [24:0] fifo[0:31]; reg [4:0] wp,rp;
+    reg emergency_d,menu_d,welcome_d; reg [1:0] scene_d; reg [24:0] fifo[0:31]; reg [4:0] wp,rp;
     reg [5:0] count; wire tick=rate_acc>=CLOCK_HZ-SAMPLE_HZ;
     wire pop=sample_valid&&sample_ready; wire push=tick&&(count<32||pop);
     assign sample_valid=count!=0; assign sample_left=$signed(fifo[rp][15:0]);
@@ -130,11 +130,11 @@ module scene_audio_final #(
       if(!rst_n) begin
         state<=IDLE;scene_q<=0;note_index<=0;repeat_index<=0;with_melody<=0;age<=0;rate_acc<=0;phase<=0;
         pending<=0;transition<=0;pending_state<=IDLE;pending_scene<=0;pending_melody<=0;fade_gain<=0;
-        emergency_d<=0;menu_d<=1;scene_d<=0;wp<=0;rp<=0;count<=0;overflow<=0;sample_count<=0;
+        emergency_d<=0;menu_d<=1;welcome_d<=0;scene_d<=0;wp<=0;rp<=0;count<=0;overflow<=0;sample_count<=0;
         siren_inc<=SIREN_INC_LOW;siren_rising<=1'b1;phase2<=0;phase3<=0;
         burst_cnt<=19'd0;burst_on<=1'b1;   // 上电后第一次进应急从"鸣"段开始
       end else begin
-        emergency_d<=emergency;menu_d<=menu_active;scene_d<=active_scene;
+        emergency_d<=emergency;menu_d<=menu_active;welcome_d<=welcome_active;scene_d<=active_scene;
         if(tick) begin
           rate_acc<=rate_acc+SAMPLE_HZ-CLOCK_HZ;sample_count<=sample_count+1'b1;phase<=phase+increment;if(!push)overflow<=1;
           phase2<=state==ALARM?phase2+siren_inc2[31:0]:32'd0;
@@ -203,15 +203,15 @@ module scene_audio_final #(
         if(emergency&&!emergency_d)begin pending<=1;pending_state<=ALARM;pending_scene<=3;pending_melody<=0;end
         else if(!emergency&&emergency_d)begin pending<=1;pending_state<=IDLE;pending_melody<=0;end
         else if(!emergency&&menu_active&&!menu_d)begin pending<=1;pending_state<=IDLE;pending_melody<=0;end
-        // 2026-09-21: 进入场景一(迎新)的判据由"仅从菜单进入"放宽为
-        //   "从菜单 或 从别的场景切进来"都要起奏喜悦旋律(否则 会议→迎新
-        //   这种切换不会响, 与"场景一一进来就一直播"的预期不符)。
-        else if(!emergency&&!menu_active&&(menu_d||scene_d!=2'd0)&&active_scene==2'd0)begin
+        // 迎新资格必须使用上游整体同步后的单一电平。不能用分别同步的
+        // menu_active/active_scene 再组合，否则菜单→抢答的跨域先后差会
+        // 随机制造一个“进入迎新”假边沿，带出几拍迎新音乐。
+        else if(!emergency&&welcome_active&&!welcome_d)begin
           pending<=1;pending_state<=BLIP;pending_scene<=0;pending_melody<=1;
         end
         // 离开场景一(切到会议/抢答) → 停掉一直循环的喜悦旋律, 否则会带着
         // 迎新音乐进到别的场景。切回菜单态由上一条 menu_active 分支处理。
-        else if(!emergency&&!menu_active&&active_scene!=2'd0&&scene_d==2'd0)begin
+        else if(!emergency&&!welcome_active&&welcome_d)begin
           pending<=1;pending_state<=IDLE;pending_melody<=0;
         end
         else if(event_valid&&!emergency)begin pending<=1;pending_state<=menu_active||event_kind==0?IDLE:BLIP;

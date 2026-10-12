@@ -60,6 +60,7 @@ module audio_viz_overlay(
  reg [24:0] mag_acc;            // [C7] 本组 |pcm| 累加(1024 x 15bit, 25 位恰好)
  reg [7:0] wp;                  // 环形写址; 深度 256 → 8 位自然回绕
  reg [49:0] live_sr;            // [C8] 最近 50 根柱的"柱高非零"标志移位寄存器
+ reg [5:0] hist_count;          // 当前场景已生成的有效柱数(0..50)
  wire [14:0] abs_pcm=pcm[15]?(~pcm[14:0]+1'b1):pcm[14:0];
  wire [7:0] mag=abs_pcm[14:7];
  wire [24:0] mag_acc_nxt=mag_acc+{10'b0,abs_pcm};  // [C7] 含当前样本
@@ -80,7 +81,7 @@ module audio_viz_overlay(
  wire wave_we=pcm_take&&(gcnt==10'd1023);           // 组末写入
  // ---- [C4][C5] 读侧(像素域) ----
  wire [7:0] hgt_q;              // 本列柱高(写侧算好; 音高路 0..92, 包络路 0..255, >74 即填满)
- reg menu0,menu1;reg [1:0] sc0,sc1;
+ reg menu0,menu1;reg [1:0] sc0,sc1,sc_prev;
  // [C7] 按场景分柱高来源: 迎新(sc0) = 包络音量; 抢答/应急 = 音高轮廓(过零率)。
  //   注意: 此处必须位于 sc1 声明之后(Verilog 要求先声明后使用)。
  wire [7:0] hgt_w=(sc1==2'd0)?hgt_env:hgt_pitch;
@@ -108,6 +109,10 @@ wire show=!menu1 && show_not_full && (live_sr != 50'd0);
  wire [5:0] col=px5[11:6];      // 0..49 → 50 根柱
  wire [5:0] sub=px5[5:0];       // 列内位置 0..63
  wire bar=sub<6'd46;            // 柱体内(约 9.2 px); 其余为间隙(约 3.6 px)
+ // 场景切换后 BRAM 中仍有旧场景的高度值；hist_count 只放行本场景新写入
+ // 的最右侧若干柱，防止第一声提示音出现时把旧音乐的 49 根柱一起带出。
+ wire [6:0] hist_floor=7'd50-{1'b0,hist_count};
+ wire column_valid=({1'b0,col}>=hist_floor);
  // 写址 wp 指向"下一次要写"的格子, 故地址 a 里的数据是 (wp-a) 次写入之前的。
  // 要 col=49 显示最新一根(1 次之前)、col=0 显示最旧一根(50 次之前), 读址就是
  // wp + col - 50; 常量 206 即 -50 的 8 位补码, 于是只需一次 8 位加法, 且上电
@@ -127,24 +132,33 @@ EG_LOGIC_BRAM #(
  .addra({1'b0,wp}),.addrb({1'b0,ridx})
 );
  always @(posedge clk) begin
-  if(rst)begin wp<=0;gcnt<=0;env_max<=0;zc_cnt<=0;sgn_d<=0;menu0<=1;menu1<=1;sc0<=0;sc1<=0;
-   live_sr<=50'd0;
+  if(rst)begin wp<=0;gcnt<=0;env_max<=0;zc_cnt<=0;sgn_d<=0;mag_acc<=0;
+   menu0<=1;menu1<=1;sc0<=0;sc1<=0;sc_prev<=0;
+   live_sr<=50'd0;hist_count<=6'd0;
    hs_d<=0;vs_d<=0;de_d<=0;data_d<=0;x_d<=0;y_d<=0;
    hs_o<=0;vs_o<=0;de_o<=0;data_o<=0;px_x_o<=0;px_y_o<=0;end
   else begin
-   menu0<=menu_active;menu1<=menu0;sc0<=scene_id;sc1<=sc0;
+   menu0<=menu_active;menu1<=menu0;sc0<=scene_id;sc1<=sc0;sc_prev<=sc1;
    // [C1][C2][C3] 48 kHz 写侧: 数满 1024 个样本即写一根柱, 然后把组计数、
    //   过零计数、包络一起清零, 下一组重新统计。
-   if(pcm_take)begin
-    sgn_d<=pcm[15];
-    if(wave_we)begin gcnt<=10'd0;zc_cnt<=10'd0;env_max<=8'd0;mag_acc<=25'd0;wp<=wp+1'b1;end
-    else begin gcnt<=gcnt+1'b1;zc_cnt<=zc_next;env_max<=env_nxt;mag_acc<=mag_acc_nxt;end
-   end
+   // 菜单态或场景变化时清掉统计窗口与“有声历史”。这只清可视化状态，
+   // 不碰音频数据通路；抢答进场默认静音时整条不会继承迎新的柱阵。
+   if(menu1 || (sc1!=sc_prev))begin
+    gcnt<=10'd0;zc_cnt<=10'd0;env_max<=8'd0;mag_acc<=25'd0;sgn_d<=1'b0;
+    live_sr<=50'd0;hist_count<=6'd0;
+   end else begin
+    if(pcm_take)begin
+     sgn_d<=pcm[15];
+     if(wave_we)begin gcnt<=10'd0;zc_cnt<=10'd0;env_max<=8'd0;mag_acc<=25'd0;wp<=wp+1'b1;end
+     else begin gcnt<=gcnt+1'b1;zc_cnt<=zc_next;env_max<=env_nxt;mag_acc<=mag_acc_nxt;end
+    end
    // [C8] 有声标志移位(与写柱同拍): 每写一根柱左移一位, 最低位填"新柱是否
    //   非零"。50 位窗口与 50 根柱一一对应, 于是 live_sr != 0 就是
    //   "画面上这条柱阵里至少有一根柱子"。
-   if(wave_we) begin
-    live_sr <= {live_sr[48:0], (hgt_w != 8'd0)};
+    if(wave_we) begin
+     live_sr <= {live_sr[48:0], (hgt_w != 8'd0)};
+     if(hist_count<6'd50)hist_count<=hist_count+1'b1;
+    end
    end
    // 同步读使能 BRAM 推断成立(读址打拍), 整条视频流同步延迟 2 拍:
    //   本拍 data_i→data_d, 下一拍 dob(hgt_q)/x_d 才与 data_d 对齐。
@@ -165,7 +179,7 @@ EG_LOGIC_BRAM #(
     end
     // [C4][C5] 柱体内且 (436-y) <= 柱高 的像素填 accent; 条带内 dh 最大 74,
     //   柱高上限 92 时整条内高全填, 因此不需要限幅比较。
-    if(bar&&dh<=hgt9)data_o<=accent;
+    if(bar&&column_valid&&dh<=hgt9)data_o<=accent;
    end
   end
  end

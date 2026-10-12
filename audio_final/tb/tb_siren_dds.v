@@ -40,7 +40,7 @@ module tb_siren_dds;
 
     scene_audio_final dut(
       .clk(clk), .rst_n(rst_n), .event_valid(1'b0), .menu_active(1'b0),
-      .emergency(emergency), .active_scene(2'b11), .event_kind(2'b0), .media_id(2'b0),
+      .emergency(emergency), .welcome_active(1'b0), .active_scene(2'b11), .event_kind(2'b0), .media_id(2'b0),
       .sample_valid(sample_valid), .sample_ready(sample_ready),
       .sample_left(sample_left), .sample_right(sample_right),
       .sample_gain(sample_gain), .overflow(overflow), .state_debug(state_debug),
@@ -51,7 +51,7 @@ module tb_siren_dds;
       .BURST_ON_SAMPLES(2400), .BURST_OFF_SAMPLES(2400)
     ) dut2(
       .clk(clk), .rst_n(rst_n), .event_valid(1'b0), .menu_active(1'b0),
-      .emergency(emergency), .active_scene(2'b11), .event_kind(2'b0), .media_id(2'b0),
+      .emergency(emergency), .welcome_active(1'b0), .active_scene(2'b11), .event_kind(2'b0), .media_id(2'b0),
       .sample_valid(s2_valid), .sample_ready(s2_ready),
       .sample_left(s2_left), .sample_right(), .sample_gain(s2_gain),
       .overflow(), .state_debug(state2), .sample_count());

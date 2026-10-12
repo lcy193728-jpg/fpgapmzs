@@ -4,9 +4,10 @@
 //   1. 亮度调节 : 16 档(bri_level 0..15, 默认 8 = ×1.0), 增益
 //      g = 64 + L*8 (×0.5 .. ×1.44), 乘加取整并饱和钳位。
 //      调节键来自 sd 域 ui_key_ctrl(key2=减 / key3=加), 本模块两级同步。
-//   2. 场景切换淡入淡出 : 检测 menu_active(菜单态标志)电平翻转
-//      (菜单↔场景 必经, "先开锁定"保证), 从 alpha=255 逐帧降到 0 黑场,
-//      等 bmp 底层新分区图片写完(img_busy 释放 / 超时兜底)再逐帧升回 255。
+//   2. 场景切换淡入淡出 : 检测 menu_active(菜单态标志)电平翻转。
+//      · 菜单→场景: 帧边界直接进入 alpha=0 黑场，避免菜单 OSD 关闭后把
+//        SDRAM 中残留的默认迎新图当作“旧图”淡出；等新分区写完再淡入。
+//      · 场景→菜单: 保留原淡出→黑场→淡入流程。
 //      应急(emerg)期间强制 alpha=255 不淡出(最高优先级即刻响应)。
 //
 //   3. ★操作提示 HUD(2026-09-16 新增, 全部"变化即弹、N 帧后自动消失"):
@@ -171,6 +172,7 @@ module display_adjust #(
     input                meeting_on,     // ★1=处于会议场景(2026-10-09j; 用于 mode_map 场景映射)
     input        [1:0]   q_state,        // 抢答状态(仅用于调试/扩展, 当前未直接参与显示)
     input                q_end,          // ★2026-10-09b: 1=抢答结束页(F_END) → 4 队总分常显
+    input                q_end_ready,    // QUIZ8 已完成 SDRAM 整帧提交(sd 域电平)
     input signed [7:0]   sc0, sc1, sc2, sc3,  // 4 队累计分(有符号)
     input                sc_evt,         // 判分动作脉冲(异步, 触发分数板弹出)
     input        [1:0]   sc_team,        // 本次被判队伍 0..3
@@ -216,6 +218,7 @@ module display_adjust #(
     reg        q_s0, q_s1;      // 抢答场景使能
     reg        mt_s0, mt_s1;    // ★会议场景使能(2026-10-09j)
     reg        qe_s0, qe_s1;    // ★2026-10-09b: 抢答结束页电平
+    reg        qr_s0, qr_s1;    // QUIZ8 完整帧提交就绪电平
     reg        cev_s0, cev_s1;  // 判分电平翻转(toggle)
     reg signed [7:0] sc0_s0, sc0_s1, sc1_s0, sc1_s1,
                      sc2_s0, sc2_s1, sc3_s0, sc3_s1;
@@ -262,6 +265,7 @@ module display_adjust #(
             mm_s1                          // 0/1/2/3(周期)/5 原样
         );
     wire       qend_s   = qe_s1;  // ★过域后的抢答结束页电平
+    wire       qready_s = qr_s1;  // ★过域后的结束图提交就绪
     wire       scev_s   = cev_s1; // 过域后的判分电平翻转
     wire signed [7:0] scv0 = sc0_s1, scv1 = sc1_s1,
                       scv2 = sc2_s1, scv3 = sc3_s1;
@@ -284,6 +288,7 @@ module display_adjust #(
             q_s0<=1'b0; q_s1<=1'b0;   // 抢答场景默认关
             mt_s0<=1'b0; mt_s1<=1'b0; // 会议场景默认关(2026-10-09j)
             qe_s0<=1'b0; qe_s1<=1'b0; // ★结束页默认关
+            qr_s0<=1'b0; qr_s1<=1'b0; // ★结束图默认未提交
             cev_s0<=1'b0; cev_s1<=1'b0;
             sc0_s0<=8'sd0; sc0_s1<=8'sd0; sc1_s0<=8'sd0; sc1_s1<=8'sd0;
             sc2_s0<=8'sd0; sc2_s1<=8'sd0; sc3_s0<=8'sd0; sc3_s1<=8'sd0;
@@ -305,6 +310,7 @@ module display_adjust #(
             q_s0<=quiz_on;     q_s1<=q_s0;
             mt_s0<=meeting_on; mt_s1<=mt_s0;
             qe_s0<=q_end;      qe_s1<=qe_s0;
+            qr_s0<=q_end_ready; qr_s1<=qr_s0;
             cev_s0<=sc_evt;    cev_s1<=cev_s0;
             sc0_s0<=sc0; sc0_s1<=sc0_s0;
             sc1_s0<=sc1; sc1_s1<=sc1_s0;
@@ -325,7 +331,8 @@ module display_adjust #(
 
     //--------------------------------------------------------------
     // 淡入淡出状态机(alpha 每帧 vs 边沿步进, 帧内恒定 → 无抖动)
-    //   FIDLE: 透明(255)。检测到 menu_active 翻转事件(非应急)→ FOUT。
+    //   FIDLE: 透明(255)。检测到 menu_active 翻转事件(非应急):
+    //          菜单→场景直接置黑进 FBLCK；场景→菜单仍进入 FOUT。
     //   FOUT : alpha 逐帧降 64 直到 0 → FBLCK。
     //   FBLCK: 黑场等待 bmp_busy 释放(底层新分区图写完)或超时 → FIN。
     //   FIN  : alpha 逐帧升 64 直到 255 → FIDLE。
@@ -339,8 +346,20 @@ module display_adjust #(
     // 帧计数只用 6 位: 上界分别由 TIMEOUT_FRAMES(45) / *_HOLD_FRAMES(30) 决定,
     // 均 ≤ 62 → 不会回绕, 与 16 位计数逐位等价(参数前提见模块头注释)。
     reg [5:0]  blk_fr;         // 黑场已等待帧数(超时计数)
+    // 菜单→场景必须等待一次“busy 已拉高、随后再拉低”的完整加载事务。
+    // 只看 busy=0 会把请求发出到 img_busy 跨域拉高之间的旧空闲窗口
+    // 误判成新图完成，从而把 SDRAM 中的上一场景先淡入。
+    reg        wait_busy_cycle;
+    reg        busy_seen;
     reg        menu_past;      // 上一拍 menu_active(同步域, 边沿检测)
     reg        menu_evt;       // 粘性翻转事件(帧边界消费)
+    // 菜单→场景的逐像素时钟遮黑。OSD 使能与本模块各自跨域后，若只在
+    // 下一帧 VS 才把 alpha 置 0，会随机漏出 0~1 帧旧底图；本位在检测到
+    // menu_s 下降的同拍立即盖黑，并保持到目标帧提交/超时。
+    reg        entry_blank;
+    // 抢答结束分数只能在 QUIZ8 背景真实提交后、帧边界上一次性放行。
+    // q_end 本身先于图片加载完成，直接用它画分数会叠到上一张队伍图上。
+    reg        qend_visible;
     reg [3:0]  lvl_past;     // 上一拍亮度档(变化 → 显示亮度条)
     reg [5:0]  bar_cnt;        // 亮度条剩余显示帧数(0=隐藏)
     reg [3:0]  res_past;     // 上一拍缩放档(变化 → 显示缩放条)
@@ -393,8 +412,12 @@ module display_adjust #(
             fsm        <= FIDLE;
             alpha      <= 8'd255;
             blk_fr     <= 6'd0;
+            wait_busy_cycle <= 1'b0;
+            busy_seen  <= 1'b0;
             menu_past  <= 1'b1;       // 复位默认菜单态(与 scene_control 一致), 防上电假淡出
             menu_evt   <= 1'b0;
+            entry_blank<= 1'b0;
+            qend_visible<=1'b0;
             lvl_past   <= 4'd8;
             bar_cnt    <= 6'd0;
             res_past   <= 4'd4;
@@ -420,10 +443,26 @@ module display_adjust #(
             wipe_evt   <= 1'b0;
         end
         else begin
+            // busy 可能在两个帧边界之间完成一个短脉冲，逐像素时钟粘住“已开始”。
+            // 只有菜单→场景事务会置 wait_busy_cycle，不改变场景→菜单原流程。
+            if (wait_busy_cycle && busy_s)
+                busy_seen <= 1'b1;
+
             // ---- 事件锁存(逐拍检测, 与帧边界无关) ----
-            if (menu_s != menu_past)
+            if (menu_s != menu_past) begin
                 menu_evt <= 1'b1;                 // 场景切换事件(粘性)
+                if (!menu_s)
+                    entry_blank <= 1'b1;          // 不等 VS，立即封住旧背景/新 OSD
+                else
+                    entry_blank <= 1'b0;          // 快速退回菜单时不能永久黑屏
+            end
             menu_past <= menu_s;
+
+            // 结束页只消费专用完整帧提交令牌，不再用 busy 电平猜测完成时刻。
+            // visible 仍只在 vs_rise 置位，整帧内分数层保持一致。
+            if(!quiz_s || !qend_s)begin
+                qend_visible<=1'b0;
+            end
 
             // iris 触发事件(粘性事件, 帧边界消费)
             //   ★上游给的是"电平翻转(toggle)", 故检测**任意变化**而不是上升沿:
@@ -491,6 +530,9 @@ module display_adjust #(
             mode_mapd <= mode_map;
 
             if (vs_rise) begin
+                if(qend_s && qready_s)begin
+                    qend_visible<=1'b1;
+                end
                 // 提示条倒计时(每帧 -1)
                 if (bar_cnt != 6'd0)
                     bar_cnt <= bar_cnt - 6'd1;
@@ -512,7 +554,10 @@ module display_adjust #(
                     fsm      <= FIDLE;
                     alpha    <= 8'd255;
                     blk_fr   <= 6'd0;
+                    wait_busy_cycle <= 1'b0;
+                    busy_seen <= 1'b0;
                     menu_evt <= 1'b0;
+                    entry_blank <= 1'b0;
                     // iris 转场同样即刻终止(防应急图被扩散幕布遮挡)
                     iris_run <= 1'b0;
                     iris_r   <= IRIS_R_MAX;
@@ -528,7 +573,22 @@ module display_adjust #(
                         blk_fr <= 6'd0;
                         if (menu_evt) begin
                             menu_evt <= 1'b0;
-                            fsm      <= FOUT;       // 场景切换事件 → 开始淡出
+                            if (!menu_s) begin
+                                // 菜单→场景: 菜单层已经随 menu_s 关闭，此时输入
+                                // 背景仍可能是默认迎新分区。若从 255 慢慢淡出，
+                                // 就会把迎新图完整暴露一遍。按课程“黑场等待新图
+                                // commit 后再淡入”的口径，在帧边界直接封黑。
+                                alpha  <= 8'd0;
+                                fsm    <= FBLCK;
+                                blk_fr <= 6'd0;
+                                wait_busy_cycle <= 1'b1;
+                                busy_seen <= busy_s;
+                            end
+                            else begin
+                                fsm <= FOUT;         // 场景→菜单: 保留原淡出
+                                wait_busy_cycle <= 1'b0;
+                                busy_seen <= 1'b0;
+                            end
                         end
                     end
                     FOUT: begin
@@ -541,9 +601,16 @@ module display_adjust #(
                             alpha <= alpha - FADE_STEP;
                     end
                     FBLCK: begin
-                        // 等底层新分区图写完(忙释放)或超时, 防呆黑
-                        if (~busy_s || (blk_fr >= TIMEOUT_FRAMES[5:0])) begin
+                        // 菜单→场景：必须先观察到本次加载 busy=1，再等待其释放；
+                        // 这等价于课程 HOLD→IN 所需的“新图提交完成”握手，不能
+                        // 把请求刚发出时属于上一事务的 busy=0 当成完成。
+                        // 场景→菜单保持旧行为，只等当前 busy 释放，不改变原效果。
+                        if ((wait_busy_cycle ? (busy_seen && ~busy_s) : ~busy_s) ||
+                            (blk_fr >= TIMEOUT_FRAMES[5:0])) begin
                             fsm <= FIN;
+                            entry_blank <= 1'b0;
+                            wait_busy_cycle <= 1'b0;
+                            busy_seen <= 1'b0;
                         end
                         else
                             blk_fr <= blk_fr + 6'd1;
@@ -1292,7 +1359,12 @@ module display_adjust #(
     wire end_col = (px1n >= END_X1) ? 1'b1 : 1'b0;   // 0=左列 1=右列
     wire [11:0] end_sx = end_col ? END_X1 : END_X0;  // 本槽左
     wire [11:0] end_sy = end_row ? END_Y1 : END_Y0;  // 本槽上
-    wire end_region = qend_s && de1 &&
+    // 结束页分数属于 QUIZ8 背景本身的一部分，必须和背景共用中心扩散的
+    // 逐像素可见区。若在 iris 之后无条件叠加，分数会全亮抢跑，而背景仍在
+    // 扩散，实拍就会表现成“先出现分数、后出现结束图”。未揭示区域继续走
+    // 原背景处理链；扩散边界到达该像素时，背景和分数在同一拍一起出现。
+    wire end_reveal = ~iris_run || iris_inside;
+    wire end_region = qend_visible && end_reveal && de1 &&
                       ((py1n >= END_Y0) && (py1n < END_Y1 + END_H)) &&
                       ((px1n >= END_X0) && (px1n < END_X1 + END_W)) &&
                       // 必须落在"本槽"内(防跨槽串字)
@@ -1451,12 +1523,16 @@ module display_adjust #(
                    scb_g[scb_bidx];
 
     //--------------------------------------------------------------
-    // 输出仲裁: 亮度条 > 缩放条 > 音量条 > 状态卡 > 分辨率字幕 > 分数板 > 淡入×亮度像素
+    // 输出仲裁: 切场入口遮黑 > 亮度条 > 缩放条 > 音量条 > 状态卡 >
+    //             分辨率字幕 > 分数板 > 淡入×亮度像素
     //   (六块 HUD 在 x/y 上互不重叠, 但用 if-else 链明确优先级, 顺序稳定)
     //--------------------------------------------------------------
     reg [DATA_W-1:0] fo;
     always @* begin
-        if (bar_region) begin
+        if (entry_blank && de1) begin
+            fo = {DATA_W{1'b0}};
+        end
+        else if (bar_region) begin
             if (bar_border)
                 fo = C_BAR_BD;
             else if (bar_active)

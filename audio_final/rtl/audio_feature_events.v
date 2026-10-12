@@ -5,7 +5,7 @@ module audio_feature_events #(
     parameter integer CLOCK_HZ=25000000
 )(
     input wire clk,rst_n,
-    input wire menu_active,emergency,
+    input wire menu_active,emergency,welcome_active,
     input wire [1:0] scene_id,q_state,
     input wire [3:0] q_t_tens,q_t_ones,
     input wire meeting_warn_event,meeting_timeout_event,
@@ -15,26 +15,30 @@ module audio_feature_events #(
     reg menu0,menu1,em0,em1;
     reg [1:0] sc0,sc1,qs0,qs1;
     reg [3:0] qt0a,qt0b,qt1a,qt1b;
-    reg [1:0] sc_d,qs_d; reg menu_d;
+    reg [1:0] sc_d,qs_d; reg menu_d,welcome_d;
     reg [7:0] qsec_d;
     reg warn_d;                 // ★上一拍 meeting_warn_event(toggle 边沿检测, 2026-10-09l)
     reg [31:0] repeat_delay;
     reg repeat_pending;
     wire [7:0] qsec={qt1a,qt1b};
-    wire enter_welcome=!menu1 && !em1 && sc1==2'd0 && (menu_d || sc_d!=2'd0);
+    // menu_active 与 scene_id 若分别跨域，会在“菜单→抢答”时短暂组合成
+    // 非菜单+scene0，从而随机误触发迎新旋律。welcome_active 是上游先完成
+    // 场景资格判断后再整体同步的单一电平，不存在这个非法中间态。
+    wire enter_welcome=welcome_active && !welcome_d;
     wire in_meeting=!menu1 && !em1 && sc1==2'd1;
     wire in_quiz=!menu1 && !em1 && sc1==2'd2;
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
             menu0<=1;menu1<=1;em0<=0;em1<=0;sc0<=0;sc1<=0;qs0<=0;qs1<=0;
             qt0a<=0;qt0b<=0;qt1a<=0;qt1b<=0;sc_d<=0;qs_d<=0;qsec_d<=0;menu_d<=1;
-            warn_d<=0;repeat_delay<=0;repeat_pending<=0;
+            warn_d<=0;repeat_delay<=0;repeat_pending<=0;welcome_d<=0;
             event_valid<=0;event_kind<=0;event_media<=0;
         end else begin
             menu0<=menu_active;menu1<=menu0;em0<=emergency;em1<=em0;
             sc0<=scene_id;sc1<=sc0;qs0<=q_state;qs1<=qs0;
             qt0a<=q_t_tens;qt0b<=q_t_ones;qt1a<=qt0a;qt1b<=qt0b;
-            sc_d<=sc1;qs_d<=qs1;qsec_d<=qsec;menu_d<=menu1;event_valid<=0;
+            sc_d<=sc1;qs_d<=qs1;qsec_d<=qsec;menu_d<=menu1;
+            welcome_d<=welcome_active;event_valid<=0;
             warn_d<=meeting_warn_event;
             // ★2026-10-09l: meeting_warn_event 改为 toggle(进入 WARN 翻转一次),
             //   边沿检测(任意变化)触发一声提示音 —— 与抢答 toggle 同法, 防跨域丢脉冲。

@@ -27,7 +27,7 @@ module tb_scene_audio_meeting;
 
   scene_audio_final dut(
     .clk(clk), .rst_n(rst_n), .event_valid(event_valid), .menu_active(menu_active),
-    .emergency(emergency), .active_scene(active_scene),
+    .emergency(emergency), .welcome_active(1'b0), .active_scene(active_scene),
     .event_kind(event_kind), .media_id(media_id),
     .sample_valid(sample_valid), .sample_ready(sample_ready),
     .sample_left(sample_left), .sample_right(sample_right), .sample_gain(sample_gain),
