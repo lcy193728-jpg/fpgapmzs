@@ -703,7 +703,11 @@ module display_adjust #(
         end
         else begin
             hs1<=hs_i; vs1<=vs_i; de1<=de_i;
-            da1<=data_i;
+            // P4 低功耗门控：消隐期 HDMI 不采纳 RGB 数据，保持上一有效像素
+            // 可阻断上游空白区数据翻转继续传播到亮度/淡入/对比度流水线。
+            // de/hs/vs 与坐标仍逐拍前移，因此所有有效像素及视频时序不变。
+            if (de_i)
+                da1<=data_i;
             px1<=px_x; py1<=px_y;
         end
     end

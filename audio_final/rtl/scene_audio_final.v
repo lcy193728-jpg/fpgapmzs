@@ -98,6 +98,11 @@ module scene_audio_final #(
     // 迎新旋律"一直播放"的判据: 当前播放的旋律属于场景 0(迎新)。
     //   scene_q 在旋律装载时锁存, 故整段旋律期间恒定, 不会中途翻转。
     wire welcome_loop = with_melody && (scene_q==2'd0);
+    // P2 低功耗门控：IDLE 以及防空警报的 6 s 静音段都没有可听信号。
+    // 这些区间冻结三个 DDS 相位累加器；静音 PCM 仍按 48 kHz 连续送出，
+    // 因而不改变 HDMI 音频时钟、FIFO 水位或场景切换握手。警报静音段
+    // 结束时原逻辑本来就会把相位清零，故该门控与原可观察波形逐样本等价。
+    wire dds_phase_en = (state != IDLE) && !((state == ALARM) && !burst_on);
     wire [31:0] increment=state==ALARM?siren_inc:
                              (state==BLIP?PH_BLIP:note_phase(scene_q,note_index));
     wire [15:0] duration=state==BLIP?BLIP_SAMPLES:NOTE_SAMPLES;
@@ -117,14 +122,22 @@ module scene_audio_final #(
       end
     end
     wire [8:0] gain=transition?fade_gain:envelope[8:0];
-    function signed [15:0] volume_scale; input signed [18:0] value;
-      reg signed [27:0] total,term;integer b;begin total=0;term=value;
-      for(b=0;b<9;b=b+1) begin if((VOLUME>>b)&1) total=total+term;term=term<<<1;end
-      volume_scale=total>>>8;end endfunction
     // 2026-09-21 国标音型: 应急时只有"鸣"段输出扫频警笛, "停"段输出 0(静音)。
     wire signed [18:0] full_raw=state==IDLE?19'sd0:
       state==ALARM?(burst_on?siren_out:19'sd0):(state==MELODY?(sine_q<<<1):(sine_q<<<2));
-    wire signed [15:0] raw=volume_scale(full_raw);
+    function signed [15:0] volume_scale_general; input signed [18:0] value;
+      reg signed [27:0] total,term;integer b;begin total=0;term=value;
+      for(b=0;b<9;b=b+1) begin if((VOLUME>>b)&1) total=total+term;term=term<<<1;end
+      volume_scale_general=total>>>8;end endfunction
+    // VOLUME 固定为 224，原循环移位累加等价于 value*224/256=value*7/8。
+    // 显式扩成 23 位后用 (8x-x)>>3，只留一个减法器；比 28 位、三项累加
+    // 更短更省，并保持负数算术右移及最终 16 位截断逐位一致。
+    wire signed [22:0] full_raw_ext = {{4{full_raw[18]}}, full_raw};
+    wire signed [22:0] raw_x7 = (full_raw_ext <<< 3) - full_raw_ext;
+    // 非默认参数仍保留原通用算法，避免破坏模块的参数化接口；当前工程
+    // VOLUME=224，综合时只保留前一支的单减法数据通路。
+    wire signed [15:0] raw = (VOLUME == 224) ? (raw_x7 >>> 3)
+                                             : volume_scale_general(full_raw);
 
     always @(posedge clk or negedge rst_n) begin
       if(!rst_n) begin
@@ -136,9 +149,11 @@ module scene_audio_final #(
       end else begin
         emergency_d<=emergency;menu_d<=menu_active;welcome_d<=welcome_active;scene_d<=active_scene;
         if(tick) begin
-          rate_acc<=rate_acc+SAMPLE_HZ-CLOCK_HZ;sample_count<=sample_count+1'b1;phase<=phase+increment;if(!push)overflow<=1;
-          phase2<=state==ALARM?phase2+siren_inc2[31:0]:32'd0;
-          phase3<=state==ALARM?phase3+siren_inc3[31:0]:32'd0;
+          rate_acc<=rate_acc+SAMPLE_HZ-CLOCK_HZ;sample_count<=sample_count+1'b1;
+          phase<=dds_phase_en ? (phase+increment) : 32'd0;
+          if(!push)overflow<=1;
+          phase2<=(state==ALARM && burst_on)?phase2+siren_inc2[31:0]:32'd0;
+          phase3<=(state==ALARM && burst_on)?phase3+siren_inc3[31:0]:32'd0;
           if(pending) begin
             if(!transition&&gain!=0)begin transition<=1;fade_gain<=gain-1'b1;end
             else if(transition&&fade_gain!=0)fade_gain<=fade_gain-1'b1;
