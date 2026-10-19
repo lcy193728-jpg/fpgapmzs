@@ -51,12 +51,12 @@ module tb_meeting_osd;
     // 采样一个像素: 设坐标, 等 3 拍(同步余量 + 组合 + 输出寄存器), 读 data_o
     task sample;
         input [11:0] x, y;
-        input [23:0] expect;
+        input [23:0] exp_rgb;
         input [255:0] msg;
         begin
             @(posedge clk); px_x <= x; px_y <= y; data_i <= 24'h123456;
             repeat (3) @(posedge clk);
-            chk(data_o == expect, msg);
+            chk(data_o == exp_rgb, msg);
         end
     endtask
 
@@ -82,6 +82,7 @@ module tb_meeting_osd;
         @(posedge clk); px_x = 320; px_y = 10;
         repeat (3) @(posedge clk);
         chk(data_o == 24'hE24B4A, "RUN 状态条 = 红 0xE24B4A");
+        sample(12'd26, 12'd13, 24'hFFFFFF, "RUN 顶部 MEETING 状态文字可见");
 
         // [C3] WARN → 状态条黄
         m_state = 2'd2;
@@ -89,6 +90,7 @@ module tb_meeting_osd;
         @(posedge clk); px_x = 320; px_y = 10;
         repeat (3) @(posedge clk);
         chk(data_o == 24'hF0A020, "WARN 状态条 = 黄 0xF0A020");
+        sample(12'd26, 12'd13, 24'hFFFFFF, "WARN 顶部 ENDING 状态文字可见");
 
         // [C4] IDLE → 状态条绿
         m_state = 2'd0;
@@ -96,6 +98,7 @@ module tb_meeting_osd;
         @(posedge clk); px_x = 320; px_y = 10;
         repeat (3) @(posedge clk);
         chk(data_o == 24'h2FA84F, "IDLE 状态条 = 绿 0x2FA84F");
+        sample(12'd26, 12'd13, 24'hFFFFFF, "IDLE 顶部 IDLE 状态文字可见");
 
         // [C5] 非 OSD 区 → 透传
         m_state = 2'd1;

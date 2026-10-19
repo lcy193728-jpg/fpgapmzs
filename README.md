@@ -1,4 +1,21 @@
-# HX4S20C 多功能 FPGA 智能终端（v10-12）
+# HX4S20C 多功能 FPGA 智能终端（10-19 稳定交付版）
+
+> 当前稳定交付分支：`codex/final-10-19-delivery`。完整交付包位于
+> [`delivery/10-19-final`](./delivery/10-19-final/README.md)，其中只保留一个推荐烧录位流、
+> 同批次种子 59 的面积/时序报告、最终回归与数据采集材料、作品设计报告初稿及原始模板。
+> 本版本已经完成实板烧录和核心功能复核；后续不再叠加功能，重点补齐功耗、冷启动、长稳和切换时延数据。
+
+## 10-19 稳定交付摘要
+
+- 推荐位流：`delivery/10-19-final/01_bitstream/ONLY_PROGRAM_FINAL_10_19_QOR_BEST.bit`
+- 位流 SHA-256：`B44A60AA348C756FBC08373CCC06E3B3B7BA08C4C226C339237E8FF31A5D49A9`
+- 器件：EG4S20BG256；LUT 17,288（88.20%）；REG 8,881（45.31%）
+- 时序：SWNS +0.134 ns；HWNS +0.020 ns；STA 覆盖率 99.84%
+- 最终功能回归：12/12 PASS；详细边界和证据见交付包验证目录。
+
+---
+
+## 历史基线：v10-12
 
 基于安路 FPGA（**EG4S20BG256** / 开发板 **HX4S20C**）的 HDMI 多媒体播放系统：从 TF 卡读取 BMP 图片 → 写入片内 SDRAM 帧缓存 → 经 HDMI 输出画面，并同步输出 **48kHz HDMI 音频**。支持**上电自启**（固化 Flash，无需 PC 重下载）。
 
@@ -237,41 +254,46 @@ fpgapmzs/
 
 1. 用安路 TD EDA 打开仓库根目录的 `pic_sdram_audio_final.al`，综合 → 布局布线 → 生成比特流。
 2. 命令行构建：`audio_final/tools/build_td.tcl`（seed 29）；复用网表生成位流：`make_bit_seed.tcl`。
-3. 新位流位于 `pic_sdram_audio_final_Runs/best_result/pic_sdram_audio_final.bit`；先用 `PROGRAM_SRAM` 验证。
-4. 固化时清空 BitWriter 文件列表，只添加上述一个位流，选择 `PROGRAM_FLASH / 5MHz / 128Mbits` 并启用 Verify。
+3. 本次发布只使用 `artifacts/ONLY_PROGRAM_10_18_FINAL_ARCH_LP.bit`；先用 `PROGRAM_SRAM` 验证。
+4. 固化时清空 BitWriter 文件列表，只添加上述一个位流，选择 `PROGRAM_FLASH / 5MHz / 128Mbits` 并启用 Verify。不要烧录任何名称含 `REJECTED` 的文件。
 5. 看到 `program_spi`、`verify_spi` 和 `PROGRAM_FLASH success` 后，不再执行 `PROGRAM_SRAM`；完全断电约 10 秒再重新上电验证自启动。
+
+发布位流 SHA-256：`318747763FB4682EF21923C4DC95A4D1D48BBB40291D83A1246DF97F6C891B3D`。
 
 > SDRAM 控制器与 HDMI 发送器为安路官方加密网表（仅 TD 可用）；PLL/FIFO 为 TD 生成的 IP。
 
 ---
 
-## 资源与时序（TD 6.2，v10-12 实测）
+## 资源与时序（TD 6.2，v10-18 最终实测）
 
 | 资源 | 用量 | 总量 | 占用 |
 | ---- | ---- | ---- | ---- |
-| LUT | 15352 | 19600 | 78.33% |
-| REG | 7824 | 19600 | 39.92% |
-| LE | — | — | — |
-| BRAM9K | 39 | 64 | 60.94% |
-| BRAM32K | 8 | 16 | 50.00% |
+| LUT | 17381 | 19600 | 88.68% |
+| REG | 8886 | 19600 | 45.34% |
+| LE | 18196 | 19600 | 92.84% |
+| Slice | 9395 | 9800 | 95.87% |
+| BRAM9K | 52 | 64 | 81.25% |
+| BRAM32K | 13 | 16 | 81.25% |
 | DSP | 14 | 29 | 48.28% |
 | IO | 57 | 188 | 30.32% |
 
-- 本次 TD 全流程完成：综合、布局布线和 bitgen 均为 `complete`；界面报告 SWNS `+0.070ns`、HWNS `+0.003ns`。
-- 位流：`pic_sdram_audio_final_Runs/best_result/pic_sdram_audio_final.bit`，685496 B，生成时间 2026-10-12 10:27:34。位流属于本机构建产物，不提交 Git。
+- 固定 seed=59 的综合、布局布线和 bitgen 全流程完成；Setup WNS `+0.114ns`，Hold WNS `+0.020ns`。
+- seed=83 与 seed=97 虽能完成实现，但面积或建立时间均劣于 seed=59，已标记为 `REJECTED_NOT_FOR_PROGRAMMING`。
+- 发布位流大小 722744 B。Slice 仅余 405，后续不再用“堆功能”方式修改主线。
 
 ---
 
 ## 仿真验证
 
-`sim/run_regress_all.sh` 会自动发现 `run_sim*.do`。v10-12 共执行 27 项：**25 项通过，2 项独立旧用例未通过**。
+执行 `powershell -ExecutionPolicy Bypass -File tools/qualify_10_18_final.ps1` 可完成最终发布准入：
 
-- 新增 `run_sim_first_frame`：通过，验证上电保持黑背景、首帧提交后仍等待 VS 边界、随后正常透传，以及复位重新关门。
-- `run_sim_score`：旧 testbench 未驱动新加入的 `q_end_ready` 提交资格，出现 11 个像素期望失败。
-- `run_sim_viz_gate`：旧可视化门控期望与当前“场景切换清历史”策略不一致，出现 1 个期望失败。
-- 上述两项不经过 `video_first_frame_gate`，不是首帧门控引入；为避免扩大本次修改范围，10-12 未改写这两个旧用例。
+- 8 组核心功能回归全部通过；
+- 迎新马赛克、BMP 缩放 BRAM、应急箭头 3 组专项全部通过；
+- 低功耗活动率专项通过：空闲/静音保持阶段相位停止，激活阶段恢复翻转；
+- 物理资源、Setup/Hold WNS、位流 SHA-256 全部通过门限；
+- 总计 12 组功能/专项验证无失败，最终输出 `FINAL_10_18_PASS`。
 
-> 会议新增用例：`run_sim_meeting_ctrl`（27 PASS）+ `run_sim_meeting_osd`（25 PASS），覆盖「走完 3 场 → 空闲态（绿条 + 00:00 + 停在末图）→ 空闲保持 → 空闲态按键无效 → 拨码重开」全流程。
+低功耗 VCD 只用于证明门控行为和相对翻转差异；未接板测电流前，不虚报具体 mW 或节电百分比。
 
 ---
 
@@ -283,3 +305,4 @@ fpgapmzs/
 | v10-9 | 对比度重写(k=8+con×15) + 应急去缩放档 + 会议移除 + 抢答音乐门控/音频可视化 + FAT32 文件名寻址 + 使用手册 |
 | **v10-10** | **会议场景重建**（议程状态机 + MM:SS 倒计时 + 状态条/进度条 + 走完进空闲态）+ **左→右 Wipe 转场** + 会议 WARN 提示音/音频可视化 + 会议档位映射（0议程/1亮度/2缩放/3对比度/4音量） |
 | **v10-12** | **完整帧提交门控**：切场旧图隔离、抢答入口音频/可视化清场、结束页分数与 QUIZ8 同步揭示、上电首帧有效门控；补充冷启动仿真和 Flash 固化排障文档 |
+| **v10-18** | **架构与低功耗收敛版**：保持上板效果不变，完成帧边界配置提交、串口可调字幕、场景音频静态门控、共享字体/缩放存储优化、严格物理 QoR 准入；以 VCD 活动率、12 组回归和 seed=59 正时序共同封版 |

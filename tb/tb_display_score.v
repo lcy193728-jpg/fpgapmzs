@@ -126,7 +126,7 @@ module tb_display_score;
         .res_level (4'd4),
         .con_level (con_level),   // ★对比度档(2026-10-09c)
         .img_res   (2'd1),            // 640x480, 分辨率字幕会弹但位置不冲突
-        .pic_manual(1'b0),
+        .pic_manual(1'b0), .res_info_always(1'b0),
         .ui_mode   (3'd0),
         .quiz_on   (quiz_on),
         .meeting_on(1'b0),

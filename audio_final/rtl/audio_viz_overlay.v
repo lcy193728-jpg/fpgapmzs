@@ -43,6 +43,12 @@
 //      门控 = !menu && 场景∈{0,2,3} && audio_live, 其中 audio_live 为当组
 //      写侧统计量非零(hgt_w 或 hgt_env)。静音时连底色/边框一起消失,
 //      不是留一条空框。具体见下方 audio_live 处注释。
+// [C9] 2026-10-14 低功耗等价优化: BRAM 读口和列译码仅在 y=362..437 的
+//      76 行可视化窗口内工作。其余有效行/消隐期固定读址并关闭 BRAM 读使能,
+//      把原先整帧持续翻转的 x*5、环形地址加法和 BRAM 读口限制在显示窗：
+//      只占有效画面行的 15.8%，并在所有消隐期关闭。只门控无效窗口, 不用
+//      show 做读门控, 因而声音在帧中途出现
+//      时也不会引入首列陈旧数据；窗口内像素结果与原实现逐位相同。
 //--------------------------------------------------------------------
 module audio_viz_overlay(
  input wire clk,rst, input wire hs_i,vs_i,de_i,input wire [23:0] data_i,
@@ -59,7 +65,7 @@ module audio_viz_overlay(
  reg sgn_d;                     // 上一个 48 kHz 样本的符号位
  reg [24:0] mag_acc;            // [C7] 本组 |pcm| 累加(1024 x 15bit, 25 位恰好)
  reg [7:0] wp;                  // 环形写址; 深度 256 → 8 位自然回绕
- reg [49:0] live_sr;            // [C8] 最近 50 根柱的"柱高非零"标志移位寄存器
+ reg [5:0] live_age;            // [C8] 距最近非零柱的剩余寿命(0..50)
  reg [5:0] hist_count;          // 当前场景已生成的有效柱数(0..50)
  wire [14:0] abs_pcm=pcm[15]?(~pcm[14:0]+1'b1):pcm[14:0];
  wire [7:0] mag=abs_pcm[14:7];
@@ -88,14 +94,15 @@ module audio_viz_overlay(
 reg hs_d,vs_d,de_d;reg [23:0] data_d;reg [11:0] x_d,y_d;
 // [C8] 2026-10-09: 按用户要求, 音频可视化改为"**有声音才出现, 静音整条消失**"
 //   (含底色与上/下边框一起消失, 不是留一条空框)。
-//   实现: live_sr 是 50 位移位寄存器, 每写一根柱就左移 1 位, 最低位填入
-//   "这根柱是不是非零"(hgt_w!=0)。于是 live_sr != 0 ⟺ 最近 50 根柱里
-//   (即画面上这一整条柱阵)至少有一根非零 ⟺ "此刻有声音"。
+//   实现: live_age 是 6 位寿命计数器。写入非零柱时装载 50；之后每写入一根
+//   零柱减 1。于是 live_age != 0 ⟺ 最近 50 根柱里至少有一根非零
+//   ⟺ "此刻有声音"。它与原 50 位移位窗口逐拍等价，但省去 44 个 FF 和
+//   50 位非零归约树，状态含义也更适合答辩说明。
 //   为什么不用写侧瞬态量(hgt_w)直接做门控: 组末清零后到下一组喂进来的
 //   空档里 hgt_w 会瞬时为 0, 若拿它当门控会让整条闪烁。live_sr 记录的是
 //   **已经落盘、观众正在看的那 50 根**, 与画面所见严格一致, 不会闪。
-//   静音持续 50 根柱(≈1.07s)后 live_sr 自然回 0 → 整条消失; 一声响起即在
-//   下一根柱写入时置位 → 整条立刻出现。资源只有 50 个 FF + 1 位比较。
+//   静音持续 50 根柱(≈1.07s)后 live_age 自然回 0 → 整条消失; 一声响起即在
+//   下一根柱写入时置位 → 整条立刻出现。状态资源仅 6 个 FF。
 //   ⚠ 不改 [C3] 原有逐列门控: 它的作用是在"整条可见"的前提下, 让某一根柱
 //     在其对应组确实静音时归零(警报"鸣 6s/停 6s"的间歇能看出缺口)。
 // ★2026-10-09n: 会议场景(sc1==1) 的柱阵**只在 WARN 期间出现** —— 刚进入会议
@@ -103,9 +110,13 @@ reg hs_d,vs_d,de_d;reg [23:0] data_d;reg [11:0] x_d,y_d;
 //   (0 迎新 / 2 抢答 / 3 应急) 判据不变。meet_warn_lv 由顶层的 WARN 电平
 //   两级同步后送入(video_clk 域)。
 wire show_not_full = (sc1==0||sc1==2||sc1==3) || (sc1==1 && meet_warn_lv);
-wire show=!menu1 && show_not_full && (live_sr != 50'd0);
- // 5*px_x: 有效像素 px_x<=639 → 5*px_x<=3195, 12 位足够, 无高位丢失。
- wire [11:0] px5=(px_x<<2)+px_x;
+wire show=!menu1 && show_not_full && (live_age != 6'd0);
+ // [C9] 只在可视化窗口内让横坐标进入列译码；窗口外固定为 0。
+ // 不把 show 并入门控，避免 audio_live 在一帧中途置位时首列读到旧地址。
+ wire viz_rd_en=de_i&&(px_y[8:0]>=9'd362)&&(px_y[8:0]<9'd438);
+ wire [11:0] viz_x=viz_rd_en?px_x:12'd0;
+ // 5*viz_x: 有效像素 x<=639 → 5*x<=3195, 12 位足够, 无高位丢失。
+ wire [11:0] px5=(viz_x<<2)+viz_x;
  wire [5:0] col=px5[11:6];      // 0..49 → 50 根柱
  wire [5:0] sub=px5[5:0];       // 列内位置 0..63
  wire bar=sub<6'd46;            // 柱体内(约 9.2 px); 其余为间隙(约 3.6 px)
@@ -118,7 +129,10 @@ wire show=!menu1 && show_not_full && (live_sr != 50'd0);
  // wp + col - 50; 常量 206 即 -50 的 8 位补码, 于是只需一次 8 位加法, 且上电
  // 后只要写过 50 根柱, 整排读址就都指向已写过的格子, 不用等环形填满。
  wire [7:0] ridx=wp+{2'b0,col}+8'd206;
- wire [8:0] dh=9'd436-y_d[8:0]; // 当前行距柱底的行数(柱底/基线 = 436, 恢复原位)
+ // [C9] 窗口外把减法器输入固定到柱底, 阻断 y 坐标整帧翻转传播。
+ wire viz_band_d=de_d&&(y_d[8:0]>=9'd362)&&(y_d[8:0]<9'd438);
+ wire [8:0] viz_y_d=viz_band_d?y_d[8:0]:9'd436;
+ wire [8:0] dh=9'd436-viz_y_d; // 当前行距柱底的行数(柱底/基线 = 436, 恢复原位)
  wire [8:0] hgt9={1'b0,hgt_q};
  wire [23:0] accent=sc1==3?24'hff3030:(sc1==2?24'h30e8ff:24'h44ff88);
 EG_LOGIC_BRAM #(
@@ -128,13 +142,13 @@ EG_LOGIC_BRAM #(
 ) u_wave_bram (
  .doa(),.dob(hgt_q),.dia(hgt_w),.dib(8'b0),
  .cea(1'b1),.ocea(1'b1),.clka(clk),.wea(wave_we),.rsta(1'b0),.bea(1'b0),
- .ceb(1'b1),.oceb(1'b1),.clkb(clk),.web(1'b0),.rstb(1'b0),.beb(1'b0),
+ .ceb(viz_rd_en),.oceb(1'b1),.clkb(clk),.web(1'b0),.rstb(1'b0),.beb(1'b0),
  .addra({1'b0,wp}),.addrb({1'b0,ridx})
 );
  always @(posedge clk) begin
   if(rst)begin wp<=0;gcnt<=0;env_max<=0;zc_cnt<=0;sgn_d<=0;mag_acc<=0;
    menu0<=1;menu1<=1;sc0<=0;sc1<=0;sc_prev<=0;
-   live_sr<=50'd0;hist_count<=6'd0;
+   live_age<=6'd0;hist_count<=6'd0;
    hs_d<=0;vs_d<=0;de_d<=0;data_d<=0;x_d<=0;y_d<=0;
    hs_o<=0;vs_o<=0;de_o<=0;data_o<=0;px_x_o<=0;px_y_o<=0;end
   else begin
@@ -145,18 +159,18 @@ EG_LOGIC_BRAM #(
    // 不碰音频数据通路；抢答进场默认静音时整条不会继承迎新的柱阵。
    if(menu1 || (sc1!=sc_prev))begin
     gcnt<=10'd0;zc_cnt<=10'd0;env_max<=8'd0;mag_acc<=25'd0;sgn_d<=1'b0;
-    live_sr<=50'd0;hist_count<=6'd0;
+    live_age<=6'd0;hist_count<=6'd0;
    end else begin
     if(pcm_take)begin
      sgn_d<=pcm[15];
      if(wave_we)begin gcnt<=10'd0;zc_cnt<=10'd0;env_max<=8'd0;mag_acc<=25'd0;wp<=wp+1'b1;end
      else begin gcnt<=gcnt+1'b1;zc_cnt<=zc_next;env_max<=env_nxt;mag_acc<=mag_acc_nxt;end
     end
-   // [C8] 有声标志移位(与写柱同拍): 每写一根柱左移一位, 最低位填"新柱是否
-   //   非零"。50 位窗口与 50 根柱一一对应, 于是 live_sr != 0 就是
-   //   "画面上这条柱阵里至少有一根柱子"。
+   // [C8] 有声寿命更新(与写柱同拍): 非零柱装载 50；零柱递减至 0。
+   //   与“最近 50 根中至少一根非零”的 50 位移位窗口逐拍等价。
     if(wave_we) begin
-     live_sr <= {live_sr[48:0], (hgt_w != 8'd0)};
+     if(hgt_w != 8'd0) live_age<=6'd50;
+     else if(live_age != 6'd0) live_age<=live_age-1'b1;
      if(hist_count<6'd50)hist_count<=hist_count+1'b1;
     end
    end

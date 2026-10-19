@@ -164,6 +164,7 @@ module display_adjust #(
                                          //                    2=1024x768 3=1280x960
                                          // (2026-10-02 由 1bit img_2x 扩为 2bit 四档)
     input                pic_manual,     // 1=手动单张 / 0=自动轮播
+    input                res_info_always,// 迎新模式6: 分辨率字幕常显(顶层已按场景门控)
     input        [2:0]   ui_mode,        // 功能模式 0图片/1亮度/2缩放/3周期|对比度/4计分|对比度/5音量
                                          //   ★模式号含义随场景: 抢答场景 3=对比度;
                                          //     迎新/应急 4=对比度(由 ui_key_ctrl 决定)
@@ -208,6 +209,7 @@ module display_adjust #(
     reg  [3:0] v_s0, v_s1;      // 音量档 0..15(2026-09-28)
     reg  [3:0] c_s0, c_s1;      // ★对比度档 0..15(2026-10-09c)
     reg        p_s0, p_s1;      // 轮播(0)/手动(1)
+    reg        ria_s0, ria_s1;  // 分辨率字幕常显开关
     reg  [2:0] u_s0, u_s1;      // 功能模式 0图片/1亮度/2缩放/3周期|对比度/4计分|对比度/5音量
     reg  [2:0] mm_s0, mm_s1;    // ★映射后模式号(mm, 2026-10-09e): 迎新恒 = ui_mode;
                                 //   抢答/应急 3→4 档平移(见 mode_msel 段)
@@ -262,6 +264,7 @@ module display_adjust #(
             mm_s1                          // 0/1/2 原样(图片/亮度/缩放)
         ) : (                              // 迎新场景
             (mm_s1 == 3'd4) ? 3'd4 :      // 4 = 对比度
+            (mm_s1 == 3'd6) ? 3'd3 :      // 6 = 分辨率常显开关(不弹其它HUD)
             mm_s1                          // 0/1/2/3(周期)/5 原样
         );
     wire       qend_s   = qe_s1;  // ★过域后的抢答结束页电平
@@ -281,6 +284,7 @@ module display_adjust #(
             v_s0<=4'd8; v_s1<=4'd8;
             c_s0<=4'd8; c_s1<=4'd8;   // 对比度默认 ×1.0(与 bri/vol 同口径)
             p_s0<=1'b0; p_s1<=1'b0;
+            ria_s0<=1'b0; ria_s1<=1'b0;
             u_s0<=MODE_PIC; u_s1<=MODE_PIC;
             x_s0<=2'd1; x_s1<=2'd1;   // 复位默认 640×480(码1), 防上电假字幕
             i_s0<=1'b0; i_s1<=1'b0;   // iris 触发默认无效, 防上电假扩散
@@ -302,6 +306,7 @@ module display_adjust #(
             v_s0<=vol_level;   v_s1<=v_s0;
             c_s0<=con_level;   c_s1<=c_s0;
             p_s0<=pic_manual;  p_s1<=p_s0;
+            ria_s0<=res_info_always; ria_s1<=ria_s0;
             u_s0<=ui_mode;     u_s1<=u_s0;
             mm_s0<=ui_mode;    mm_s1<=mm_s0;
             x_s0<=img_res;     x_s1<=x_s0;
@@ -458,8 +463,8 @@ module display_adjust #(
             end
             menu_past <= menu_s;
 
-            // 结束页只消费专用完整帧提交令牌，不再用 busy 电平猜测完成时刻。
-            // visible 仍只在 vs_rise 置位，整帧内分数层保持一致。
+            // 结束页改由 OSD 全屏接管，不再依赖 QUIZ8 图片的加载/提交。
+            // visible 仍只在 vs_rise 置位，保证标题、排名、分数同一帧出现。
             if(!quiz_s || !qend_s)begin
                 qend_visible<=1'b0;
             end
@@ -530,7 +535,7 @@ module display_adjust #(
             mode_mapd <= mode_map;
 
             if (vs_rise) begin
-                if(qend_s && qready_s)begin
+                if(qend_s)begin
                     qend_visible<=1'b1;
                 end
                 // 提示条倒计时(每帧 -1)
@@ -1023,7 +1028,8 @@ module display_adjust #(
     //   dr = 行内偏移 0..13; 宽度 1,2,...,7,7,...,2,1 → 右向三角
     //   (tri_pix/man_pix 只在 card_region 内被采用, 故同样可用窄化坐标)
     wire        tri_row = (py1n >= 9'd33) && (py1n <= 9'd46);
-    wire [4:0]  tri_dr  = py1[4:0] - 5'd33;                    // 仅 tri_row 内有效
+    // py1 只保留低 5 位，因此 y=33 的低 5 位是 1；显式写 1，避免 5'd33 截断告警。
+    wire [4:0]  tri_dr  = py1[4:0] - 5'd1;                     // 仅 tri_row 内有效
     wire [4:0]  tri_rem = 5'd13 - tri_dr;
     wire [4:0]  tri_w   = 5'd1 + ((tri_dr < tri_rem) ? tri_dr : tri_rem);
     wire        tri_pix = tri_row && (px1n >= 10'd24) && (px1n < (10'd24 + tri_w));
@@ -1236,7 +1242,9 @@ module display_adjust #(
     localparam [11:0] RESW_IL = RESW_X0 + 12'd2;    // 566 内区左
     localparam [11:0] RESW_IT = RESW_Y0 + 12'd2;    // 8   内区上
 
-    wire resw_show = (resw_cnt != 6'd0);
+    // 默认仍只在切图后短显；迎新模式6打开后常显。顶层已用 welcome_en
+    // 门控 res_info_always，因此不会把字幕带进其它场景。
+    wire resw_show = (resw_cnt != 6'd0) || ria_s1;
     wire resw_region = resw_show && de1 &&
                        (py1n >= RESW_Y0) && (py1n < RESW_B) &&
                        (px1n >= RESW_X0) && (px1n < RESW_R);
@@ -1344,40 +1352,9 @@ module display_adjust #(
                       ((py1n == SCB_Y0) || (py1n == SCB_B - 12'd1) ||
                        (px1n == SCB_X0) || (px1n == SCB_R - 12'd1));
 
-    // ---- ② 结束页散点(4 队分数叠到 QUIZ8 的 -- 占位) ----
-    //   ★2026-10-09c 用户要求: 结束页**只显示分数**(如 "+2" / "-1"), 不带 "T1"/"T2"
-    //     队号前缀(卡片上已印好队名), 且**字体放大一倍**。
-    //   ⇒ 文字 = 符号 + 最多两位数字 = 3 字符; 字格 12×14(2× 于弹窗的 6×7)
-    //     → 文字 36px 宽 × 14px 高。槽取 48×16(文字居中, 两侧/上下各留余量)。
-    //   槽左上角 = 中心 - (24,8) → 左列 x=202, 右列 x=498; 上排 y=244, 下排 y=354。
-    //   (底色 C_END_BG 与卡片填充同色, 盖住图片上预留的灰 "--"。)
-    localparam [11:0] END_X0 = 12'd202;   // 226-24: 左列槽左
-    localparam [11:0] END_X1 = 12'd498;   // 522-24: 右列槽左
-    localparam [11:0] END_Y0 = 12'd244;   // 252-8 : 上排槽上
-    localparam [11:0] END_Y1 = 12'd354;   // 362-8 : 下排槽上
-    localparam [11:0] END_W  = 12'd48;    // 槽宽(容 3 字符 × 12px = 36px, 两侧各 6px)
-    localparam [11:0] END_H  = 12'd16;    // 槽高(14px 字高 + 2px 余量)
-
-    // 当前像素落在哪个槽(结束页才有效)
-    wire end_row = (py1n >= END_Y1) ? 1'b1 : 1'b0;   // 0=上排 1=下排
-    wire end_col = (px1n >= END_X1) ? 1'b1 : 1'b0;   // 0=左列 1=右列
-    wire [11:0] end_sx = end_col ? END_X1 : END_X0;  // 本槽左
-    wire [11:0] end_sy = end_row ? END_Y1 : END_Y0;  // 本槽上
-    // 结束页分数属于 QUIZ8 背景本身的一部分，必须和背景共用中心扩散的
-    // 逐像素可见区。若在 iris 之后无条件叠加，分数会全亮抢跑，而背景仍在
-    // 扩散，实拍就会表现成“先出现分数、后出现结束图”。未揭示区域继续走
-    // 原背景处理链；扩散边界到达该像素时，背景和分数在同一拍一起出现。
+    // 结束页现在由全屏 OSD 接管，删除旧 QUIZ8 图片散点叠加几何。
+    // 只保留 iris 可见区，用于下方全屏 OSD 的中心扩散效果。
     wire end_reveal = ~iris_run || iris_inside;
-    wire end_region = qend_visible && end_reveal && de1 &&
-                      ((py1n >= END_Y0) && (py1n < END_Y1 + END_H)) &&
-                      ((px1n >= END_X0) && (px1n < END_X1 + END_W)) &&
-                      // 必须落在"本槽"内(防跨槽串字)
-                      (py1n >= end_sy) && (py1n < end_sy + END_H) &&
-                      (px1n >= end_sx) && (px1n < end_sx + END_W);
-    wire [1:0] end_team = {end_row, end_col};        // 队伍号 0..3
-
-    // 两个几何的并集命中(文字像素共用一段渲染)
-    wire scbx_region = scb_in || end_region;
 
     //--------------------------------------------------------------
     // 分数解码(★2026-10-09c: 提到几何之前 —— 结束页的"居中留白"依赖 scb_two,
@@ -1397,19 +1374,28 @@ module display_adjust #(
         absv = v[7] ? (8'd0 - v[7:0]) : v[7:0];
     endfunction
 
-    // 结束页要居中 → 必须先知道"当前槽两位还是个位"。当前槽的队号 =
-    //   · 弹窗模式: scb_r16(行号 0..3); 结束页: end_team。
-    //   为打破"几何依赖 scb_two → scb_two 依赖行号 → 行号依赖几何"的环,
-    //   这里**预览**本槽队号: 弹窗的 scb_r16 只依赖 scb_ly(盒子内 y), 结束页
-    //   只依赖 end_team, 二者都不依赖左右方向的居中留白 → 无环。
-    //   (scb_ly/scb_ly12 只减 SCB_IT / end_sy, 与 end_lpad 无关, 故可先用。)
-    wire [11:0] scb_ly12_p = scb_in ? (py1n - SCB_IT) : (py1n - end_sy - 12'd1);
-    wire [5:0]  scb_ly_p   = scb_ly12_p[5:0];
-    wire [2:0]  scb_r16_p  = scb_in ? (scb_ly_p / 6'd14) : {1'b0, end_team};
+    // 弹窗过期后将坐标输入隔离为0，避免 /14、/6 等解码网络在整帧空转。
+    // 行/列解码改为固定阈值比较+减法，像素结果与原除法/取模逐位等价。
+    wire [11:0] scb_lx12 = scb_pop ? (px1n - SCB_IL) : 12'd0;
+    wire [11:0] scb_ly12 = scb_pop ? (py1n - SCB_IT) : 12'd0;
+    wire [2:0] scb_r16 = (scb_ly12 < 12'd14) ? 3'd0 :
+                          (scb_ly12 < 12'd28) ? 3'd1 :
+                          (scb_ly12 < 12'd42) ? 3'd2 : 3'd3;
+    wire [3:0] scb_ry = (scb_r16==0) ? scb_ly12[3:0] :
+                         (scb_r16==1) ? (scb_ly12-12'd14) :
+                         (scb_r16==2) ? (scb_ly12-12'd28) : (scb_ly12-12'd42);
+    wire [4:0] scb_ci = (scb_lx12 < 12'd6)  ? 5'd0 :
+                         (scb_lx12 < 12'd12) ? 5'd1 :
+                         (scb_lx12 < 12'd18) ? 5'd2 :
+                         (scb_lx12 < 12'd24) ? 5'd3 : 5'd4;
+    wire [2:0] scb_bc = (scb_ci==0) ? scb_lx12[2:0] :
+                         (scb_ci==1) ? (scb_lx12-12'd6) :
+                         (scb_ci==2) ? (scb_lx12-12'd12) :
+                         (scb_ci==3) ? (scb_lx12-12'd18) : (scb_lx12-12'd24);
 
     reg signed [7:0] scv_sel;
     always @* begin
-        case (scb_r16_p)
+        case (scb_r16)
             3'd0:    scv_sel = scv0;
             3'd1:    scv_sel = scv1;
             3'd2:    scv_sel = scv2;
@@ -1422,44 +1408,7 @@ module display_adjust #(
     wire [3:0] scv_d01  = dec01(scv_abs);
     wire       scv_two  = (scv_d10 != 4'd0);          // 是否两位数
 
-    // ★弹窗模式下 lx 恒 ≥0(盒内偏移); 结束页模式需先减"水平居中留白" ——
-    //   缩进前先判是否已进到文字区, 否则 px1n 落在槽左留白内时会算出负偏移(回绕)。
-    //   结束页留白 = 6px(两位数, 3 格) / 12px(个位, 2 格), 见下方 end_lpad。
-    //   ★2026-10-09c 修: 原写死 +12 → 两位数(lpad=6)时把首字符左半(lx 0..5)整段
-    //     拦掉, 正号/负号被切掉一半(实测 "+12" 只有 104 点阵像素而非 132)。
-    //     必须与本槽实际左留白 end_lpad 一致 → 用 end_sx + end_lpad。
-    //     (end_in_txt 须在 end_lpad 之后声明 —— Verilog 先声明后使用。)
-
-    // 内区局部坐标: 弹窗模式取盒内偏移(已保证 ≥0); 结束页模式取槽内偏移。
-    //   ★结束页居中处理: 槽宽 48, 字格 12。
-    //     两位数(符号+十位+个位 = 3 格 = 36px) → 左留白 6px;
-    //     个位数(符号+个位    = 2 格 = 24px) → 左留白 12px(整体居中, 不留空档)。
-    //   故结束页的"文字区起点" = end_sx + (scb_two ? 6 : 12), 且字数按 2/3 动态。
-    wire [11:0] end_lpad = scv_two ? 12'd6 : 12'd12;   // 结束页左留白
-    wire end_in_txt = end_region && (px1n >= end_sx + end_lpad);
-    wire [11:0] scb_lx12 = scb_in ? (px1n - SCB_IL)
-                                  : (px1n - end_sx - end_lpad);
-    wire [11:0] scb_ly12 = scb_ly12_p;
-    wire [6:0]  scb_lx   = scb_lx12[6:0];        // 0..172
-    wire [5:0]  scb_ly   = scb_ly12[5:0];        // 0..55(内区高 64-8=56)
-
-    // ★行高层级: 每行占 14px(7px 字高 + 7px 行距), 4 行 = 56px = 内区高。
-    //   弹窗模式: 行号/行内 y 来自盒内 y 分层(14px 一层), 字格 6×7。
-    //   结束页模式: 行号 = 本槽队伍号(固定一行); 行内 y = 槽内 y, 字格 12×14
-    //     → scb_ry 取 0..13, grow = ry>>1(0..6) 实现纵向 2×放大。
-    wire [2:0]  scb_r16  = scb_in ? (scb_ly / 6'd14) : {1'b0, end_team};
-    wire [3:0]  scb_ry   = scb_in ? (scb_ly % 6'd14)
-                                  : {1'b0, scb_ly[3:0]};   // 结束页: 0..15(字格 14 高)
-    // ★2026-10-09b 修 BUG-1: ci 必须 5 位 —— 内区宽 172, /6 商最大 28, 4 位装不下
-    //   (回绕成 0..12 重复) → case 的 default 把超出部分全画成个位数字 → 行尾拖一串。
-    //   ★2026-10-09c: 结束页字格 12px 宽 → ci 用 /12; 仍需 5 位(槽宽 48,/12 商最大 3)。
-    //   ci_sel 统一取"本模式下的字符序号", 供下方 case 选择字符。
-    wire [4:0]  scb_ci   = scb_in ? (scb_lx / 7'd6) : (scb_lx / 7'd12);   // 字符序号
-    // ★bc 必须 4 位: 结束页按 12px 取模 → 0..11, 3 位装不下(会回绕)。
-    wire [3:0]  scb_bc   = scb_in ? {1'b0,(scb_lx % 7'd6)} : (scb_lx % 7'd12);  // 字内列 0..5 / 0..11
-    // 字行: 弹窗直接取 ry(0..6); 结束页 ry(0..13) 折半 → 纵向 2× 放大
-    //   ★ry 可达 14/15(槽高 16, ly 0..15), >>1 得 7 → 越界; 由 scb_row7_ok 拦掉。
-    wire [2:0]  scb_grow = scb_in ? scb_ry[2:0] : scb_ry[3:1];
+    wire [2:0] scb_grow = scb_ry[2:0];
 
     // 取当前行/槽对应队的分数解码结果(已在几何之前算好, 见上方 scv_* 段)
     wire        scb_neg = scv_neg;
@@ -1475,56 +1424,167 @@ module display_adjust #(
     //     ci 0=符号 1=首位 2=次位; 个位数时**首位即个位**(不留空, 文字整体居中)。
     reg  [3:0] scb_ch;
     always @* begin
-        if (scb_in) begin
-            case (scb_ci)
-                5'd0: scb_ch = 4'd13;                     // 'T'(队号前缀, 代 "N号队")
-                5'd1: scb_ch = {1'b0,scb_r16} + 4'd1;     // 队号 1..4
-                5'd2: scb_ch = scb_neg ? 4'd11 : 4'd15;   // '-' / '+'
-                5'd3: scb_ch = scb_d10;                   // 十位
-                default: scb_ch = scb_d01;                // 个位
-            endcase
-        end
-        else begin
-            // 结束页: 符号 + 分数字。个位时首位直接显示个位(文字居中, 不留空格)。
-            case (scb_ci)
-                5'd0: scb_ch = scb_neg ? 4'd11 : 4'd15;   // '-' / '+'
-                5'd1: scb_ch = scb_two ? scb_d10 : scb_d01;  // 首位: 两位数→十位; 个位→个位
-                default: scb_ch = scb_d01;                // 次位 = 个位
-            endcase
-        end
+        case (scb_ci)
+            5'd0: scb_ch = 4'd13;
+            5'd1: scb_ch = {1'b0,scb_r16} + 4'd1;
+            5'd2: scb_ch = scb_neg ? 4'd11 : 4'd15;
+            5'd3: scb_ch = scb_d10;
+            default: scb_ch = scb_d01;
+        endcase
     end
 
     // 弹窗: 十位为 0 → 十位格留空(仅个位)。
-    wire scb_blank10 = scb_in && (scb_ci == 5'd3) && ~scb_two;
-    // 结束页: 个位数时次位(ci 2)留空(首位已显示个位)。
-    wire scb_blank01 = ~scb_in && (scb_ci == 5'd2) && ~scb_two;
-    wire scb_blank   = scb_blank10 || scb_blank01;
-    // ★文字实际宽度门控 —— 必须用**未截断**的 12bit 局部坐标 scb_lx12!
-    //   scb_lx 是 lx12[6:0](0..127 循环) → 用 scb_lx 判宽度时, 128px 之后的像素
-    //   会以 (lx-128) 的低值"绕回"通过判断 → 在 x=584+ 处又画一遍文字(BUG-1 真因)。
+    wire scb_blank = (scb_ci == 5'd3) && ~scb_two;
+    // 文字实际宽度门控使用未截断的 12bit 局部坐标，防止行尾回绕。
     wire scb_txt_ok  = (scb_lx12 < 12'd30);      // 弹窗 "T1±DD" 最长 5 字符 × 6px
-    //   结束页: 两位数 3 格 × 12 = 36px; 个位 2 格 × 12 = 24px。
-    wire end_txt_ok  = (scb_lx12 < (scb_two ? 12'd36 : 12'd24));
     // ★行号门控: 只有 4 支队伍 → 内区只画 4 行。盒内高 60px → ly/14 可达 4
     //   (第 5 行, 落在 y86..88), 必须拦掉, 否则多画一行(207 vs 183 的差)。
-    wire scb_row_ok  = scb_in ? (scb_r16 < 3'd4) : 1'b1;
-    wire scb_xok     = scb_in ? scb_txt_ok : end_txt_ok;
-    // ★字行门控: 弹窗字格 7 行(0..6); 结束页字格 14 行(0..13)。
-    wire scb_row7_ok = scb_in ? (scb_ry < 4'd7) : (scb_ry < 4'd14);
-    // ★字列门控: 弹窗字格 5 有效列(0..4); 结束页字格 12 列, 取左 5 列做 2× 放大
-    //   → 有效列 = bc>>1 的 5 列内。bc(0..11) 折半 → 0..5, 取 <5。
-    wire [2:0] scb_bc5 = scb_in ? scb_bc : scb_bc[3:1];
+    wire scb_row_ok  = scb_ly12 < 12'd56;
+    wire scb_xok     = scb_txt_ok;
+    wire scb_row7_ok = scb_ry < 4'd7;
+    wire [2:0] scb_bc5 = scb_bc;
     wire scb_bc5_ok = (scb_bc5 < 3'd5);
 
     wire [4:0] scb_g = resw_glyph(scb_ch, scb_grow);
     wire [2:0] scb_bidx = 3'd4 - scb_bc5;
-    //   ★文字像素: 弹窗/结束页两模式共用 (scbx_region 为二几何并集)
-    //     结束页须再经 end_in_txt 门控(排除槽左留白的负偏移区)。
-    wire scb_pix = scbx_region && ~scb_border &&
-                   (scb_in || end_in_txt) &&
+    wire scb_pix = scb_region && ~scb_border &&
                    scb_row7_ok && scb_row_ok &&
                    scb_bc5_ok && scb_xok && ~scb_blank &&
                    scb_g[scb_bidx];
+
+    //--------------------------------------------------------------
+    // 抢答结束全屏 OSD:
+    //   顶部 GAME OVER，下方四行排名。每行根据实际队伍取固定主题色，
+    //   排名依分数降序实时计算；同分时队号小者在前。页面不依赖结束图片，
+    //   但仍复用 iris 逐像素揭示，不改变原转场观感。
+    //--------------------------------------------------------------
+    // 4路固定排序网络: (01)(23) -> (02)(13) -> (12)，仅5个比较器。
+    // key=符号翻转后的有符号分数+反队号，一次无符号比较即同时实现
+    // “分数降序，同分队号小者优先”，比原12次互比逻辑更少。
+    wire [9:0] rk_k0={{~scv0[7],scv0[6:0]},2'b11};
+    wire [9:0] rk_k1={{~scv1[7],scv1[6:0]},2'b10};
+    wire [9:0] rk_k2={{~scv2[7],scv2[6:0]},2'b01};
+    wire [9:0] rk_k3={{~scv3[7],scv3[6:0]},2'b00};
+    wire rk_c01=rk_k0>=rk_k1, rk_c23=rk_k2>=rk_k3;
+    wire [9:0] rk_a0=rk_c01?rk_k0:rk_k1, rk_a1=rk_c01?rk_k1:rk_k0;
+    wire [9:0] rk_a2=rk_c23?rk_k2:rk_k3, rk_a3=rk_c23?rk_k3:rk_k2;
+    wire [1:0] rk_i0=rk_c01?2'd0:2'd1, rk_i1=rk_c01?2'd1:2'd0;
+    wire [1:0] rk_i2=rk_c23?2'd2:2'd3, rk_i3=rk_c23?2'd3:2'd2;
+    wire rk_c02=rk_a0>=rk_a2, rk_c13=rk_a1>=rk_a3;
+    wire [9:0] rk_b0=rk_c02?rk_a0:rk_a2, rk_b2=rk_c02?rk_a2:rk_a0;
+    wire [9:0] rk_b1=rk_c13?rk_a1:rk_a3, rk_b3=rk_c13?rk_a3:rk_a1;
+    wire [1:0] rk_j0=rk_c02?rk_i0:rk_i2, rk_j2=rk_c02?rk_i2:rk_i0;
+    wire [1:0] rk_j1=rk_c13?rk_i1:rk_i3, rk_j3=rk_c13?rk_i3:rk_i1;
+    wire rk_c12=rk_b1>=rk_b2;
+    wire [1:0] rk_t0=rk_j0;
+    wire [1:0] rk_t1=rk_c12?rk_j1:rk_j2;
+    wire [1:0] rk_t2=rk_c12?rk_j2:rk_j1;
+    wire [1:0] rk_t3=rk_j3;
+    wire signed [7:0] rk_s0=(rk_t0==0)?scv0:(rk_t0==1)?scv1:(rk_t0==2)?scv2:scv3;
+    wire signed [7:0] rk_s1=(rk_t1==0)?scv0:(rk_t1==1)?scv1:(rk_t1==2)?scv2:scv3;
+    wire signed [7:0] rk_s2=(rk_t2==0)?scv0:(rk_t2==1)?scv1:(rk_t2==2)?scv2:scv3;
+    wire signed [7:0] rk_s3=(rk_t3==0)?scv0:(rk_t3==1)?scv1:(rk_t3==2)?scv2:scv3;
+
+    function [4:0] end_alpha;
+        input [3:0] ch; // 0=G 1=A 2=M 3=E 4=space 5=O 6=V 7=R
+        input [2:0] row;
+        begin
+            end_alpha=5'b0;
+            case(ch)
+            4'd0: case(row) 0:end_alpha=5'b01110;1:end_alpha=5'b10001;2:end_alpha=5'b10000;3:end_alpha=5'b10111;4:end_alpha=5'b10001;5:end_alpha=5'b10001;default:end_alpha=5'b01110;endcase
+            4'd1: case(row) 0:end_alpha=5'b01110;1:end_alpha=5'b10001;2:end_alpha=5'b10001;3:end_alpha=5'b11111;4:end_alpha=5'b10001;5:end_alpha=5'b10001;default:end_alpha=5'b10001;endcase
+            4'd2: case(row) 0:end_alpha=5'b10001;1:end_alpha=5'b11011;2:end_alpha=5'b10101;3:end_alpha=5'b10101;4:end_alpha=5'b10001;5:end_alpha=5'b10001;default:end_alpha=5'b10001;endcase
+            4'd3: case(row) 0:end_alpha=5'b11111;1:end_alpha=5'b10000;2:end_alpha=5'b10000;3:end_alpha=5'b11110;4:end_alpha=5'b10000;5:end_alpha=5'b10000;default:end_alpha=5'b11111;endcase
+            4'd5: case(row) 0:end_alpha=5'b01110;1:end_alpha=5'b10001;2:end_alpha=5'b10001;3:end_alpha=5'b10001;4:end_alpha=5'b10001;5:end_alpha=5'b10001;default:end_alpha=5'b01110;endcase
+            4'd6: case(row) 0:end_alpha=5'b10001;1:end_alpha=5'b10001;2:end_alpha=5'b10001;3:end_alpha=5'b10001;4:end_alpha=5'b10001;5:end_alpha=5'b01010;default:end_alpha=5'b00100;endcase
+            4'd7: case(row) 0:end_alpha=5'b11110;1:end_alpha=5'b10001;2:end_alpha=5'b10001;3:end_alpha=5'b11110;4:end_alpha=5'b10100;5:end_alpha=5'b10010;default:end_alpha=5'b10001;endcase
+            default:end_alpha=5'b0;
+            endcase
+        end
+    endfunction
+
+    wire end_osd = qend_visible && end_reveal && de1;
+    // 场景未启用时将坐标锁为0，阻断结束页大量比较/减法网络的无效翻转。
+    wire [11:0] eosd_x=end_osd?px1n:12'd0;
+    wire [11:0] eosd_y=end_osd?py1n:12'd0;
+    wire title_zone=eosd_x>=12'd185&&eosd_x<12'd455&&eosd_y>=12'd34&&eosd_y<12'd69;
+    wire [11:0] title_lx=title_zone?(eosd_x-12'd185):12'd0;
+    wire [11:0] title_ly=title_zone?(eosd_y-12'd34):12'd0;
+    wire [3:0] title_ci=(title_lx<12'd30)?0:(title_lx<12'd60)?1:
+                        (title_lx<12'd90)?2:(title_lx<12'd120)?3:
+                        (title_lx<12'd150)?4:(title_lx<12'd180)?5:
+                        (title_lx<12'd210)?6:(title_lx<12'd240)?7:8;
+    wire [5:0] title_cx=(title_ci==0)?title_lx:(title_ci==1)?(title_lx-30):
+                         (title_ci==2)?(title_lx-60):(title_ci==3)?(title_lx-90):
+                         (title_ci==4)?(title_lx-120):(title_ci==5)?(title_lx-150):
+                         (title_ci==6)?(title_lx-180):(title_ci==7)?(title_lx-210):(title_lx-240);
+    wire [2:0] title_bc=(title_cx<5)?0:(title_cx<10)?1:(title_cx<15)?2:
+                         (title_cx<20)?3:(title_cx<25)?4:5;
+    wire [2:0] title_br=(title_ly<5)?0:(title_ly<10)?1:(title_ly<15)?2:
+                         (title_ly<20)?3:(title_ly<25)?4:(title_ly<30)?5:6;
+    reg [3:0] title_ch;
+    always @* begin
+        case(title_ci)
+          0:title_ch=0; 1:title_ch=1; 2:title_ch=2; 3:title_ch=3;
+          4:title_ch=4; 5:title_ch=5; 6:title_ch=6; 7:title_ch=3;
+          default:title_ch=7;
+        endcase
+    end
+    wire [4:0] title_g=end_alpha(title_ch,title_br);
+    wire title_pix=title_zone&&(title_bc<5)&&title_g[4-title_bc];
+
+    localparam [11:0] ROW_X0=12'd72,ROW_X1=12'd568,ROW_H=12'd60;
+    wire rows_zone=eosd_y>=12'd106&&eosd_y<12'd400;
+    wire [11:0] rows_y=eosd_y-12'd106;
+    wire [1:0] rank_idx=(rows_y<12'd60)?2'd0:(rows_y<12'd138)?2'd1:
+                        (rows_y<12'd216)?2'd2:2'd3;
+    wire [11:0] rank_sy=(rank_idx==0)?12'd106:(rank_idx==1)?12'd184:
+                        (rank_idx==2)?12'd262:12'd340;
+    wire rank_panel=rows_zone&&eosd_x>=ROW_X0&&eosd_x<ROW_X1&&
+                    eosd_y>=rank_sy&&eosd_y<rank_sy+ROW_H;
+    wire [1:0] rank_team=(rank_idx==0)?rk_t0:(rank_idx==1)?rk_t1:(rank_idx==2)?rk_t2:rk_t3;
+    wire signed [7:0] rank_score=(rank_idx==0)?rk_s0:(rank_idx==1)?rk_s1:(rank_idx==2)?rk_s2:rk_s3;
+    wire [7:0] rank_abs=absv(rank_score);
+    wire [3:0] rank_d10=dec10(rank_abs),rank_d01=dec01(rank_abs);
+    reg [23:0] rank_color;
+    always @* begin
+        case(rank_team)
+          2'd0:rank_color=24'hFF4D5A;
+          2'd1:rank_color=24'h2EC4FF;
+          2'd2:rank_color=24'h49D17D;
+          default:rank_color=24'hFFBA49;
+        endcase
+    end
+    wire rank_border=rank_panel&&((eosd_x<ROW_X0+3)||(eosd_x>=ROW_X1-3)||
+                                  (eosd_y<rank_sy+3)||(eosd_y>=rank_sy+ROW_H-3));
+    wire rank_stripe=rank_panel&&eosd_x<ROW_X0+12;
+    wire [11:0] rank_ty=rank_sy+12'd16;
+    wire [2:0] rank_gy=(eosd_y-rank_ty)>>2;
+    wire rank_yok=eosd_y>=rank_ty&&eosd_y<rank_ty+12'd28;
+    wire [4:0] rank_n_g=resw_glyph({2'b0,rank_idx}+4'd1,rank_gy);
+    wire [4:0] rank_t_g=resw_glyph(4'd13,rank_gy);
+    wire [4:0] rank_team_g=resw_glyph({2'b0,rank_team}+4'd1,rank_gy);
+    wire [4:0] rank_sign_g=resw_glyph(rank_score[7]?4'd11:4'd15,rank_gy);
+    wire [4:0] rank_d10_g=resw_glyph(rank_d10,rank_gy);
+    wire [4:0] rank_d01_g=resw_glyph(rank_d01,rank_gy);
+    wire rank_num_zone=rank_panel&&rank_yok&&eosd_x>=12'd102&&eosd_x<12'd122;
+    wire rank_t_zone=rank_panel&&rank_yok&&eosd_x>=12'd190&&eosd_x<12'd210;
+    wire rank_team_zone=rank_panel&&rank_yok&&eosd_x>=12'd222&&eosd_x<12'd242;
+    wire rank_sign_zone=rank_panel&&rank_yok&&eosd_x>=12'd414&&eosd_x<12'd434;
+    wire rank_d10_zone=rank_panel&&rank_yok&&eosd_x>=12'd446&&eosd_x<12'd466;
+    wire rank_d01_zone=rank_panel&&rank_yok&&eosd_x>=12'd478&&eosd_x<12'd498;
+    wire [2:0] rank_n_bc=(eosd_x-12'd102)>>2;
+    wire [2:0] rank_t_bc=(eosd_x-12'd190)>>2;
+    wire [2:0] rank_team_bc=(eosd_x-12'd222)>>2;
+    wire [2:0] rank_sign_bc=(eosd_x-12'd414)>>2;
+    wire [2:0] rank_d10_bc=(eosd_x-12'd446)>>2;
+    wire [2:0] rank_d01_bc=(eosd_x-12'd478)>>2;
+    wire rank_pix=(rank_num_zone&&rank_n_g[4-rank_n_bc])||
+                  (rank_t_zone&&rank_t_g[4-rank_t_bc])||
+                  (rank_team_zone&&rank_team_g[4-rank_team_bc])||
+                  (rank_sign_zone&&rank_sign_g[4-rank_sign_bc])||
+                  (rank_d10_zone&&rank_d10_g[4-rank_d10_bc])||
+                  (rank_d01_zone&&rank_d01_g[4-rank_d01_bc]);
 
     //--------------------------------------------------------------
     // 输出仲裁: 切场入口遮黑 > 亮度条 > 缩放条 > 音量条 > 状态卡 >
@@ -1535,6 +1595,15 @@ module display_adjust #(
     always @* begin
         if (entry_blank && de1) begin
             fo = {DATA_W{1'b0}};
+        end
+        else if (end_osd) begin
+            if (title_pix) fo=24'hFFFFFF;
+            else if (rank_border||rank_stripe) fo=rank_color;
+            else if (rank_pix) fo=24'hFFFFFF;
+            else if (rank_panel) fo=24'h18284E;
+            else if ((py1n>=12'd82&&py1n<12'd86)&&(px1n>=12'd120&&px1n<12'd520))
+                fo=24'h3B82F6;
+            else fo=24'h071426;
         end
         else if (bar_region) begin
             if (bar_border)
@@ -1589,12 +1658,6 @@ module display_adjust #(
                 fo = C_SCB_TX;                       // 分数文字(金)
             else
                 fo = C_CARD_BG;                      // 弹窗内衬底
-        end
-        else if (end_region) begin
-            // 结束页散点: 用底色盖住 QUIZ8 图上的灰色 "--" 占位, 再叠金色分数。
-            //   ★底色取图片卡片同款深蓝(24,40,78), 与卡片融为一体不显突兀。
-            if (scb_pix) fo = C_SCB_TX;
-            else         fo = C_END_BG;
         end
         else begin
             if (de1) begin

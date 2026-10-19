@@ -11,6 +11,13 @@
 //   (bmp_scale 为双线性插值缩放引擎, 串在 sd_card_bmp→frame_read_write 写通路)
 //====================================================================
 `include "../../src/osd_welcome.v"
+`include "../../src/uart_rx_byte.v"
+`include "../../src/uart_tx_byte.v"
+`include "../../src/welcome_uart_controller.v"
+`include "../../src/welcome_cfg_frame_commit.v"
+`include "../../src/emergency_cfg_frame_commit.v"
+`include "../../src/welcome_mosaic.v"
+`include "../../src/osd_menu_aa_rom.v"
 `include "../../src/display_adjust.v"
 `include "../../src/ui_key_ctrl.v"
 `include "../../src/osd_scene.v"
@@ -24,6 +31,8 @@
 `include "../../src/quiz_end_commit_guard.v"
 `include "../../src/emergency_alarm_ctrl.v"
 `include "../../src/emergency_font_rom.v"
+`include "../../src/emergency_title_font_rom.v"
+`include "../../src/emergency_big_font_rom.v"
 `include "../../src/emergency_multi_overlay.v"
 // ★2026-10-09j 会议场景重建(产品化"智能会议议程屏"):
 //   原 meeting_cfg/ctrl/fmt/osd/glyph_rom/sd_rd 已于 2026-10-07 删除;
@@ -69,7 +78,9 @@ module top(
 	output                      sd_ncs,            //SD card chip select (SPI mode)
 	output                      sd_dclk,           //SD card clock
 	output                      sd_mosi,           //SD card controller data output
-	input                       sd_miso           //SD card controller data input
+	input                       sd_miso,          //SD card controller data input
+    input                       uart_rx,          //CH340 USB-UART RX, F12
+    output                      uart_tx           //CH340 USB-UART TX, D12
 );
 
 //============================================================
@@ -185,6 +196,16 @@ wire                            menu_active;   // 菜单态标志(1=SW1..3 无�
 wire [2:0]                      latch_sw;      // 内容源/素材分区号(0菜单 1迎新 2预留[原会议] 3抢答 4应急)
 wire                            scene_change_pulse; // 菜单↔场景/场景间切换事件 → 触发 bmp 分区重载
 
+// 迎新底部流动通知配置：UART在50MHz域接收，于视频帧边界原子提交。
+wire [191:0] welcome_ids_sys,welcome_ids_vid;
+wire [5:0] welcome_len_sys,welcome_speed_sys,welcome_len_vid,welcome_speed_vid;
+wire welcome_pause_sys,welcome_pause_vid,welcome_cfg_update;
+// 应急底部流动通知配置；override=0 时保留四类告警原有默认文案。
+wire [223:0] emergency_ids_sys,emergency_ids_vid;
+wire [5:0] emergency_len_sys,emergency_speed_sys,emergency_len_vid,emergency_speed_vid;
+wire emergency_pause_sys,emergency_override_sys,emergency_cfg_update;
+wire emergency_pause_vid,emergency_override_vid;
+
 //场景素材定位(2026-10-07 v11 改造):
 //   顶层不再输出任何扇区常量, 只给"选哪个场景"(zone_sel_l)。
 //   sd_card_bmp 内的 FAT32 寻址层把该场景的素材段表查出来, 组合成
@@ -296,6 +317,8 @@ wire [31:0] ui_period_cyc;  // 批次4 轮播间隔(时钟周期) → sd_card_bm
 wire        ui_disp_hold;   // 批次4 参数强显保持中(2 秒)
 wire [2:0]  ui_disp_sel;    // 批次4 保持期显示的模式(产生动作时的 ui_mode)
 wire        pic_manual;     // 1=手动单张(冻结自动轮播)
+wire        res_info_always;// 迎新模式6: 分辨率字幕常显
+wire        mosaic_en;      // 迎新模式7: 16x16 照片马赛克
 wire        key_next_pl;    // 手动"下一张"脉冲 → bmp_read_auto.key_trigger
 wire        key_prev_pl;    // 手动"上一张"脉冲 → bmp_read_auto.key_prev
 // ---- 抢答场景「绝对跳图」+ 中心扩散转场(2026-10-08) ----
@@ -350,6 +373,7 @@ assign vga_data = {vout_data[23:20],vout_data[15:12],vout_data[7:4]};
 //assign vga_out_r  = vout_data[15:11];
 //assign vga_out_g  = vout_data[10:5];
 //assign vga_out_b  = vout_data[4:0];
+
 assign sdram_clk = ext_mem_clk;
 //generate SD card controller clock and  SDRAM controller clock
 //※ 第六讲规范: PLL 的 reset 接 ~rst_n(POR 期间保持复位), 并引出 locked
@@ -384,6 +408,18 @@ reset_sync u_rst_sync_clk (.clk(clk        ), .rst_n_async(ext_rst_n), .rst_n_sy
 reset_sync u_rst_sync_sd  (.clk(sd_card_clk), .rst_n_async(ext_rst_n), .rst_n_sync(rst_n_sd ));
 reset_sync u_rst_sync_mem (.clk(ext_mem_clk), .rst_n_async(ext_rst_n), .rst_n_sync(rst_n_mem));
 reset_sync u_rst_sync_vid (.clk(video_clk  ), .rst_n_async(ext_rst_n), .rst_n_sync(rst_n_vid));
+
+// 小鹅通第五/九讲同款 115200-8N1 字节收发与帧边界提交。
+// 只服务迎新/应急底部通知，不参与图片、音频、告警类型和场景控制。
+welcome_uart_controller #(.CLKS_PER_BIT(434)) u_welcome_uart(
+    .clk(clk),.rst_n(rst_n_clk),.uart_rx(uart_rx),.uart_tx(uart_tx),
+    .cfg_update(welcome_cfg_update),.cfg_ids(welcome_ids_sys),
+    .cfg_length(welcome_len_sys),.cfg_speed(welcome_speed_sys),
+    .cfg_pause(welcome_pause_sys),
+    .emergency_update(emergency_cfg_update),.emergency_ids(emergency_ids_sys),
+    .emergency_length(emergency_len_sys),.emergency_speed(emergency_speed_sys),
+    .emergency_pause(emergency_pause_sys),.emergency_override(emergency_override_sys)
+);
 
 //------------------------------------------------------------
 // SDRAM 就绪状态跨域同步(小鹅通第六讲规范: 单比特电平跨域)
@@ -472,6 +508,8 @@ ui_key_ctrl #(
     .control_lock        (1'b0                ),  // v11: 不再有场景接管按键
     .alarm_scene         (alarm_en             ),  // 应急场景标志
     .alarm_type          (alarm_type           ),  // 应急模式0 输出的告警类型
+    .res_info_always     (res_info_always      ),
+    .mosaic_en           (mosaic_en            ),
     .img_no              (img_no               ),
     .scene_chg           (scene_change_pulse   ),
     .mode                (ui_mode              ),
@@ -682,6 +720,7 @@ wire             wav_ready;
 wire signed[15:0] wav_left;
 wire signed[15:0] wav_right;
 wire             sel_wav;
+wire             wav_play_en;
 wire             audio_rate_tick;
 wire             wav_primed;      //WAV 播放器已攒够起播水位(读侧信号)
 assign wav_right = wav_left;      // 单声道素材 → 左右声道同源
@@ -715,7 +754,7 @@ sd_card_bmp  sd_card_bmp_m0(
 	// ---- WAV 背景音乐(裸 PCM; 读侧 video_clk 域, 播放器在本模块内) ----
 	.audio_clk                  (video_clk                ),
 	.audio_rst_n                (rst_n_vid                ),
-	.wav_play_en                (sel_wav                  ),
+	.wav_play_en                (wav_play_en              ),
 	.wav_start_lba              (WAV_START_LBA            ),
 	.wav_sectors                (WAV_SECTORS              ),
 	.wav_sample_tick            (audio_rate_tick          ),
@@ -795,6 +834,8 @@ wire dis_per   = ~scr_param & ~scr_emg & ~scr_meet & (disp_mode == 3'd3);  // �
 wire dis_vol   = scr_emg ? (disp_mode == 3'd3)      // ★应急: 3 档 = 音量
                 : scr_meet ? (disp_mode == 3'd4)    // ★会议: 4 档 = 音量
                 :            (disp_mode == 3'd5);   // 迎新/抢答: 5 档 = 音量
+wire dis_resinfo = ~scr_param & ~scr_emg & ~scr_meet & (disp_mode == 3'd6);
+wire dis_mosaic  = ~scr_param & ~scr_emg & ~scr_meet & (disp_mode == 3'd7);
 reg [7:0] param_val;
 always @(*) begin
     if (dis_con)
@@ -803,6 +844,10 @@ always @(*) begin
         param_val = {4'd0, ui_vol};               // ★音量档 0..15
     else if (dis_per)
         param_val = ui_period_sec;                // 轮播间隔秒 2/3/5/10/30(仅迎新)
+    else if (dis_resinfo)
+        param_val = {7'd0, res_info_always};       // 分辨率常显: 0关 / 1开
+    else if (dis_mosaic)
+        param_val = {7'd0, mosaic_en};              // 马赛克: 0关 / 1开
     else case (disp_mode)
         3'd1:    param_val = {4'd0, bri_level};   // 亮度档 0..15
         3'd2:    param_val = {4'd0, res_level};   // 分辨率档 0..7
@@ -957,7 +1002,7 @@ wire [12:0] osd_rom_addr = m_rom_en  ? m_rom_addr :
 
 osd_font_rom #(
     .ADDR_W (13),
-    .DEPTH  (6992)      // 2026-09-21: 字库换成 fpgapmzs 最新版(新增 AG* 议程字模, 5856→6992)
+    .DEPTH  (5856)      // 实际最大地址5855；旧AG区已删，避免多推一块BRAM32K
 ) u_osd_font_rom (
     .clk    (video_clk),
     .rst    (~rst_n_vid),
@@ -974,6 +1019,21 @@ osd_font_rom #(
 //   控制 = menu_active(菜单态)/emergency(应急) 跨时钟域电平(内部两级同步)
 //   输出 = 像素流 + 同拍坐标送 osd_welcome (整体延 ~3 拍, 同步随动)
 //============================================================
+wire mos_hs, mos_vs, mos_de;
+wire [23:0] mos_data;
+wire [11:0] mos_px_x, mos_px_y;
+
+// 迎新照片流式马赛克：位于背景与 OSD 之间，因此字幕/HUD 不会被像素化。
+// 顶层按 welcome_en 门控，离开迎新后即使用户开关值保留也完全旁路。
+welcome_mosaic u_welcome_mosaic(
+    .video_clk(video_clk), .rst(~rst_n_vid),
+    .enable_req(mosaic_en & welcome_en),
+    .hs_i(osd_hs), .vs_i(osd_vs), .de_i(osd_de), .data_i(osd_data),
+    .px_x(px_x), .px_y(px_y),
+    .hs_o(mos_hs), .vs_o(mos_vs), .de_o(mos_de), .data_o(mos_data),
+    .px_x_o(mos_px_x), .px_y_o(mos_px_y)
+);
+
 osd_menu #(
     .DATA_W       (24),
     .H_ACT        (640),
@@ -981,12 +1041,12 @@ osd_menu #(
 ) osd_menu_m0(
     .video_clk    (video_clk),
     .rst          (~rst_n_vid),
-    .hs_i         (osd_hs),
-    .vs_i         (osd_vs),
-    .de_i         (osd_de),
-    .data_i       (osd_data),
-    .px_x         (px_x),
-    .px_y         (px_y),
+    .hs_i         (mos_hs),
+    .vs_i         (mos_vs),
+    .de_i         (mos_de),
+    .data_i       (mos_data),
+    .px_x         (mos_px_x),
+    .px_y         (mos_px_y),
     .menu_en      (menu_active),  // ★2026-10-09j: 会议场景重建, 拨码位2不再走菜单画面
     .emerg_en     (emergency),
     .rom_en_o     (m_rom_en),
@@ -1003,11 +1063,36 @@ osd_menu #(
 //============================================================
 // 迎新展示场景 OSD 信息叠加(osd_welcome, 阶段2b 扩展功能1)
 //   输入 = osd_menu 输出(背景流 + 同拍坐标)
-//   叠加 = 顶部欢迎语(金底50%) / 左下报到地点卡(75%衬底+蓝强调)
-//        / 右下联系方式卡(同上+青强调) / 底部滚动报到流程(每帧左移1px)
+//   叠加 = 顶部欢迎语(金底50%) / 串口可配置底部流动通知。
+//   原报到地点/QQ群信息卡已删除，避免被音频可视化覆盖还占用逻辑。
 //   非 OSD 区域原样透传背景(背景保持); welcome_en=0(菜单/会议/抢答/应急)
 //   时本模块纯透传。输出像素流 + 坐标送 display_adjust。
 //============================================================
+reg welcome_cfg_vs_d;
+always @(posedge video_clk or negedge rst_n_vid)
+    if(!rst_n_vid) welcome_cfg_vs_d<=1'b0; else welcome_cfg_vs_d<=menu_vs;
+wire welcome_frame_start=menu_vs & ~welcome_cfg_vs_d;
+
+welcome_cfg_frame_commit u_welcome_cfg_commit(
+    .src_clk(clk),.src_rst_n(rst_n_clk),.src_commit(welcome_cfg_update),
+    .src_ids(welcome_ids_sys),.src_length(welcome_len_sys),
+    .src_speed(welcome_speed_sys),.src_pause(welcome_pause_sys),
+    .dst_clk(video_clk),.dst_rst_n(rst_n_vid),.frame_start(welcome_frame_start),
+    .dst_ids(welcome_ids_vid),.dst_length(welcome_len_vid),
+    .dst_speed(welcome_speed_vid),.dst_pause(welcome_pause_vid)
+);
+
+emergency_cfg_frame_commit u_emergency_cfg_commit(
+    .src_clk(clk),.src_rst_n(rst_n_clk),.src_commit(emergency_cfg_update),
+    .src_ids(emergency_ids_sys),.src_length(emergency_len_sys),
+    .src_speed(emergency_speed_sys),.src_pause(emergency_pause_sys),
+    .src_override(emergency_override_sys),.dst_clk(video_clk),
+    .dst_rst_n(rst_n_vid),.frame_start(welcome_frame_start),
+    .dst_ids(emergency_ids_vid),.dst_length(emergency_len_vid),
+    .dst_speed(emergency_speed_vid),.dst_pause(emergency_pause_vid),
+    .dst_override(emergency_override_vid)
+);
+
 osd_welcome #(
     .DATA_W       (24),
     .H_ACT        (640),
@@ -1022,6 +1107,10 @@ osd_welcome #(
     .px_x         (menu_px_x),
     .px_y         (menu_px_y),
     .welcome_en   (welcome_en),
+    .flow_ids     (welcome_ids_vid),
+    .flow_length  (welcome_len_vid),
+    .flow_speed   (welcome_speed_vid),
+    .flow_pause   (welcome_pause_vid),
     .rom_en_o     (w_rom_en),
     .rom_addr_o   (w_rom_addr),
     .rom_q        (rom_q),
@@ -1106,7 +1195,10 @@ emergency_multi_overlay u_emergency_multi(
     .clk(video_clk),.rst(~rst_n_vid),.hs_i(mt_hs),.vs_i(mt_vs),.de_i(mt_de),
     .data_i(mt_data),.px_x(mt_px_x),.px_y(mt_px_y),.alarm_en(alarm_en),
     .alarm_type(alarm_type),.min_tens(alarm_mt),.min_ones(alarm_mo),
-    .sec_tens(alarm_st),.sec_ones(alarm_so),.hs_o(em_hs),.vs_o(em_vs),
+    .sec_tens(alarm_st),.sec_ones(alarm_so),
+    .ticker_ids(emergency_ids_vid),.ticker_length(emergency_len_vid),
+    .ticker_speed(emergency_speed_vid),.ticker_pause(emergency_pause_vid),
+    .ticker_override(emergency_override_vid),.hs_o(em_hs),.vs_o(em_vs),
     .de_o(em_de),.data_o(em_data),.px_x_o(em_px_x),.px_y_o(em_px_y)
 );
 
@@ -1163,6 +1255,7 @@ audio_viz_overlay u_audio_viz(
 	    .res_level    (res_level),
 	    .img_res      (img_res),
 	    .pic_manual   (pic_manual),
+	    .res_info_always(res_info_always & welcome_en),
 	    .ui_mode      (ui_mode),
 	    // ---- 抢答分数板(2026-10-09) ----
 	    .quiz_on      (quiz_en),
@@ -1206,7 +1299,11 @@ wire dds_valid,dds_ready;wire signed [15:0] dds_left,dds_right;wire [8:0] dds_ga
 //   否则退回 DDS。三个输入都在 video_clk 域(sync_2ff 后), 纯组合选择。
 // 只同步“真实迎新场景”这一个资格位，避免 menu/scene 两路独立同步时
 // 在菜单→抢答途中短暂组合成非菜单+scene0，随机误开 WAV。
-assign sel_wav = audio_welcome_sync & (WAV_SECTORS != 32'd0);
+// 进入迎新后立即启动 TF 预读，但在 FIFO 尚未达到起播水位时继续播放片内
+// 默认音乐；只有 WAV 真正 primed 后才无缝切到卡上音频。无卡/读不到素材时
+// primed 始终为0，因而不会再出现“选中了静音 WAV、板载音乐也被切断”。
+assign wav_play_en = audio_welcome_sync & (WAV_SECTORS != 32'd0);
+assign sel_wav = wav_play_en & wav_primed;
 sync_2ff u_audio_menu_sync(.clk(video_clk),.async_in(menu_active),.sync_out(audio_menu_sync));
 sync_2ff u_audio_emergency_sync(.clk(video_clk),.async_in(emergency),.sync_out(audio_emergency_sync));
 sync_2ff u_audio_welcome_sync(.clk(video_clk),.async_in(welcome_en),.sync_out(audio_welcome_sync));

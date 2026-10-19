@@ -96,7 +96,7 @@ module tb_display_contrast;
         .res_level  (res_level),
         .con_level  (con_level),
         .img_res    (img_res),
-        .pic_manual (pic_manual),
+        .pic_manual (pic_manual), .res_info_always(1'b0),
         .ui_mode    (ui_mode),
         .quiz_on    (1'b0),
         .meeting_on (1'b0),     // ★会议场景(2026-10-09j; 本 TB 不测, 置 0)

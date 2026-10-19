@@ -151,7 +151,7 @@ module bmp_scale #(
     // 输入侧: 源像素 → 行缓存(按行号%3 轮转)
     //--------------------------------------------------------------
     reg  [9:0]  wr_col;          // 源列计数 0..639
-    reg  [9:0]  wr_row;          // 源行计数 0..479
+    reg  [8:0]  wr_row;          // 源行计数 0..479（9 位足够）
     reg  [1:0]  wr_buf;          // 当前写入缓存号(0/1/2)
     reg         in_en_d;
     wire        in_pix  = in_en & ~in_en_d;                          // 像素有效(上升沿)
@@ -159,18 +159,18 @@ module bmp_scale #(
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            wr_col <= 10'd0; wr_row <= 10'd0; wr_buf <= 2'd0; in_en_d <= 1'b0;
+            wr_col <= 10'd0; wr_row <= 9'd0; wr_buf <= 2'd0; in_en_d <= 1'b0;
         end
         else begin
             in_en_d <= in_en;
             if (fs_pulse) begin
-                wr_col <= 10'd0; wr_row <= 10'd0; wr_buf <= 2'd0;
+                wr_col <= 10'd0; wr_row <= 9'd0; wr_buf <= 2'd0;
             end
             else if (in_pix) begin
                 if (row_end) begin
                     wr_col <= 10'd0;
                     wr_buf <= (wr_buf == 2'd2) ? 2'd0 : (wr_buf + 2'd1);
-                    wr_row <= (wr_row == SRC_H[9:0] - 10'd1) ? 10'd0 : (wr_row + 10'd1);
+                    wr_row <= (wr_row == SRC_H[8:0] - 9'd1) ? 9'd0 : (wr_row + 9'd1);
                 end
                 else
                     wr_col <= wr_col + 10'd1;
@@ -184,18 +184,19 @@ module bmp_scale #(
     reg  [31:0] lb2 [0:SRC_W-1];
     reg  [31:0] d0, d1, d2;
     reg  [9:0]  raddr;
+    wire        line_rd_en;
 
     always @(posedge clk) begin
         if (in_pix && (wr_buf == 2'd0)) lb0[wr_col] <= in_data;
-        d0 <= lb0[raddr];
+        if (line_rd_en) d0 <= lb0[raddr];
     end
     always @(posedge clk) begin
         if (in_pix && (wr_buf == 2'd1)) lb1[wr_col] <= in_data;
-        d1 <= lb1[raddr];
+        if (line_rd_en) d1 <= lb1[raddr];
     end
     always @(posedge clk) begin
         if (in_pix && (wr_buf == 2'd2)) lb2[wr_col] <= in_data;
-        d2 <= lb2[raddr];
+        if (line_rd_en) d2 <= lb2[raddr];
     end
 
     // 行缓存登记表: 每块缓存当前存的是哪一行 / 是否有效
@@ -204,12 +205,12 @@ module bmp_scale #(
     //   ※ 不能用"当前写块号"做组合 busy 判据: 输入停止(一帧读完)后写块号会
     //     冻结在 0, 使需要块 0 的输出行永久等待 → 整帧写不完(死锁)。
     //     用"块有效位"代替, 输入停后三块仍保持有效, 输出可正常读完最后几行。
-    reg  [9:0]  buf_row [0:2];
+    reg  [8:0]  buf_row [0:2];   // 固定 480 行画布，缓存标签无需 10 位
     reg  [2:0]  buf_vld;
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            buf_row[0] <= 10'd0; buf_row[1] <= 10'd0; buf_row[2] <= 10'd0;
+            buf_row[0] <= 9'd0; buf_row[1] <= 9'd0; buf_row[2] <= 9'd0;
             buf_vld    <= 3'b000;
         end
         else if (fs_pulse) begin
@@ -272,8 +273,15 @@ module bmp_scale #(
                      O_V2   = 5'd18,  // 流水段4: 垂直插值+钳位
                      O_OUT  = 5'd13;  // 输出该像素(数据取流水结果 rs_r)
 
-    reg  [4:0]  state;
-    reg  [9:0]  out_row, out_col;
+    reg [4:0] state;
+    reg  [8:0]  out_row;                 // 0..479
+    reg  [9:0]  out_col;                 // 0..639
+
+    // 三块行缓存只有两拍需要真正读数据：
+    //   O_R1 在地址已装入 sx0 后读取第一列，O_R3 在地址已装入 sx1 后读取第二列。
+    // 其余状态保持 BRAM 输出，可关闭空闲、旁路、等待和插值阶段的无效读翻转；
+    // 写口仍由 in_pix 独立控制，读延迟及 O_R2/O_R4 的取数时刻保持不变。
+    assign line_rd_en = (state == O_R1) || (state == O_R3);
 
     reg  [18:0] k_r;
     reg  [11:0] dstw_r, dsth_r;
@@ -282,7 +290,7 @@ module bmp_scale #(
 
     reg  signed [12:0] yy_r;             // v(输出行相对图像顶)
     reg  [31:0] sy_prod;                 // v * K
-    reg  [11:0] sy0_r, sy1_r;
+    reg  [8:0]  sy0_r, sy1_r;            // 有效源高最大 480
     reg  [7:0]  fy_r;
 
     reg  signed [12:0] xx_r;             // u(输出列相对图像左)
@@ -404,12 +412,12 @@ module bmp_scale #(
             state    <= O_IDLE;
             out_en   <= 1'b0;
             out_data <= 32'd0;
-            out_row  <= 10'd0;
+            out_row  <= 9'd0;
             out_col  <= 10'd0;
             k_r <= 19'd65536; dstw_r <= 12'd640; dsth_r <= 12'd480;
             x0_r <= 13'sd0;   y0_r <= 13'sd0;   src_v2x_r <= 1'b0;
             yy_r <= 13'sd0;   sy_prod <= 32'd0;
-            sy0_r <= 12'd0;   sy1_r <= 12'd0;  fy_r <= 8'd0;
+            sy0_r <= 9'd0;    sy1_r <= 9'd0;   fy_r <= 8'd0;
             xx_r <= 13'sd0;   sx_prod <= 32'd0;
             sx0_r <= 12'd0;   sx1_r <= 12'd0;  fx_r <= 8'd0;
             ia_r <= 2'd0;     ib_r <= 2'd0;
@@ -433,7 +441,7 @@ module bmp_scale #(
                     x0_r    <= cfg_x0;
                     y0_r    <= cfg_y0;
                     src_v2x_r <= src_v2x;      // 本帧是否要纵向 2×(源只有 240 行)
-                    out_row <= 10'd0;
+                    out_row <= 9'd0;
                     out_col <= 10'd0;
                     // 100% 档判据: 定点映射恰好 1:1 且图像区=画布(无裁边/留黑)
                     //   ※ 纵向 2× 帧(320x240 源)必须走插值: 源只 240 行, 直通会
@@ -463,7 +471,7 @@ module bmp_scale #(
                     x0_r    <= cfg_x0;
                     y0_r    <= cfg_y0;
                     src_v2x_r <= src_v2x;
-                    out_row <= 10'd0;
+                    out_row <= 9'd0;
                     out_col <= 10'd0;
                     if ((cfg_k == 19'd65536) &&
                         (cfg_dstw == SRC_W[11:0]) && (cfg_dsth == SRC_H[11:0]) &&
@@ -481,7 +489,7 @@ module bmp_scale #(
             // 行起点: v = out_row - y0
             //---------------------------------------------
             O_ROW: begin
-                yy_r  <= $signed({3'b000, out_row}) - y0_r;
+                yy_r  <= $signed({4'b0000, out_row}) - y0_r;
                 state <= O_MULY;
             end
             //---------------------------------------------
@@ -529,10 +537,10 @@ module bmp_scale #(
                     out_data <= 32'd0;
                     if (out_col == CANV_W[9:0] - 10'd1) begin
                         out_col <= 10'd0;
-                        if (out_row == CANV_H[9:0] - 10'd1)
+                        if (out_row == CANV_H[8:0] - 9'd1)
                             state <= O_IDLE;                  // 本帧输出完毕
                         else begin
-                            out_row <= out_row + 10'd1;
+                            out_row <= out_row + 9'd1;
                             state   <= O_ROW;
                         end
                     end
@@ -557,10 +565,10 @@ module bmp_scale #(
                         out_data <= 32'd0;
                         if (out_col == CANV_W[9:0] - 10'd1) begin
                             out_col <= 10'd0;
-                            if (out_row == CANV_H[9:0] - 10'd1)
+                            if (out_row == CANV_H[8:0] - 9'd1)
                                 state <= O_IDLE;
                             else begin
-                                out_row <= out_row + 10'd1;
+                                out_row <= out_row + 9'd1;
                                 state   <= O_ROW;
                             end
                         end
@@ -630,10 +638,10 @@ module bmp_scale #(
                     out_data <= {rs_r[0], rs_r[1], rs_r[2], 8'b0};
                     if (out_col == CANV_W[9:0] - 10'd1) begin
                         out_col <= 10'd0;
-                        if (out_row == CANV_H[9:0] - 10'd1)
+                        if (out_row == CANV_H[8:0] - 9'd1)
                             state <= O_IDLE;
                         else begin
-                            out_row <= out_row + 10'd1;
+                            out_row <= out_row + 9'd1;
                             state   <= O_ROW;
                         end
                     end

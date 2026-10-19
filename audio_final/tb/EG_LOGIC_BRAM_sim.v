@@ -30,7 +30,8 @@ module EG_LOGIC_BRAM #(
   parameter MODE = "DP",
   parameter REGMODE_A = "NOREG",
   parameter REGMODE_B = "NOREG",
-  parameter IMPLEMENT = "9K"
+  parameter IMPLEMENT = "9K",
+  parameter INIT_FILE = "NONE"
 )(
   output [DATA_WIDTH_A-1:0] doa,
   output [DATA_WIDTH_B-1:0] dob,
@@ -50,6 +51,7 @@ module EG_LOGIC_BRAM #(
 
   initial begin
     for (i = 0; i < DATA_DEPTH_A; i = i + 1) mem[i] = {DATA_WIDTH_A{1'b0}};
+    if (INIT_FILE != "NONE" && INIT_FILE != "") $readmemb(INIT_FILE, mem);
     doa_r = {DATA_WIDTH_A{1'b0}};
     dob_r = {DATA_WIDTH_B{1'b0}};
   end

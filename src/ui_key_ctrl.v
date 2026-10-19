@@ -3,7 +3,8 @@
 //
 // 设计目标(全局统一样式, 与场景基本解耦):
 //   KEY1(A2) : 功能模式循环, 每按一次 +1。★2026-10-09f 起各场景序列不同:
-//                · 迎新 : 0图片→1亮度→2缩放→3**轮播周期**→4**对比度**→5**音量**→0
+//                · 迎新 : 0图片→1亮度→2缩放→3**轮播周期**→4**对比度**→5**音量**
+//                         →6**分辨率常显**→7**16x16马赛克**→0
 //                · 抢答 : 0图片→1亮度→2缩放→3**对比度**→4**抢答计分**→5**音量**→0
 //                · 应急 : 0图片→1亮度→2**对比度**→3**音量**→0
 //                         (**无缩放档、无轮播周期档**, 故整体前移, 3 档直接回 0)
@@ -66,6 +67,9 @@
 //                 ※ 2026-09-28 用户要求新增。
 //                 ※ ★2026-10-09f: **仅迎新/抢答**场景的 5 档是音量;
 //                   应急场景的音量在 3 档(见上), 5 档不被 KEY1 走到。
+//   模式6 分辨率常显: 迎新专用, KEY3 打开 / KEY2 关闭。
+//   模式7 马赛克: 迎新专用, KEY3 打开 / KEY2 关闭; 开关值跨场景保留,
+//                 但顶层只在迎新场景实际使能, 不影响会议/抢答/应急。
 //
 // 数码管"参数强显保持"(小鹅通第三讲 seg7_panel 的 HOLD 机制):
 //   · 任何一次参数动作(亮度/缩放/周期 ±) → 输出 disp_hold 拉高 2 秒,
@@ -107,6 +111,8 @@ module ui_key_ctrl #(
     parameter [2:0] MODE_MEET = 3'd4,      // 抢答场景: 抢答计分档; 迎新: 对比度档
     parameter [2:0] MODE_CON  = 3'd3,      // 抢答场景: 对比度档(替换原周期档)
     parameter [2:0] MODE_VOL  = 3'd5,      // 功能模式: 音量(2026-09-28 新增)
+    parameter [2:0] MODE_RESINFO = 3'd6,   // 迎新专用: 分辨率字幕常显开关
+    parameter [2:0] MODE_MOSAIC = 3'd7,    // 迎新专用: 16x16 马赛克开关
     // ---- 批次4 轮播周期档 ----
     parameter [2:0] PERIOD_NUM = 3'd5,     // 档位数(2/3/5/10/30 s)
     parameter [2:0] PERIOD_DEF = 3'd1,     // 默认档 = 3s(与原 SLIDE_INTERVAL 一致)
@@ -142,6 +148,8 @@ module ui_key_ctrl #(
     output reg  [3:0]   con_level,         // 对比度档 0..15(对比度档可调, 默认8=×1.0)
                                            //   ★2026-10-09c 新增; 送 display_adjust.con_level
     output reg  [1:0]   alarm_type,        // 应急告警类型 0火灾/1地震/2恶劣天气/3疏散(应急模式0可调)
+    output reg          res_info_always,   // 迎新模式6: 1=分辨率常显, 0=仅切图后短显
+    output reg          mosaic_en,         // 迎新模式7: 1=照片马赛克, 0=原图
     output wire [7:0]   period_sec,        // 轮播间隔档(秒: 2/3/5/10/30, 模式3可调)
     output wire [31:0]  period_cycles,     // 轮播间隔(时钟周期) → bmp_read_auto
     output wire         disp_hold,         // 1=参数强显保持期(2 秒)
@@ -206,6 +214,8 @@ module ui_key_ctrl #(
     wire vol_slot = scr_e ? (mode == MODE_PERIOD)   // 应急: 3 档 = 音量
                   : scr_m ? (mode == MODE_MEET)     // 会议: 4 档 = 音量
                           : (mode == MODE_VOL);     // 迎新/抢答: 5 档 = 音量
+    wire resinfo_slot = ~scr_q & ~scr_e & ~scr_m & (mode == MODE_RESINFO);
+    wire mosaic_slot  = ~scr_q & ~scr_e & ~scr_m & (mode == MODE_MOSAIC);
 
 
     //--------------------------------------------------------------
@@ -356,25 +366,32 @@ module ui_key_ctrl #(
     //     整体前移, 音量从固定的 5 档移到 **4 档**(见上方 vol_slot 段)。
     wire vol_up_c  = k3_p & ~control_lock & vol_slot & (vol_level < VOL_MAX);
     wire vol_dn_c  = k2_p & ~control_lock & vol_slot & (vol_level > 4'd0);
+    wire resinfo_on_c  = k3_p & ~control_lock & resinfo_slot & ~res_info_always;
+    wire resinfo_off_c = k2_p & ~control_lock & resinfo_slot &  res_info_always;
+    wire mosaic_on_c   = k3_p & ~control_lock & mosaic_slot & ~mosaic_en;
+    wire mosaic_off_c  = k2_p & ~control_lock & mosaic_slot &  mosaic_en;
     wire param_evt_all = res_up_c | res_dn_c | bri_up_c | bri_dn_c |
                          per_up_c | per_dn_c | vol_up_c | vol_dn_c |
-                         con_up_c | con_dn_c;
+                         con_up_c | con_dn_c | resinfo_on_c | resinfo_off_c |
+                         mosaic_on_c | mosaic_off_c;
 
-    reg [31:0] hold_cnt;
+    // 默认 2s@100MHz=200,000,000 < 2^28；收窄后少 4 个高频计数 FF 与借位链。
+    // 若将 DISP_HOLD_CYCLES 配到 >=2^28，必须同步加宽此寄存器。
+    reg [27:0] hold_cnt;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            hold_cnt <= 32'd0;
+            hold_cnt <= 28'd0;
             disp_sel <= MODE_PIC;
         end
         else if (param_evt_all) begin
-            hold_cnt <= DISP_HOLD_CYCLES;
+            hold_cnt <= DISP_HOLD_CYCLES[27:0];
             disp_sel <= mode;
         end
-        else if (hold_cnt != 32'd0) begin
-            hold_cnt <= hold_cnt - 32'd1;
+        else if (hold_cnt != 28'd0) begin
+            hold_cnt <= hold_cnt - 28'd1;
         end
     end
-    assign disp_hold = (hold_cnt != 32'd0);
+    assign disp_hold = (hold_cnt != 28'd0);
 
     //--------------------------------------------------------------
     // 参数寄存器更新
@@ -388,6 +405,8 @@ module ui_key_ctrl #(
             con_level  <= CON_INIT;
             period_idx <= PERIOD_DEF;
             alarm_type <= 2'd0;
+            res_info_always <= 1'b0;
+            mosaic_en <= 1'b0;
             pic_manual <= 1'b0;
             img_no_l   <= 8'd0;
         end
@@ -408,9 +427,24 @@ module ui_key_ctrl #(
                     mode <= (mode >= MODE_PERIOD) ? MODE_PIC : (mode + 3'd1);
                 else if (scr_m)
                     mode <= (mode >= MODE_MEET) ? MODE_PIC : (mode + 3'd1);  // 会议: 0→1→2→3→4→0
+                else if (scr_q)
+                    mode <= (mode >= MODE_VOL) ? MODE_PIC : (mode + 3'd1);
                 else
-                    mode <= (mode == MODE_VOL)  ? MODE_PIC : (mode + 3'd1);
+                    mode <= (mode >= MODE_MOSAIC) ? MODE_PIC : (mode + 3'd1);
             end
+
+            // 迎新专用第6档: KEY3 打开常显, KEY2 关闭。离开迎新时若正停在
+            // 第6档，仅把模式号归一到0，开关值保留，返回迎新仍沿用用户选择。
+            if (resinfo_on_c)
+                res_info_always <= 1'b1;
+            if (resinfo_off_c)
+                res_info_always <= 1'b0;
+            if (mosaic_on_c)
+                mosaic_en <= 1'b1;
+            if (mosaic_off_c)
+                mosaic_en <= 1'b0;
+            if (scene_chg && (mode >= MODE_RESINFO))
+                mode <= MODE_PIC;
 
             // ---- 模式1: 亮度 ± ----
             if (bri_up_c)

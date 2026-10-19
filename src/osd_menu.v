@@ -240,14 +240,14 @@ module osd_menu #(
         if (menu_ok && de2 && (rid2 != ID_NONE)) begin
             if (mq2) begin
                 rom_en   = 1'b1;
-                rom_addr = b2 + ({6'b0, dy2} * {1'b0, n2}) + (wx_m >> 4);  // cell=(wx_m>>4)
+                rom_addr = b2 + ({6'b0,dy2} * {1'b0,n2}) + (wx_m >> 4);
             end
             else begin
                 if ((px2 >= gx2) && (px2 < xr2)) begin
                     rom_en   = 1'b1;
                     // 行号 = py2-ty2(2× 带存 32×32 真字模, 不再 >>1 折叠)
                     rom_addr = b2 + ({6'b0, dy2} * {1'b0, n2})
-                                 + (xoff2 >> (s2 ? 5'd5 : 5'd4));
+                             + (xoff2 >> (s2 ? 5'd5 : 5'd4));
                 end
             end
         end
@@ -260,6 +260,13 @@ module osd_menu #(
     //     本模块只把读请求/地址送出, 并接收共享读数据 rom_q。
     assign rom_en_o   = rom_en;
     assign rom_addr_o = rom_addr;
+
+    // 菜单五条 32px 大字带保存 FreeType 原生四级覆盖率。地址布局与共享
+    // 1-bit ROM 的前 800 行完全一致，故不增加坐标/乘法逻辑；滚动小字仍走
+    // 共享 ROM。同步读延迟同为一拍，与 px3/py3 对齐。
+    wire [63:0] aa_rom_q;
+    osd_menu_aa_rom u_menu_aa_rom(
+        .clk(video_clk), .en(rom_en && s2), .addr(rom_addr[9:0]), .q(aa_rom_q));
 
     //--------------------------------------------------------------
     // B 级(仲裁): 文字带 id / 几何 / 滚动相位 —— 全部改为 A 级结果打一拍
@@ -290,6 +297,11 @@ module osd_menu #(
 
     // B 级: 字形墨点判定(当前像素处字形是否落墨)
     reg ink;
+    wire [4:0] aa_col3 = (px3 - gx3) & 12'd31;
+    wire [6:0] aa_bit_index = 7'd63 - {1'b0,aa_col3,1'b0};
+    wire [1:0] aa_cov_raw = aa_rom_q[aa_bit_index -: 2];
+    wire [1:0] aa_cov = (menu_ok && de3 && s3 &&
+                         (px3 >= gx3) && (px3 < xr3)) ? aa_cov_raw : 2'd0;
     always @* begin
         ink = 1'b0;
         if (menu_ok && de3 && (rid3 != ID_NONE)) begin
@@ -300,7 +312,7 @@ module osd_menu #(
                 // 字内列号: 2× 带 = 32×32 字模 1:1(取第 31..0 位);
                 //           1× 带 = 16×16 字模(取第 15..0 位)
                 if (s3)
-                    ink = rom_q[31 - ((px3 - gx3) & 12'd31)];
+                    ink = (aa_cov != 2'd0);
                 else
                     ink = rom_q[15 - ((px3 - gx3) & 12'd15)];
             end
@@ -380,6 +392,48 @@ module osd_menu #(
         endcase
     end
 
+    // 2-bit coverage 的定系数 Alpha 混合。只用移位/加法，不引入 DSP：
+    //   01 = 25% 前景 + 75% 底色；10 = 50%；11 = 原前景。
+    function [23:0] blend25;
+        input [23:0] fg;
+        input [23:0] bg;
+        reg [9:0] rr, gg, bb;
+        begin
+            rr = {2'b0,fg[23:16]} + {2'b0,bg[23:16]} +
+                 ({2'b0,bg[23:16]} << 1);
+            gg = {2'b0,fg[15:8]}  + {2'b0,bg[15:8]}  +
+                 ({2'b0,bg[15:8]} << 1);
+            bb = {2'b0,fg[7:0]}   + {2'b0,bg[7:0]}   +
+                 ({2'b0,bg[7:0]} << 1);
+            blend25 = {rr[9:2],gg[9:2],bb[9:2]};
+        end
+    endfunction
+    function [23:0] blend50;
+        input [23:0] fg;
+        input [23:0] bg;
+        reg [8:0] rr, gg, bb;
+        begin
+            rr = {1'b0,fg[23:16]} + {1'b0,bg[23:16]};
+            gg = {1'b0,fg[15:8]}  + {1'b0,bg[15:8]};
+            bb = {1'b0,fg[7:0]}   + {1'b0,bg[7:0]};
+            blend50 = {rr[8:1],gg[8:1],bb[8:1]};
+        end
+    endfunction
+    function [23:0] blend75;
+        input [23:0] fg;
+        input [23:0] bg;
+        reg [9:0] rr, gg, bb;
+        begin
+            rr = {2'b0,bg[23:16]} + {2'b0,fg[23:16]} +
+                 ({2'b0,fg[23:16]} << 1);
+            gg = {2'b0,bg[15:8]}  + {2'b0,fg[15:8]}  +
+                 ({2'b0,fg[15:8]} << 1);
+            bb = {2'b0,bg[7:0]}   + {2'b0,fg[7:0]}   +
+                 ({2'b0,fg[7:0]} << 1);
+            blend75 = {rr[9:2],gg[9:2],bb[9:2]};
+        end
+    endfunction
+
     //--------------------------------------------------------------
     // 输出仲裁(组合): 应急红条 > 全屏菜单(字形墨点/底色) > 背景透传
     //--------------------------------------------------------------
@@ -391,7 +445,17 @@ module osd_menu #(
                 fo = C_RED;                                 // 应急顶部红条
             end
             else if (menu_ok) begin
-                fo = ink ? tcol : base_c;                   // 全屏菜单自绘
+                if (s3) begin
+                    case (aa_cov)
+                        2'd1: fo = blend25(tcol, base_c);
+                        2'd2: fo = blend75(tcol, base_c);
+                        2'd3: fo = tcol;
+                        default: fo = base_c;
+                    endcase
+                end
+                else begin
+                    fo = ink ? tcol : base_c;               // 小字保持原二值字模
+                end
             end
         end
     end

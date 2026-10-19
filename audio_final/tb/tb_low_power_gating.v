@@ -16,6 +16,15 @@ module tb_low_power_gating;
     integer idle_ticks = 0;
     integer off_ticks = 0;
 
+`ifdef POWER_ACTIVITY
+    // Optional activity capture for the low-power evidence flow.  Normal
+    // regressions do not emit a VCD, so the fast release suite stays fast.
+    initial begin
+        $dumpfile("scene_audio_lp_activity.vcd");
+        $dumpvars(0, dut);
+    end
+`endif
+
     always #20 clk = ~clk; // 25 MHz
 
     scene_audio_final #(

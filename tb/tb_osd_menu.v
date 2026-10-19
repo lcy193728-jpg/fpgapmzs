@@ -46,6 +46,10 @@ module tb_osd_menu;
     localparam C_ACC2   = 24'hF5A623;   // 卡3 左色块
     localparam C_ACC3   = 24'hE84A4A;   // 卡4 左色块
     localparam C_TXTW   = 24'hF5FDFF;   // 白字(标题/卡标题)
+    localparam C_T25    = 24'h444C57;   // 标题 25% 边缘覆盖
+    localparam C_T75    = 24'hBAC2C7;   // 标题 75% 边缘覆盖
+    localparam C_C25    = 24'h4D5C71;   // 卡片字 25% 边缘覆盖
+    localparam C_C75    = 24'hBDC7CF;   // 卡片字 75% 边缘覆盖
     localparam C_TAG    = 24'h9DCBF2;   // 副标题浅钢蓝
     localparam C_MARQ   = 24'hFF7A1F;   // 滚动宣传语亮橙
     localparam C_MQBG   = 24'h000000;   // 宣传语黑底
@@ -101,6 +105,7 @@ module tb_osd_menu;
     reg  [31:0] c_red, c_bgfull, c_card, c_bd;
     reg  [31:0] c_acc0, c_acc1, c_acc2, c_acc3;
     reg  [31:0] c_txtw, c_tag, c_marq, c_uline, c_mqbg, c_pass;
+    reg  [31:0] c_t25, c_t75, c_c25, c_c75;
     reg         vs_o_d;                 // vs_o 延迟一拍(下降沿检测)
     reg  [9:0]  phase_save;             // 上一帧读取的滚动相位
     reg         phase_first;            // 尚未读过相位
@@ -222,15 +227,15 @@ module tb_osd_menu;
     task check_spots; begin
         if (valid_cnt == 2) begin
             // ---- 文字带采样点(V3.4 思源黑体字库, gen 打印) ----
-            chk(182, 29, C_TXTW, "TITLE ON");
+            chk(182, 29, C_T75,  "TITLE EDGE75");
             chk(176, 28, C_BGFULL,"TITLE OFF");
-            chk(115, 93, C_TXTW, "CT0 ON");
+            chk(115, 93, C_C75,  "CT0 EDGE75");
             chk( 98, 92, C_CARD, "CT0 OFF");
-            chk(114,183, C_TXTW, "CT1 ON");
+            chk(114,183, C_C75,  "CT1 EDGE75");
             chk( 98,182, C_CARD, "CT1 OFF");
-            chk(104,273, C_TXTW, "CT2 ON");
+            chk(104,273, C_C75,  "CT2 EDGE75");
             chk( 98,272, C_CARD, "CT2 OFF");
-            chk(113,363, C_TXTW, "CT3 ON");
+            chk(113,363, C_C25,  "CT3 EDGE25");
             chk( 98,362, C_CARD, "CT3 OFF");
             // ---- ★2026-09-21: 卡副标题(小字)已下线, 这 4 行整行应为纯"卡内衬" ----
             chk(101,132, C_CARD, "TG0 区已清空");
@@ -271,6 +276,8 @@ module tb_osd_menu;
             c_acc0     <= 32'd0;   c_acc1   <= 32'd0;
             c_acc2     <= 32'd0;   c_acc3   <= 32'd0;
             c_txtw     <= 32'd0;   c_tag    <= 32'd0;
+            c_t25      <= 32'd0;   c_t75    <= 32'd0;
+            c_c25      <= 32'd0;   c_c75    <= 32'd0;
             c_marq     <= 32'd0;   c_uline  <= 32'd0;
             c_mqbg     <= 32'd0;   c_pass   <= 32'd0;
             vs_o_d     <= 1'b1;
@@ -301,6 +308,10 @@ module tb_osd_menu;
                     C_ACC2  : c_acc2  <= c_acc2  + 32'd1;
                     C_ACC3  : c_acc3  <= c_acc3  + 32'd1;
                     C_TXTW  : c_txtw  <= c_txtw  + 32'd1;
+                    C_T25   : c_t25   <= c_t25   + 32'd1;
+                    C_T75   : c_t75   <= c_t75   + 32'd1;
+                    C_C25   : c_c25   <= c_c25   + 32'd1;
+                    C_C75   : c_c75   <= c_c75   + 32'd1;
                     C_TAG   : c_tag   <= c_tag   + 32'd1;
                     C_MARQ  : c_marq  <= c_marq  + 32'd1;
                     C_ULINE : c_uline <= c_uline + 32'd1;
@@ -351,14 +362,22 @@ module tb_osd_menu;
                         end
                         1, 2: begin // 段1/2: 菜单开(两帧逐色统计一致)
                             if (act_cnt   != TOT_PIX) fail_cnt("有效像素", act_cnt, TOT_PIX);
-                            if (c_bgfull  != EX_BGFULL) fail_cnt("底色BG_FULL", c_bgfull, EX_BGFULL);
-                            if (c_card    != EX_CARD)   fail_cnt("卡片内衬", c_card, EX_CARD);
+                            // 抗锯齿仅允许在原“标题/卡片底色+白字”集合内重分类；
+                            // 总像素必须守恒，且四级边缘色必须真正出现。
+                            if ((c_bgfull+c_card+c_txtw+c_t25+c_t75+c_c25+c_c75) !=
+                                (EX_BGFULL+EX_CARD+EX_TXTW))
+                                fail_cnt("平滑字区", c_bgfull+c_card+c_txtw+c_t25+c_t75+c_c25+c_c75,
+                                         EX_BGFULL+EX_CARD+EX_TXTW);
+                            if (c_t25==0 || c_t75==0 || c_c25==0 || c_c75==0) begin
+                                err_cnt <= err_cnt + 1;
+                                $display("t=%0t [FAIL] 四级边缘色未全部出现 T25/T75/C25/C75=%0d/%0d/%0d/%0d",
+                                         $time,c_t25,c_t75,c_c25,c_c75);
+                            end
                             if (c_bd      != EX_BD)     fail_cnt("卡片描边", c_bd, EX_BD);
                             if (c_acc0    != EX_ACC)    fail_cnt("色块0", c_acc0, EX_ACC);
                             if (c_acc1    != EX_ACC)    fail_cnt("色块1", c_acc1, EX_ACC);
                             if (c_acc2    != EX_ACC)    fail_cnt("色块2", c_acc2, EX_ACC);
                             if (c_acc3    != EX_ACC)    fail_cnt("色块3", c_acc3, EX_ACC);
-                            if (c_txtw    != EX_TXTW)   fail_cnt("白色字形", c_txtw, EX_TXTW);
                             if (c_tag     != EX_TAG)    fail_cnt("副标题字", c_tag, EX_TAG);
                             if (c_marq    != EX_MARQ)   fail_cnt("滚动橙字", c_marq, EX_MARQ);
                             if (c_uline   != EX_ULINE)  fail_cnt("金色线", c_uline, EX_ULINE);
@@ -367,11 +386,13 @@ module tb_osd_menu;
                             if (c_pass    != 0)         fail_cnt("背景透传", c_pass, 0);
                             $display("t=%0t [%s] 帧#%0d 菜单段 (有效=%0d)",
                                      $time,
-                                     (act_cnt==TOT_PIX && c_bgfull==EX_BGFULL &&
-                                      c_card==EX_CARD && c_bd==EX_BD &&
+                                     (act_cnt==TOT_PIX &&
+                                      (c_bgfull+c_card+c_txtw+c_t25+c_t75+c_c25+c_c75)==
+                                        (EX_BGFULL+EX_CARD+EX_TXTW) &&
+                                      c_t25!=0 && c_t75!=0 && c_c25!=0 && c_c75!=0 && c_bd==EX_BD &&
                                       c_acc0==EX_ACC && c_acc1==EX_ACC &&
                                       c_acc2==EX_ACC && c_acc3==EX_ACC &&
-                                      c_txtw==EX_TXTW && c_tag==EX_TAG &&
+                                      c_tag==EX_TAG &&
                                       c_marq==EX_MARQ && c_uline==EX_ULINE &&
                                       c_mqbg==EX_MQBG && c_red==0 && c_pass==0)
                                      ? "PASS" : "FAIL",
@@ -399,6 +420,8 @@ module tb_osd_menu;
                 c_acc0    <= 32'd0;   c_acc1   <= 32'd0;
                 c_acc2    <= 32'd0;   c_acc3   <= 32'd0;
                 c_txtw    <= 32'd0;   c_tag    <= 32'd0;
+                c_t25     <= 32'd0;   c_t75    <= 32'd0;
+                c_c25     <= 32'd0;   c_c75    <= 32'd0;
                 c_marq    <= 32'd0;   c_uline  <= 32'd0;
                 c_mqbg    <= 32'd0;   c_pass   <= 32'd0;
             end

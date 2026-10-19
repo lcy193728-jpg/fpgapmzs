@@ -11,6 +11,8 @@ module emergency_multi_overlay #(
     input wire [11:0] px_x,input wire [11:0] px_y,
     input wire alarm_en,input wire [1:0] alarm_type,
     input wire [3:0] min_tens,min_ones,sec_tens,sec_ones,
+    input wire [223:0] ticker_ids,input wire [5:0] ticker_length,
+    input wire [5:0] ticker_speed,input wire ticker_pause,input wire ticker_override,
     output wire hs_o,output wire vs_o,output wire de_o,output wire [DATA_W-1:0] data_o,
     output wire [11:0] px_x_o,output wire [11:0] px_y_o
 );
@@ -29,8 +31,9 @@ module emergency_multi_overlay #(
           mt_s<=mt_m;mo_s<=mo_m;st_s<=st_m;so_s<=so_m; end
     end
 
-    reg [21:0] blink_cnt; reg blink;
-    reg vs_d; reg [8:0] scroll_phase;
+    reg [21:0] blink_cnt;
+    reg blink;
+    reg vs_d; reg [8:0] scroll_phase; reg [5:0] scroll_wait;
     wire vs_rise = vs_i & ~vs_d;
     always @(posedge clk) begin
       if(rst||!alarm_s) begin blink_cnt<=0;blink<=0; end
@@ -38,12 +41,36 @@ module emergency_multi_overlay #(
       else blink_cnt<=blink_cnt+1'b1;
     end
     always @(posedge clk) begin
-      if(rst||!alarm_s) begin vs_d<=0;scroll_phase<=0; end
+      if(rst||!alarm_s) begin vs_d<=0;scroll_phase<=0;scroll_wait<=0; end
       else begin
         vs_d<=vs_i;
-        if(vs_rise) scroll_phase<=scroll_phase+1'b1; // 512px 周期，每帧左移 1px
+        if(vs_rise) begin
+          if(!ticker_override) begin
+            scroll_phase<=scroll_phase+1'b1;scroll_wait<=0; // 原默认效果
+          end else if(!ticker_pause) begin
+            if(ticker_speed<=1 || scroll_wait+1'b1>=ticker_speed) begin
+              scroll_phase<=scroll_phase+1'b1;scroll_wait<=0;
+            end else scroll_wait<=scroll_wait+1'b1;
+          end
+        end
       end
     end
+
+    // 固定 case 选择避免“可变位选”被综合成大规模桶形网络。
+    function [6:0] ticker_glyph;
+      input [223:0] ids; input [4:0] idx;
+      begin case(idx)
+        0:ticker_glyph=ids[6:0];1:ticker_glyph=ids[13:7];2:ticker_glyph=ids[20:14];3:ticker_glyph=ids[27:21];
+        4:ticker_glyph=ids[34:28];5:ticker_glyph=ids[41:35];6:ticker_glyph=ids[48:42];7:ticker_glyph=ids[55:49];
+        8:ticker_glyph=ids[62:56];9:ticker_glyph=ids[69:63];10:ticker_glyph=ids[76:70];11:ticker_glyph=ids[83:77];
+        12:ticker_glyph=ids[90:84];13:ticker_glyph=ids[97:91];14:ticker_glyph=ids[104:98];15:ticker_glyph=ids[111:105];
+        16:ticker_glyph=ids[118:112];17:ticker_glyph=ids[125:119];18:ticker_glyph=ids[132:126];19:ticker_glyph=ids[139:133];
+        20:ticker_glyph=ids[146:140];21:ticker_glyph=ids[153:147];22:ticker_glyph=ids[160:154];23:ticker_glyph=ids[167:161];
+        24:ticker_glyph=ids[174:168];25:ticker_glyph=ids[181:175];26:ticker_glyph=ids[188:182];27:ticker_glyph=ids[195:189];
+        28:ticker_glyph=ids[202:196];29:ticker_glyph=ids[209:203];30:ticker_glyph=ids[216:210];
+        default:ticker_glyph=ids[223:217];
+      endcase end
+    endfunction
 
     reg hs1,vs1,de1,hs2,vs2,de2; reg [23:0] d1,d2;
     reg [11:0] x1,y1,x2,y2;
@@ -57,7 +84,12 @@ module emergency_multi_overlay #(
     reg [4:0] text_id; reg [4:0] char_pos; reg [3:0] glyph_row; reg [3:0] glyph_col;
     reg text_hit; reg [11:0] text_x0; reg [11:0] text_x1; reg large_text,type_large,scroll_text;
     reg [6:0] gid; reg font_en; reg [10:0] font_addr; wire [15:0] font_q;
-    reg text_hit_q; reg [3:0] glyph_col_q; reg large_q;
+    reg text_hit_q; reg [3:0] glyph_col_q; reg large_q,type_large_q;
+    reg [5:0] big_row,big_col;
+    reg big_font_en; reg [16:0] big_font_addr; wire [1:0] big_font_q;
+    reg title_font_en; reg [6:0] title_font_addr; wire [63:0] title_font_q;
+    reg big_hit_q; reg [5:0] big_col_q;
+    reg title_hit_q; reg [4:0] title_col_q;
     // ★2026-09-21 面积优化(逐像素等价, 已由 sim/_tb_em_equiv.v 全栅格 A/B 验证):
     //   原版用 `integer len` + emergency_text_len(text_id) 再算 text_x0+len*16 /
     //   text_x0+len*32 —— integer 是 32bit 有符号, 于是每次窗口判定都生成
@@ -126,12 +158,42 @@ module emergency_multi_overlay #(
             default:glyph_row=y1-448;endcase
         end
       end
-      gid=emergency_glyph_id(text_id,char_pos);
-      font_en=text_hit&&(gid!=7'h7f);font_addr={gid,glyph_row};
+      if(scroll_text && ticker_override)
+        gid=(char_pos<ticker_length)?ticker_glyph(ticker_ids,char_pos):7'd105;
+      else
+        gid=emergency_glyph_id(text_id,char_pos);
+      // 小字仍走原 16x16 二值字库；标题用 32px 中黑体，类型大字用
+      // 原生 64px 粗体，两者均为离线 4x 超采样后的 2-bit 覆盖率。
+      // RTL 不再放大字模，彻底移除非整数映射造成的笔画粗细变化。
+      big_row=6'd0; big_col=6'd0;
+      if(large_text) begin
+        big_row=y1-12'd16; big_col=(x1-text_x0)&12'd31;
+      end else if(type_large) begin
+        big_row=y1-12'd58; big_col=(x1-12'd192)&12'd63;
+      end
+      font_en=text_hit&&(gid!=7'h7f)&&!large_text&&!type_large;
+      font_addr={gid,glyph_row};
+      title_font_en=text_hit&&(gid<7'd4)&&large_text;
+      title_font_addr={gid[1:0],big_row[4:0]};
+      big_font_en=text_hit&&(gid<7'd19)&&type_large;
+      big_font_addr={gid[4:0],big_row,big_col};
     end
     emergency_font_rom u_em_font(.clk(clk),.en(font_en),.addr(font_addr),.q(font_q));
-    always @(posedge clk) begin text_hit_q<=text_hit;glyph_col_q<=glyph_col;large_q<=large_text; end
-    wire text_ink=text_hit_q && font_q[15-glyph_col_q];
+    emergency_big_font_rom u_em_big_font(
+      .clk(clk),.en(big_font_en),.addr(big_font_addr),.q(big_font_q));
+    emergency_title_font_rom u_em_title_font(
+      .clk(clk),.en(title_font_en),.addr(title_font_addr),.q(title_font_q));
+    always @(posedge clk) begin
+      text_hit_q<=text_hit;glyph_col_q<=glyph_col;large_q<=large_text;
+      type_large_q<=type_large;big_hit_q<=big_font_en;big_col_q<=big_col;
+      title_hit_q<=title_font_en;title_col_q<=big_col[4:0];
+    end
+    wire text_ink=text_hit_q && !large_q && !type_large_q && font_q[15-glyph_col_q];
+    wire [1:0] big_cov_raw=big_font_q;
+    wire [6:0] title_bit_index=7'd63-{title_col_q,1'b0};
+    wire [1:0] title_cov_raw=title_font_q[title_bit_index -: 2];
+    wire [1:0] big_cov=(type_large_q&&big_hit_q) ? big_cov_raw :
+                       ((large_q&&title_hit_q) ? title_cov_raw : 2'd0);
 
     // Duration digits are drawn from the same glyph ROM using a second read-free
     // seven-segment renderer, keeping the font ROM single-port.
@@ -172,6 +234,21 @@ module emergency_multi_overlay #(
     //   与左侧图标删除后的信息卡文字块对齐, 页面更规整。
     wire info_panel=(x2>=192&&x2<448&&y2>=126&&y2<286);
     wire timer_panel=(x2>=192&&x2<448&&y2>=294&&y2<338);
+    // 左右双向避难指示箭头。全部由范围比较和移位构成，不占 BRAM/DSP；
+    // 放在原先删除图标后留下的两侧空区，不遮挡中央告警文字和计时。
+    // 非应急时锁住箭头坐标输入，避免距离计算网络随每个像素空转。
+    wire [11:0] arrow_x = alarm_s ? x2 : 12'd0;
+    wire [11:0] arrow_y = alarm_s ? y2 : 12'd232;
+    wire [11:0] arrow_dyl = (arrow_y >= 12'd232) ? (arrow_y-12'd232) : (12'd232-arrow_y);
+    // 每个告警子场景只显示一个疏散方向:
+    //   类型0/类型2 -> 左，类型1/类型3 -> 右。
+    wire left_arrow = alarm_s && ~type_s[0] && de2 &&
+                      (((arrow_x>=12'd80 && arrow_x<12'd176) && (arrow_y>=12'd220 && arrow_y<12'd244)) ||
+                       ((arrow_x>=12'd24 && arrow_x<12'd96) && (arrow_dyl <= ((arrow_x-12'd24)>>1))));
+    wire right_arrow = alarm_s && type_s[0] && de2 &&
+                       (((arrow_x>=12'd464 && arrow_x<12'd560) && (arrow_y>=12'd220 && arrow_y<12'd244)) ||
+                        ((arrow_x>=12'd544 && arrow_x<12'd616) && (arrow_dyl <= ((12'd616-arrow_x)>>1))));
+    wire shelter_arrow = left_arrow | right_arrow;
     // 2026-09-25: 原 status_band(x∈[208,432) y∈[342,374)) 是「告警尚未解除」
     //   的底衬, 文字删除后该空条一并去掉, 否则会留下一条无内容的色块。
     wire footer=(y2>=438);
@@ -181,6 +258,39 @@ module emergency_multi_overlay #(
         2:begin accent=24'h32ade6;dark=24'h082b3a;panel=24'h10465e;end
         default:begin accent=24'hbf5af2;dark=24'h281135;panel=24'h48205e;end endcase
     end
+
+    // 小鹅通 OSD Alpha 叠加方法的定系数实现：四级覆盖率只用移位加法，
+    // 不占 DSP；混合范围严格限制在两条大字带内。
+    function [23:0] blend25;
+      input [23:0] fg; input [23:0] bg;
+      reg [9:0] rr,gg,bb;
+      begin
+        rr={2'b0,fg[23:16]}+{2'b0,bg[23:16]}+({2'b0,bg[23:16]}<<1);
+        gg={2'b0,fg[15:8]} +{2'b0,bg[15:8]} +({2'b0,bg[15:8]}<<1);
+        bb={2'b0,fg[7:0]}  +{2'b0,bg[7:0]}  +({2'b0,bg[7:0]}<<1);
+        blend25={rr[9:2],gg[9:2],bb[9:2]};
+      end
+    endfunction
+    function [23:0] blend50;
+      input [23:0] fg; input [23:0] bg;
+      reg [8:0] rr,gg,bb;
+      begin
+        rr={1'b0,fg[23:16]}+{1'b0,bg[23:16]};
+        gg={1'b0,fg[15:8]} +{1'b0,bg[15:8]};
+        bb={1'b0,fg[7:0]}  +{1'b0,bg[7:0]};
+        blend50={rr[8:1],gg[8:1],bb[8:1]};
+      end
+    endfunction
+    function [23:0] blend75;
+      input [23:0] fg; input [23:0] bg;
+      reg [9:0] rr,gg,bb;
+      begin
+        rr={2'b0,bg[23:16]}+{2'b0,fg[23:16]}+({2'b0,fg[23:16]}<<1);
+        gg={2'b0,bg[15:8]} +{2'b0,fg[15:8]} +({2'b0,fg[15:8]}<<1);
+        bb={2'b0,bg[7:0]}  +{2'b0,fg[7:0]}  +({2'b0,fg[7:0]}<<1);
+        blend75={rr[9:2],gg[9:2],bb[9:2]};
+      end
+    endfunction
     reg [23:0] outpix; always @(*) begin
       outpix=d2;
       if(de2&&alarm_s) begin
@@ -189,9 +299,16 @@ module emergency_multi_overlay #(
         else if(type_band||info_panel||timer_panel) outpix=panel;
         else if(footer) outpix=24'h101010;
         if(digit_ink) outpix=24'hffd60a;
+        if(shelter_arrow) outpix=blink ? 24'hffffff : accent;
+        if(big_cov!=2'd0) begin
+          case(big_cov)
+            2'd1: outpix=blend25(type_large_q?24'hff3b30:24'hffffff, outpix);
+            2'd2: outpix=blend75(type_large_q?24'hff3b30:24'hffffff, outpix);
+            default: outpix=type_large_q?24'hff3b30:24'hffffff;
+          endcase
+        end
         if(text_ink) begin
-          if(y2>=58&&y2<122) outpix=24'hff3b30;
-          else outpix=24'hffffff;
+          outpix=24'hffffff;
         end
       end
     end

@@ -23,10 +23,12 @@ module tb_em_equiv;
     emergency_multi_overlay #(.BLINK_DIV(22'd100)) dut(
         .clk(clk), .rst(rst), .hs_i(hs_i), .vs_i(vs_i), .de_i(de_i), .data_i(data_i),
         .px_x(px_x), .px_y(px_y), .alarm_en(alarm_en), .alarm_type(alarm_type),
+        .ticker_ids(224'd0),.ticker_length(6'd0),.ticker_speed(6'd1),
+        .ticker_pause(1'b0),.ticker_override(1'b0),
         .min_tens(min_tens), .min_ones(min_ones), .sec_tens(sec_tens), .sec_ones(sec_ones),
         .hs_o(hs_a), .vs_o(vs_a), .de_o(de_a), .data_o(d_a), .px_x_o(xx_a), .px_y_o(yy_a));
 
-    emergency_multi_overlay_ref #(.BLINK_DIV(22'd100)) ref(
+    emergency_multi_overlay_ref #(.BLINK_DIV(22'd100)) u_ref(
         .clk(clk), .rst(rst), .hs_i(hs_i), .vs_i(vs_i), .de_i(de_i), .data_i(data_i),
         .px_x(px_x), .px_y(px_y), .alarm_en(alarm_en), .alarm_type(alarm_type),
         .min_tens(min_tens), .min_ones(min_ones), .sec_tens(sec_tens), .sec_ones(sec_ones),

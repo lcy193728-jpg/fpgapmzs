@@ -148,7 +148,12 @@ set_max_delay -from [get_clocks {hdmi_5x_clk}] -to [get_ports {HDMI_CLK_P HDMI_D
 # 输入时钟 clk(R7) 由板级 50MHz 有源晶振直驱, 转换时间为板级固定值,
 # 由器件 input buffer 模型覆盖。保持空白。
 
-# Bundled event payload is held until acknowledge. Capture occurs >=3 pixel
-# cycles after request launch; bound route delay to one 40ns pixel period.
-# Only synchronizer FIRST stages use the existing sync_ff[0] false path.
-set_max_delay -from [get_regs -hier {u_audio_events/payload_hold[*]}] -to [get_regs -hier {u_audio_events/media_id[*] u_audio_events/event_kind[*]}] 40.000 -datapath_only
+# The old standalone top_audio design used u_audio_events/audio_event_cdc and
+# therefore needed a bundled-data max-delay constraint here.  The integrated
+# product top now generates feature_event_{valid,kind,media} entirely in the
+# video_clk domain (u_feature_events) and consumes it in that same domain
+# (u_scene_audio).  u_audio_events is not instantiated, so keeping the old
+# command only produces USR-6001/8012/8159 critical warnings and constrains no
+# path.  Do not replace it with a wildcard: there is no bundled payload CDC in
+# the current top.  The real single-bit CDC inputs remain covered by the
+# sync_ff[0] first-stage false path above.

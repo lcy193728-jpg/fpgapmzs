@@ -27,7 +27,7 @@ module tb_display_adjust_busy_handshake;
         .menu_active(menu_active), .emerg(1'b0), .bmp_busy(bmp_busy),
         .iris_trig(1'b0), .wipe_trig(1'b0),
         .bri_level(4'd8), .vol_level(4'd8), .res_level(4'd4),
-        .con_level(4'd8), .img_res(2'd1), .pic_manual(1'b0),
+        .con_level(4'd8), .img_res(2'd1), .pic_manual(1'b0), .res_info_always(1'b0),
         .ui_mode(3'd0), .quiz_on(1'b0), .meeting_on(1'b0),
         .q_state(2'd0), .q_end(1'b0),
         .sc0(8'sd0), .sc1(8'sd0), .sc2(8'sd0), .sc3(8'sd0),

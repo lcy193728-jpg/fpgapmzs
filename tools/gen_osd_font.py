@@ -13,9 +13,8 @@ V3 相对 V2 的唯一变化(2026-09-17) —— 字模分辨率与字体:
   · scale=1 的带(副标题/滚动条/公告行/数字)保持 16×16 不变。
   · 字体统一为 **思源黑体 / Noto Sans SC(Noto Sans SC Regular)**。
     (V3.4 定版: 由微软雅黑 Bold 回到思源黑体, 仅换字体, 几何/文案/阈值/
-     ROM 格式全部不变。选它作为定版的原因: 16px 小字墨点密度居中
-     (「报到地点：东区体育馆」10 字 660/1600 = 41%, 等线 543 偏细、
-     雅黑 Bold 1230 偏密易粘连), 笔画规整匀称、中英数字辨识度均衡;
+     ROM 格式全部不变。选它作为定版的原因: 16px 小字墨点密度适中、
+     笔画规整匀称、中英数字辨识度均衡;
      32px 标题清爽不失力度。)
   · 显示几何(ty/gx/N/带宽)完全不变 —— 32×32 字模 1:1 显示, 其物理尺寸
     恰好等于原 "16×16 放大 2 倍", 因此三个 OSD 模块的几何表无需改动。
@@ -112,23 +111,17 @@ WT_GX   = 208                    # 欢迎语字形 x 起点(= (640-7*32)/2)
 WT_TEXT = "热烈欢迎新同学"        # 7 格
 assert len(WT_TEXT) == 7, "W_TITLE 长度必须为 7"
 
-WL_TY   = 400                    # 报到地点/联系方式 字形行起点(16)
-WL_GX   = 85                     # 报到地点字形 x 起点(10 格, 字宽160)
-WL_TEXT = "报到地点：东区体育馆"  # 10 格
-assert len(WL_TEXT) == 10, "W_PLACE 长度必须为 10"
+WD_TY   = 452                    # 串口动态通知字形行起点(16)
 
-WR_GX   = 355                    # 联系方式字形 x 起点(15 格, 字宽240)
-WR_TEXT = "新生QQ群：123456789"   # 15 格
-assert len(WR_TEXT) == 15, "W_CONT 长度必须为 15"
-
-WF_TY   = 452                    # 流程滚动字形行起点(16)
-WF_TEXT = "迎新报到流程 签到 领卡 入住 军训物资"   # 必须 == 20 格(320px 周期)
-assert len(WF_TEXT) == 20, "W_FLOW 长度必须等于 20"
+# 串口可编辑迎新通知字典：固定为 45 个唯一字形，共占 45×16=720 words，
+# 因此后续 MT_TITLE 以及抢答/应急/数字的 base 一个不变。
+# id0=空格；其余字符由 tools/welcome_uart_gui.py 按同一顺序映射。
+W_DICT_TEXT = " 迎新报到流程签领卡入住军训物资热烈欢同学校园通知请前往体育馆办理手续注意安全今日明天开始"
+assert len(W_DICT_TEXT) == 45 and len(set(W_DICT_TEXT)) == 45, \
+       "W_DICT 必须是45个唯一字符"
 
 BANDS.append(("W_TITLE", WT_TEXT, 2, WT_TY, WT_GX))
-BANDS.append(("W_PLACE", WL_TEXT, 1, WL_TY, WL_GX))
-BANDS.append(("W_CONT",  WR_TEXT, 1, WL_TY, WR_GX))
-BANDS.append(("W_FLOW",  WF_TEXT, 1, WF_TY, 0))     # 滚动带 gx 占位 0
+BANDS.append(("W_DICT", W_DICT_TEXT, 1, WD_TY, 0))  # 动态字典，row-major
 
 # ------------------------------------------------------------------ #
 # 会议(M_*) / 抢答(Q_*) / 应急(A_*) / 公共数字(NUM) 文字带
@@ -227,14 +220,14 @@ BANDS.append(("A_FOOT",   AF_TEXT, 1, AF_TY, 0))    # 滚动带 gx 占位 0
 BANDS.append(("NUM", NUM_TEXT, 1, 0, 0))            # 动态选列, ty/gx 无意义
 
 # ---- 滚动带名(采样点无法固定, 生成采样点时跳过) ----
-SCROLL_BANDS = ("MARQ", "W_FLOW", "M_FOOT", "Q_FOOT", "A_FOOT")
+SCROLL_BANDS = ("MARQ", "M_FOOT", "Q_FOOT", "A_FOOT")
 
 # ---- 采用"自然字距"的静态带(其余静态带均逐格对齐) ----
 #   仅含**半角/全角混排**的静态带需要: 等宽格会把半角字符撑满一格, 出现
 #   "数字之间空半格"的松散观感。纯汉字带两条路径结果完全一致(汉字 advance
 #   == 1 em == 格宽), 故不列入, 以最小化改动面。
 #   ★滚动带与 NUM 带禁止列入(见 render_line 说明)。
-NATURAL_BANDS = ("W_CONT",)
+NATURAL_BANDS = ()
 
 EMERG_ROWS = 52                  # 应急顶部红条高度(行 0~51)
 

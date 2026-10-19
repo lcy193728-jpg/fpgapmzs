@@ -24,14 +24,14 @@ module tb_audio_viz_scene_clear;
     initial begin
       repeat(4)@(posedge clk);rst=0;pcm_take=1;
       for(i=0;i<1030;i=i+1)@(posedge clk);
-      if(dut.live_sr==0 || dut.hist_count==0)begin
+      if(dut.live_age==0 || dut.hist_count==0)begin
         $display("[FAIL] test did not build visualization history");$finish;
       end
       scene=2;
       repeat(8)@(posedge clk);
-      if(dut.live_sr!=0 || dut.hist_count!=0)begin
-        $display("[FAIL] old visualization survived scene change live=%h count=%0d",
-                 dut.live_sr,dut.hist_count);$finish;
+      if(dut.live_age!=0 || dut.hist_count!=0)begin
+        $display("[FAIL] old visualization survived scene change age=%0d count=%0d",
+                 dut.live_age,dut.hist_count);$finish;
       end
       $display("[PASS] visualization history is cleared on scene change");
       $finish;

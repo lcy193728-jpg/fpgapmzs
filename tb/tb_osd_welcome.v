@@ -64,15 +64,16 @@ module tb_osd_welcome;
     //          =307200
     //================================================================
     localparam TOT_PIX  = H_ACT * V_ACT;                 // 307200
-    localparam EX_BG    = 244384;
+    localparam EX_BG    = 266944; // 删除两张被覆盖的信息卡，该区域恢复背景透传
     localparam EX_GOLD  = 11489;
     localparam EX_TITLE = 1887;
-    localparam EX_ACCL  = 160;
-    localparam EX_ACCR  = 160;
-    localparam EX_CARD  = 10460 + 10483;                 // 两卡同混色
-    localparam EX_WTXT  = 660 + 637;                     // 卡内白字合计
-    localparam EX_ORNG  = 2248;
-    localparam EX_DARK  = 24632;
+    localparam EX_ACCL  = 0;
+    localparam EX_ACCR  = 0;
+    localparam EX_CARD  = 0;
+    localparam EX_WTXT  = 0;
+    localparam EX_ORNG  = 1131;                         // 默认通知一份
+    localparam EX_DARK  = 25749;
+    localparam [191:0] DEFAULT_IDS=192'h0000000000000000003ce34c00b2802480041c0185103081;
 
     //--------------- 信号 ----------------
     reg         clk;
@@ -124,6 +125,10 @@ module tb_osd_welcome;
         .px_x       (px_i),
         .px_y       (py_i),
         .welcome_en (welcome_en),
+        .flow_ids   (DEFAULT_IDS),
+        .flow_length(6'd20),
+        .flow_speed (6'd1),
+        .flow_pause (1'b0),
         .rom_en_o   (rom_en_w),
         .rom_addr_o (rom_addr_w),
         .rom_q      (rom_q),
@@ -207,13 +212,9 @@ module tb_osd_welcome;
             // ---- 文字带采样点(V3.4 思源黑体字库, gen 打印) ----
             chk(215, 15, C_TXT_T, "W_TITLE ON");
             chk(208, 14, C_GOLDM, "W_TITLE OFF");
-            chk( 88,400, C_TXT_I, "W_PLACE ON");
-            chk( 85,400, C_CARDM, "W_PLACE OFF");
-            chk(395,400, C_TXT_I, "W_CONT ON");
-            chk(355,400, C_CARDM, "W_CONT OFF");
-            // ---- 特征点: 强调条 / 金底边缘 / 暗带 ----
-            chk( 25,410, C_ACCL,  "左卡强调");
-            chk(336,410, C_ACCR,  "右卡强调");
+            chk( 88,400, BG,      "原报到卡区恢复背景");
+            chk(395,400, BG,      "原QQ卡区恢复背景");
+            // ---- 特征点: 金底边缘 / 暗带 ----
             chk(169,  8, C_GOLDM, "金底条左上");
             chk(470, 51, C_GOLDM, "金底条右下");
             chk(470,  7, BG,      "金底条外(背景保持)");
@@ -276,7 +277,7 @@ module tb_osd_welcome;
                     phase_save  <= u_welcome.phase;
                 end
                 else begin
-                    if (u_welcome.phase !== ((phase_save == 10'd319) ?
+                    if (u_welcome.phase !== ((phase_save == 10'd639) ?
                                          10'd0 : phase_save + 10'd1)) begin
                         phase_bad <= phase_bad + 1;
                         $display("t=%0t [FAIL] 滚动相位步进异常 prev=%0d cur=%0d",

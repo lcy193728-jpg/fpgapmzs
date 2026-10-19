@@ -41,6 +41,8 @@ module tb_ui_key_ctrl;
 
     wire [2:0]  mode;
     wire [1:0]  alarm_type;          // 应急告警类型(模式0 可调)
+    wire        res_info_always;
+    wire        mosaic_en;
     wire [3:0]  bri_level;
     wire [3:0]  vol_level;
     wire [3:0]  res_level;
@@ -72,6 +74,8 @@ module tb_ui_key_ctrl;
         .control_lock(1'b0),           // 不接管: 全局UI参数正常生效
         .alarm_scene(alarm_scene),     // 应急场景标志(第10段测试)
         .alarm_type (alarm_type),      // 应急告警类型输出
+        .res_info_always(res_info_always),
+        .mosaic_en  (mosaic_en),
         .img_no     (img_no),
         .scene_chg  (scene_chg),
         .scene_id   (scene_id),
@@ -175,7 +179,7 @@ module tb_ui_key_ctrl;
               "上电默认: 轮播周期档=3s(=300_000_000 周期, 与原固定间隔一致)");
         check(disp_hold == 1'b0, "上电默认: 无参数强显保持");
 
-        //-------- 2. KEY1 功能模式循环 0→1→2→3→4→5→0→1 --------
+        //-------- 2. KEY1 功能模式循环 0→1→...→6→7→0→1 --------
         press1;
         check(mode == 3'd1, "KEY1 第1按 -> 模式1 亮度");
         press1;
@@ -187,9 +191,13 @@ module tb_ui_key_ctrl;
         press1;
         check(mode == 3'd5, "KEY1 第5按 -> 模式5 音量");
         press1;
-        check(mode == 3'd0, "KEY1 第6按 -> 模式0 图片(循环回绕)");
+        check(mode == 3'd6, "KEY1 第6按 -> 模式6 分辨率常显开关");
         press1;
-        check(mode == 3'd1, "KEY1 第7按 -> 模式1 亮度");
+        check(mode == 3'd7, "KEY1 第7按 -> 模式7 马赛克开关");
+        press1;
+        check(mode == 3'd0, "KEY1 第8按 -> 模式0 图片(循环回绕)");
+        press1;
+        check(mode == 3'd1, "KEY1 第9按 -> 模式1 亮度");
         check(vol_level == 4'd8, "循环过程不改音量档(仍 8)");
 
         //-------- 3. 模式1: 亮度 KEY3+/KEY2- 与边界钳位 --------
@@ -241,7 +249,7 @@ module tb_ui_key_ctrl;
         //     pic_manual, 该状态只由 KEY4 切换。
         press1;                             // 2->3(周期)
         check(mode == 2'd3, "KEY1 -> 模式3 周期(经过周期档)");
-        repeat (3) press1;                  // 3->4->5->0(迎新六档循环: 周期/对比度/音量)
+        repeat (5) press1;                  // 3->4->5->6->7->0
         check(mode == 2'd0, "KEY1 -> 模式0 图片/切图");
         check(pic_manual == 1'b0 && pic_param == 8'd0,
               "刚进模式0 -> 默认自动轮播(上电/切场景/切模式回来一律如此)");
@@ -281,8 +289,8 @@ module tb_ui_key_ctrl;
         press1;                             // 0->1
         clear_flags; press4;
         check(pic_manual == 1'b0, "模式1(亮度) 按 KEY4 -> 无任何动作");
-        repeat (5) press1;                  // 1->2->3->4->5->0 (共 5 次)
-        check(mode == 2'd0, "KEY1×5 -> 回到模式0(准备后续用例)");
+        repeat (7) press1;                  // 1->2->3->4->5->6->7->0
+        check(mode == 3'd0, "KEY1×7 -> 回到模式0(准备后续用例)");
 
         // 场景切换脉冲 -> 强制回自动
         press4;                             // 先切手动
@@ -306,9 +314,9 @@ module tb_ui_key_ctrl;
         check(~next_seen && res_level == 4'd5, "模式2 KEY3 -> 只调缩放, 不切图");
         clear_flags; press2;                // 5->4, 复位缩放档便于后续用例
         check(res_level == 4'd4, "模式2 KEY2 -> 缩放回到 4(100%)");
-        // 从模式2 走到模式1: 2→3→4→5→0→1, 共 5 次
-        repeat (5) press1;
-        check(mode == 2'd1, "KEY1×5 -> 模式1(进入消抖鲁棒性测试段)");
+        // 从模式2 走到模式1: 2→3→4→5→6→7→0→1, 共 7 次
+        repeat (7) press1;
+        check(mode == 2'd1, "KEY1×7 -> 模式1(进入消抖鲁棒性测试段)");
 
         //-------- 6. 消抖鲁棒性(修"偶发失灵"): --------
         //   DEB_MAX=100 拍(=1us 仿真值, 上板 10ms)。
@@ -366,9 +374,9 @@ module tb_ui_key_ctrl;
               "保持超时 -> disp_hold 自动落低(回到常规显示)");
 
         //   (b) 模式1 调亮度 → disp_sel=1; 切到模式2 后保持期内仍锁定亮度
-        //   从模式3 走到模式1: 3→4→5→0→1, 共 4 次
-        repeat (4) press1;
-        check(mode == 2'd1, "KEY1×4 -> 模式1 亮度");
+        //   从模式3 走到模式1: 3→4→5→6→7→0→1, 共 6 次
+        repeat (6) press1;
+        check(mode == 2'd1, "KEY1×6 -> 模式1 亮度");
         press3;                             // 亮度 9->10
         check(bri_level == 4'd10 && disp_hold == 1'b1 && disp_sel == 3'd1,
               "模式1 调亮度 -> 保持中, disp_sel=亮度");
@@ -409,9 +417,21 @@ module tb_ui_key_ctrl;
         check(~next_seen && ~prev_seen && ~rchg_seen,
               "模式5 调音量 -> 不切图、不触发缩放重载");
 
-        // 模式5 再按 KEY1 -> 回绕到模式0
+        // 模式5 后依次是迎新专用模式6(分辨率常显)与模式7(马赛克)。
         press1;
-        check(mode == 3'd0, "KEY1 在模式5 -> 模式0(循环回绕)");
+        check(mode == 3'd6 && !res_info_always, "KEY1 在模式5 -> 模式6(默认常显关闭)");
+        press3;
+        check(res_info_always, "模式6 KEY3 -> 打开分辨率常显");
+        press2;
+        check(!res_info_always, "模式6 KEY2 -> 关闭分辨率常显");
+        press1;
+        check(mode == 3'd7 && !mosaic_en, "KEY1 在模式6 -> 模式7(默认马赛克关闭)");
+        press3;
+        check(mosaic_en, "模式7 KEY3 -> 打开马赛克");
+        press2;
+        check(!mosaic_en, "模式7 KEY2 -> 关闭马赛克");
+        press1;
+        check(mode == 3'd0, "KEY1 在模式7 -> 模式0(循环回绕)");
 
         //-------- 10. 应急场景(2026-10-01): 模式0 = 四类告警环绕切换 --------
         //   按键语义与迎新场景基本一致(KEY1 调模式 / KEY2,3 调当前模式参数),

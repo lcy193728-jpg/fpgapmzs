@@ -202,17 +202,17 @@ module tb_bmp_scale;
         begin
             // 帧起点(写通路应答): 高 4 拍 → 内部两级同步后产生 fs_pulse
             frame_start = 1'b1;
-            repeat (4) @(posedge clk);
+            repeat (4) @(negedge clk);
             frame_start = 1'b0;
-            repeat (6) @(posedge clk);
+            repeat (6) @(negedge clk);
             nrow = v2x_en ? (SH/2) : SH;     // src_v2x 帧只有 SH/2 行源数据
             for (y = 0; y < nrow; y = y + 1) begin
                 for (x = 0; x < SW; x = x + 1) begin
                     in_en   = 1'b1;
                     in_data = src_word(x, y);
-                    repeat (hold) @(posedge clk);
+                    repeat (hold) @(negedge clk);
                     in_en   = 1'b0;
-                    repeat (gap)  @(posedge clk);
+                    repeat (gap)  @(negedge clk);
                 end
             end
         end
@@ -244,7 +244,7 @@ module tb_bmp_scale;
             v2x_en    = (v2x != 0);
             skip_cmp  = (cmp == 0) ? 1 : 0;
             in_en = 1'b0; frame_start = 1'b0;
-            repeat (4) @(posedge clk);
+            repeat (4) @(negedge clk);
             out_cnt = 0; ox = 0; oy = 0; err_pix = 0;
             send_frame(hold, gap);
             wait_frame(600000);
@@ -280,9 +280,9 @@ module tb_bmp_scale;
         rst = 1'b1; scale_sel = 4'd4; frame_start = 1'b0;
         in_en = 1'b0; in_data = 32'd0; v2x_en = 1'b0;
         out_cnt = 0; ox = 0; oy = 0; err_pix = 0; skip_cmp = 1;
-        repeat (5) @(posedge clk);
+        repeat (5) @(negedge clk);
         rst = 1'b0;
-        repeat (10) @(posedge clk);
+        repeat (10) @(negedge clk);
 
         //========================================================
         // 1. 默认尺寸(640x480)档位配置表逐项核对

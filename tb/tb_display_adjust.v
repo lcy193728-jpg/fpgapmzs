@@ -205,7 +205,7 @@ module tb_display_adjust;
         .res_level  (res_level),
         .con_level  (con_level),   // ★对比度档(2026-10-09c)
         .img_res     (img_res),
-        .pic_manual (pic_manual),
+        .pic_manual (pic_manual), .res_info_always(1'b0),
         .ui_mode    (ui_mode),
         // ---- 抢答分数板(2026-10-09/10-09b; 本 TB 不测分数板, 一律置 0 保证不干扰既有几何) ----
         .quiz_on    (1'b0),
